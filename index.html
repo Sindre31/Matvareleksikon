@@ -1,0 +1,27 @@
+<!DOCTYPE html>
+<html lang="nb">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Prisboka — Matvareleksikon med pristrender</title>
+  <meta name="description" content="Matvareleksikon med fellesskapsregistrerte priser fra Rema 1000, Kiwi, Extra og Meny — og hvor prisen er på vei.">
+  <link rel="stylesheet" href="styles.css">
+  <style>
+    body { margin: 0; background: var(--color-bg); color: var(--color-text); font-family: var(--font-body); text-wrap: pretty; }
+    a { color: var(--color-accent-700); text-decoration: none; }
+    a:hover { color: var(--color-accent-900); text-decoration: underline; }
+    @keyframes scanline { 0% { top: 4%; } 50% { top: 92%; } 100% { top: 4%; } }
+
+    /* Interactive row/card hover — the design system expresses these as
+       inline `style-hover` on the dc-runtime; here they are real CSS rules. */
+    .row-hover { transition: background 0.12s ease; }
+    .row-hover:hover { background: color-mix(in srgb, var(--color-accent) 6%, transparent); }
+    .card-hover { transition: background 0.12s ease; }
+    .card-hover:hover { background: color-mix(in srgb, var(--color-accent) 6%, transparent); }
+  </style>
+</head>
+<body>
+  <div id="app"></div>
+  <script src="app.js"></script>
+</body>
+</html>
