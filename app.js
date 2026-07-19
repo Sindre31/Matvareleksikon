@@ -134,17 +134,29 @@
   // Turn raw OCR text into candidate line items (name + price).
   function parseReceiptText(text) {
     var lines = String(text || '').split(/\r?\n/).map(function (s) { return s.trim(); }).filter(Boolean);
-    var priceRe = /(-?\d{1,4}[.,]\d{2})(?:\s*kr)?\s*[*A-Za-z]?\s*$/i;
-    var skipRe = /(sum|total|totalt|å\s*betale|betalt|kontant|bankkort|bankaxept|\bkort\b|visa|mastercard|beløp|\bmva\b|moms|avrund|veksel|tilbake|gebyr|rabatt|kvittering|org\.?\s*nr|kundekort|bonus|\bdato\b|\bkasse\b|antall|takk for)/i;
+    // Price = the last money token on the line (optionally trailed by a tax code letter/*).
+    var priceRe = /(-?\d{1,4}[.,]\d{2})\s*[*A-Za-z]?\s*$/;
+    // Norwegian MVA-rate column that sits between the name and the price (e.g. "… 15%  25,40").
+    var vatTailRe = /[\s.]*(?:0|11|12|15|25)\s*[%xX]?\s*$/;
+    // Summary / payment / footer / membership lines — never products.
+    var skipRe = /(sum\b|total|totalt|å\s*betale|\bbetal|kontant|\bbank\b|bankaxept|\bkort\b|visa|mastercard|beløp|\bmva\b|moms|grunnlag|avrund|veksel|tilbake|gebyr|rabatt|kvittering|foretaksreg|org\.?\s*nr|serienr|kvitt\b|opernr|\bkasse\b|\btrumf|\bkunde|medlem|saldo|pluss|bonus|\bvarer\b|terminal|\baid\b|contactless|autoris|authorization|godkjent|velkommen|antall|takk)/i;
+    // Weight / unit-price detail lines (e.g. "0,580kg x kr 49,90"): the item above already
+    // carries the line total, so these must not become separate items.
+    var detailRe = /(\d[.,]?\d*\s*(?:kg|hg|g|l|dl|stk)\s*[x×*]\s*kr|[x×*]\s*kr\b|kr\s*\/\s*(?:kg|l|stk)|pris\s*pr)/i;
     var items = [];
-    for (var i = 0; i < lines.length && items.length < 15; i++) {
+    for (var i = 0; i < lines.length && items.length < 40; i++) {
       var line = lines[i];
+      if (skipRe.test(line) || detailRe.test(line)) continue;
       var m = line.match(priceRe);
-      if (!m || skipRe.test(line)) continue;
+      if (!m) continue;
       var price = parseFloat(m[1].replace(',', '.'));
       if (!isFinite(price) || price <= 0 || price > 100000) continue;
-      var name = line.slice(0, m.index).replace(/[.\s]+$/, '').replace(/\s{2,}/g, ' ').trim();
-      name = name.replace(/^\d+\s*(x|stk\.?|kg)?\s*/i, '').trim();
+      var name = line.slice(0, m.index)
+        .replace(vatTailRe, '')                    // drop the trailing "15%" / "25" VAT column
+        .replace(/[.\s]+$/, '')
+        .replace(/^\d+\s*(?:x|stk\.?)\s+/i, '')    // drop a leading "2 x " / "3 stk " quantity
+        .replace(/\s{2,}/g, ' ')
+        .trim();
       if (name.replace(/[^a-zA-ZæøåÆØÅ]/g, '').length < 2) continue;
       items.push({ name: name, price: m[1].replace(',', '.') });
     }

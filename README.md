@@ -83,7 +83,11 @@ The scan flow runs **real OCR entirely in the browser** with
 CDN, Norwegian language model) — no backend, no API key, no per-scan cost.
 The photo is downscaled on a canvas, recognized, and the text is parsed into
 candidate `{ name, price }` line items (`parseReceiptText`), with the store
-auto-detected from the header (`detectStore`). Results are pre-filled into the
+auto-detected from the header (`detectStore`). The parser is tuned against
+real Norwegian grocery receipts: it strips the MVA-rate column that sits
+between the item name and price (`… 15%  25,40`), skips weight/unit sub-lines
+(`0,580kg x kr 49,90`), and drops summary/payment/membership rows
+(`Sum`, `BANK`, the MVA table, `Trumf …`). Results are pre-filled into the
 review step for the user to correct before saving. If OCR can't load or finds
 nothing, it degrades gracefully to manual entry. A server-side OCR (e.g. a
 cloud vision API in a Supabase Edge Function) would raise accuracy but adds a
