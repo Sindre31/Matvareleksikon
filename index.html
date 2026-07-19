@@ -5,6 +5,23 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Prisboka — Matvareleksikon med pristrender</title>
   <meta name="description" content="Matvareleksikon med fellesskapsregistrerte priser fra Rema 1000, Kiwi, Extra og Meny — og hvor prisen er på vei.">
+  <meta name="theme-color" content="#5980a6">
+  <link rel="icon" href="favicon.svg" type="image/svg+xml">
+
+  <!-- Social / Open Graph -->
+  <meta property="og:type" content="website">
+  <meta property="og:site_name" content="Prisboka">
+  <meta property="og:title" content="Prisboka — Matvareleksikon med pristrender">
+  <meta property="og:description" content="Hver pris er sett på en hylle og registrert av noen som handlet der. Søk opp en vare, se hva den koster hos Rema 1000, Kiwi, Extra og Meny — og hvor prisen er på vei.">
+  <meta property="og:url" content="https://prisboka-matvareleksikon.vercel.app/">
+  <meta property="og:image" content="https://prisboka-matvareleksikon.vercel.app/og.png">
+  <meta property="og:image:width" content="1200">
+  <meta property="og:image:height" content="630">
+  <meta name="twitter:card" content="summary_large_image">
+  <meta name="twitter:title" content="Prisboka — Matvareleksikon med pristrender">
+  <meta name="twitter:description" content="Fellesskapsregistrerte matvarepriser fra Rema 1000, Kiwi, Extra og Meny — og hvor prisen er på vei.">
+  <meta name="twitter:image" content="https://prisboka-matvareleksikon.vercel.app/og.png">
+
   <link rel="stylesheet" href="styles.css">
   <style>
     body { margin: 0; background: var(--color-bg); color: var(--color-text); font-family: var(--font-body); text-wrap: pretty; }
@@ -18,6 +35,12 @@
     .row-hover:hover { background: color-mix(in srgb, var(--color-accent) 6%, transparent); }
     .card-hover { transition: background 0.12s ease; }
     .card-hover:hover { background: color-mix(in srgb, var(--color-accent) 6%, transparent); }
+
+    /* Small screens: let the top bar wrap instead of overflowing. */
+    @media (max-width: 640px) {
+      .nav { flex-wrap: wrap; row-gap: 8px; }
+      .nav > span[style*="tnum"] { order: 3; flex-basis: 100%; }
+    }
   </style>
 </head>
 <body>

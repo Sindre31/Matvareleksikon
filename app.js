@@ -2,55 +2,58 @@
  * Prisboka — Matvareleksikon med pristrender
  * ------------------------------------------------------------------
  * Runnable, dependency-free implementation of the Claude Design prototype
- * `design/Matvareleksikon.dc.html`. The original ran on the `dc-runtime`
- * (React + an `x-dc` template interpreter). This file ports the same data
- * model, computations and interactions to plain JavaScript and renders the
- * three screens (home / product / scan) directly into #app, using the
- * "Industry" design system (styles.css) unchanged.
+ * `design/Matvareleksikon.dc.html`, backed by a live Supabase database.
  *
- * The state shape, STORES/PRODUCTS data, priceAt()/chartFor()/scanReceipt()
- * and the value derivations mirror the prototype's `Component` class 1:1, so
- * numbers and behaviour match the design.
+ *  - Prices, stores and products are read from Supabase (PostgREST) at boot.
+ *  - Scanned-receipt contributions are POSTed back and persist in the DB,
+ *    counting toward the community total.
+ *  - Screens are deep-linkable: #/ , #/produkt/:id , #/skann.
+ *
+ * The rendering and the price/trend computations mirror the prototype's
+ * `Component` class; only the data source changed from a synthetic formula
+ * to the seeded Supabase tables (which were seeded with that same formula,
+ * so the numbers match the original design).
  */
 (function () {
   "use strict";
 
-  // ── Static data (verbatim from the prototype) ────────────────────────────
-  var STORES = [
-    { name: 'Rema 1000', mul: 0.97, color: 'var(--color-accent-900)', dash: '', places: ['Rema 1000 Torshov, Oslo', 'Rema 1000 Lade, Trondheim', 'Rema 1000 Danmarksplass, Bergen'] },
-    { name: 'Kiwi', mul: 0.96, color: 'var(--color-accent-600)', dash: '', places: ['Kiwi Grünerløkka, Oslo', 'Kiwi Bryn, Oslo', 'Kiwi Solsiden, Trondheim'] },
-    { name: 'Extra', mul: 0.99, color: 'var(--color-accent-400)', dash: '6 4', places: ['Extra Storo, Oslo', 'Extra Lagunen, Bergen', 'Extra Byåsen, Trondheim'] },
-    { name: 'Meny', mul: 1.13, color: 'var(--color-text)', dash: '2 4', places: ['Meny Majorstuen, Oslo', 'Meny Bergen Storsenter', 'Meny Solsiden, Trondheim'] }
-  ];
+  // ── Supabase (public read + anon insert; publishable key is safe client-side) ─
+  var SUPABASE_URL = 'https://jiaxeedguivvhixychcg.supabase.co';
+  var SUPABASE_KEY = 'sb_publishable_trP_tgjyaPU-2eJ7n9JX4w_Q7kIvDPC';
+  function sb(path, opts) {
+    opts = opts || {};
+    opts.headers = Object.assign({ apikey: SUPABASE_KEY, Authorization: 'Bearer ' + SUPABASE_KEY }, opts.headers || {});
+    return fetch(SUPABASE_URL + '/rest/v1' + path, opts);
+  }
+
+  // ── Data (populated at boot) ─────────────────────────────────────────────
+  var STORES = [];       // [{ id, name, color, dash, places[] }] ordered by sort_order
+  var PRODUCTS = [];      // [{ id, name, unit, cat, regs, seed }]
+  var PRICES = {};        // PRICES[productId][storeIndex][monthIndex] = number
   var MONTHS = ['aug', 'sep', 'okt', 'nov', 'des', 'jan', 'feb', 'mar', 'apr', 'mai', 'jun', 'jul'];
-  var PRODUCTS = [
-    { id: 'melk', name: 'Lettmelk', unit: '1 l, 1,0 % fett', cat: 'Meieri', base: 24.9, trend: 0.09 },
-    { id: 'brod', name: 'Grovbrød', unit: '750 g, hel', cat: 'Bakevarer', base: 42.0, trend: 0.06 },
-    { id: 'egg', name: 'Egg', unit: '12 stk, frittgående', cat: 'Meieri', base: 54.9, trend: 0.14 },
-    { id: 'smor', name: 'Smør', unit: '500 g, meierismør', cat: 'Meieri', base: 66.0, trend: 0.07 },
-    { id: 'norvegia', name: 'Norvegia', unit: '1 kg, skorpefri', cat: 'Meieri', base: 139.0, trend: 0.05 },
-    { id: 'banan', name: 'Bananer', unit: 'per kg', cat: 'Frukt og grønt', base: 26.5, trend: -0.08 },
-    { id: 'tomat', name: 'Tomater', unit: 'per kg, klase', cat: 'Frukt og grønt', base: 44.9, trend: -0.12 },
-    { id: 'potet', name: 'Poteter', unit: '2,5 kg, mandel', cat: 'Frukt og grønt', base: 39.9, trend: 0.03 },
-    { id: 'kaffe', name: 'Kaffe, filtermalt', unit: '250 g', cat: 'Tørrvarer', base: 62.9, trend: 0.18 },
-    { id: 'pasta', name: 'Spagetti', unit: '500 g', cat: 'Tørrvarer', base: 18.9, trend: -0.04 },
-    { id: 'ris', name: 'Jasminris', unit: '1 kg', cat: 'Tørrvarer', base: 36.9, trend: 0.02 },
-    { id: 'havregryn', name: 'Havregryn', unit: '1 kg, lettkokte', cat: 'Tørrvarer', base: 23.9, trend: -0.03 },
-    { id: 'kjottdeig', name: 'Kjøttdeig', unit: '400 g, 14 % fett', cat: 'Kjøtt og fisk', base: 66.9, trend: 0.11 },
-    { id: 'laks', name: 'Laksefilet', unit: '4 × 125 g', cat: 'Kjøtt og fisk', base: 132.0, trend: 0.16 },
-    { id: 'kylling', name: 'Kyllingfilet', unit: '550 g', cat: 'Kjøtt og fisk', base: 109.0, trend: 0.04 },
-    { id: 'pizza', name: 'Frossenpizza', unit: '575 g, familie', cat: 'Frysevarer', base: 56.9, trend: -0.06 },
-    { id: 'cola', name: 'Cola', unit: '1,5 l, inkl. pant', cat: 'Drikke', base: 36.9, trend: 0.08 },
-    { id: 'appelsinjuice', name: 'Appelsinjuice', unit: '1 l, uten fruktkjøtt', cat: 'Drikke', base: 32.9, trend: 0.21 }
-  ];
-  PRODUCTS.forEach(function (p, i) { p.seed = i + 1; p.regs = 140 + ((i * 97) % 340); });
+
+  function buildData(stores, products, priceRows) {
+    STORES = stores.map(function (s) { return { id: s.id, name: s.name, color: s.color, dash: s.dash || '', places: s.places || [] }; });
+    var storeIndex = {};
+    STORES.forEach(function (s, i) { storeIndex[s.id] = i; });
+    PRODUCTS = products.map(function (p) { return { id: p.id, name: p.name, unit: p.unit, cat: p.category, regs: p.base_regs, seed: p.sort_order + 1 }; });
+    PRICES = {};
+    PRODUCTS.forEach(function (p) { PRICES[p.id] = STORES.map(function () { return new Array(12); }); });
+    priceRows.forEach(function (row) {
+      var si = storeIndex[row.store_id];
+      if (si == null || !PRICES[row.product_id]) return;
+      PRICES[row.product_id][si][row.month_index] = Number(row.price);
+    });
+  }
 
   // ── Component state ──────────────────────────────────────────────────────
   var state = {
+    phase: 'loading', errMsg: '',
     view: 'home', productId: null, query: '', cat: 'Alle',
     scanPhase: 'idle', scanPct: 0, scanStep: '', scanItems: [],
     scanStore: 'Kiwi', scanPlace: 'Kiwi Grünerløkka, Oslo',
-    doneCount: 0, doneMsgN: 0,
+    scanSubmitting: false, scanError: null,
+    bootTotal: 0, doneCount: 0, doneMsgN: 0,
     chartMonths: 12 // prototype prop `chartMonths` (enum 6|12, default 12)
   };
   var timers = [];
@@ -60,13 +63,8 @@
     render();
   }
 
-  // ── Computations (verbatim math) ─────────────────────────────────────────
-  function priceAt(p, si, m) {
-    var s = STORES[si];
-    var noise = 0.025 * Math.sin(m * 1.7 + p.seed * 2.3 + si) + 0.015 * Math.sin(m * 0.9 + si * 4 + p.seed);
-    var v = p.base * s.mul * (1 + p.trend * (m / 11)) * (1 + noise);
-    return Math.round(v * 10) / 10;
-  }
+  // ── Computations (mirroring the prototype; data now from the DB) ─────────
+  function priceAt(p, si, m) { return PRICES[p.id][si][m]; }
   function nf(v) { return 'kr ' + v.toFixed(2).replace('.', ','); }
   function fmtPct(v) { return (v > 0 ? '+' : '−') + Math.abs(v).toFixed(1).replace('.', ',') + ' %'; }
   function regDate(p, si) {
@@ -78,7 +76,7 @@
     var M = months, start = 12 - M;
     var pl = 46, pr = 14, pt = 14, pb = 24, W = 760, H = 300;
     var lo = Infinity, hi = -Infinity, si, m, v;
-    for (si = 0; si < 4; si++) for (m = start; m < 12; m++) { v = priceAt(p, si, m); lo = Math.min(lo, v); hi = Math.max(hi, v); }
+    for (si = 0; si < STORES.length; si++) for (m = start; m < 12; m++) { v = priceAt(p, si, m); lo = Math.min(lo, v); hi = Math.max(hi, v); }
     var pad = (hi - lo) * 0.12 || 2; lo -= pad; hi += pad;
     var x = function (mm) { return pl + ((mm - start) / (M - 1)) * (W - pl - pr); };
     var y = function (vv) { return pt + (1 - (vv - lo) / (hi - lo)) * (H - pt - pb); };
@@ -98,7 +96,7 @@
   }
   function scanReceipt() {
     timers.forEach(clearTimeout); timers = [];
-    setState({ scanPhase: 'scanning', scanPct: 0, scanStep: 'Retter opp bildet …' });
+    setState({ scanPhase: 'scanning', scanPct: 0, scanStep: 'Retter opp bildet …', scanError: null });
     var steps = [[30, 'Retter opp bildet …'], [62, 'Finner varelinjene …'], [88, 'Matcher mot leksikonet …'], [100, 'Ferdig']];
     steps.forEach(function (step, i) {
       timers.push(setTimeout(function () {
@@ -112,6 +110,21 @@
         }
       }, 500 + i * 650));
     });
+  }
+  function submitScan() {
+    if (state.scanSubmitting || !state.scanItems.length) return;
+    var storeObj = STORES.filter(function (x) { return x.name === state.scanStore; })[0];
+    var payload = state.scanItems.map(function (it) {
+      var raw = String(it.price == null ? '' : it.price).replace(',', '.').trim();
+      var price = raw === '' ? null : Number(raw);
+      return { item_name: it.name, price: (price == null || isNaN(price)) ? null : price, store_id: storeObj ? storeObj.id : null, place: state.scanPlace, product_id: null };
+    });
+    var n = state.scanItems.length;
+    setState({ scanSubmitting: true, scanError: null });
+    sb('/ml_registrations', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) })
+      .then(function (res) { if (!res.ok) throw new Error('HTTP ' + res.status); return res.text(); })
+      .then(function () { setState({ scanPhase: 'done', doneCount: state.doneCount + n, doneMsgN: n, scanSubmitting: false }); })
+      .catch(function () { setState({ scanSubmitting: false, scanError: 'Kunne ikke lagre prisene nå. Sjekk nettforbindelsen og prøv igjen.' }); });
   }
 
   // ── Tiny hyperscript with an SVG-aware namespace and inline-style strings ─
@@ -152,9 +165,32 @@
       h('line', { x1: '0', y1: '3', x2: String(w), y2: '3', stroke: color, 'stroke-width': w === 18 ? '3' : '2.5', 'stroke-dasharray': dash }));
   }
 
-  // ── Derived values, mirroring the prototype's renderVals() ───────────────
-  function open(id) { return function () { setState({ view: 'product', productId: id }); window.scrollTo(0, 0); }; }
-  function nav(view) { return function (e) { if (e && e.preventDefault) e.preventDefault(); setState({ view: view }); window.scrollTo(0, 0); }; }
+  // ── Routing (deep-linkable screens) ──────────────────────────────────────
+  function parseHash() {
+    var hn = (location.hash || '').replace(/^#/, '');
+    if (hn.indexOf('/produkt/') === 0) return { view: 'product', productId: decodeURIComponent(hn.slice('/produkt/'.length)) };
+    if (hn === '/skann') return { view: 'scan' };
+    return { view: 'home' };
+  }
+  function route() {
+    if (state.phase !== 'ready') { render(); return; }
+    var r = parseHash();
+    if (r.view === 'product') {
+      if (!PRODUCTS.some(function (p) { return p.id === r.productId; })) { location.hash = '#/'; return; }
+      state.view = 'product'; state.productId = r.productId;
+    } else if (r.view === 'scan') {
+      state.view = 'scan';
+    } else {
+      state.view = 'home';
+    }
+    render();
+  }
+  function go(hash) { if (location.hash === hash || (hash === '#/' && !location.hash)) route(); else location.hash = hash; }
+  function open(id) { return function () { go('#/produkt/' + id); window.scrollTo(0, 0); }; }
+  function nav(view) { return function (e) { if (e && e.preventDefault) e.preventDefault(); go(view === 'scan' ? '#/skann' : '#/'); window.scrollTo(0, 0); }; }
+
+  // ── Derived home values ──────────────────────────────────────────────────
+  function totalRegsText() { return (state.bootTotal + state.doneCount).toLocaleString('nb-NO').replace(/\s/g, ' '); }
 
   function homeVals() {
     var q = state.query.trim().toLowerCase();
@@ -163,19 +199,19 @@
       return (cat === 'Alle' || p.cat === cat) && (!q || (p.name + ' ' + p.cat + ' ' + p.unit).toLowerCase().indexOf(q) !== -1);
     }).map(function (p) {
       var prices = STORES.map(function (s, si) { return priceAt(p, si, 11); });
-      var avgNow = prices.reduce(function (a, b) { return a + b; }) / 4;
-      var avgPrev = STORES.map(function (s, si) { return priceAt(p, si, 10); }).reduce(function (a, b) { return a + b; }) / 4;
+      var avgNow = prices.reduce(function (a, b) { return a + b; }) / STORES.length;
+      var avgPrev = STORES.map(function (s, si) { return priceAt(p, si, 10); }).reduce(function (a, b) { return a + b; }) / STORES.length;
       return { name: p.name, cat: p.cat, unit: p.unit, regs: p.regs, from: 'fra ' + nf(Math.min.apply(null, prices)), pct: fmtPct((avgNow / avgPrev - 1) * 100), open: open(p.id) };
     });
     var changes = PRODUCTS.map(function (p) {
-      var now = STORES.map(function (s, si) { return priceAt(p, si, 11); }).reduce(function (a, b) { return a + b; }) / 4;
-      var prev = STORES.map(function (s, si) { return priceAt(p, si, 10); }).reduce(function (a, b) { return a + b; }) / 4;
+      var now = STORES.map(function (s, si) { return priceAt(p, si, 11); }).reduce(function (a, b) { return a + b; }) / STORES.length;
+      var prev = STORES.map(function (s, si) { return priceAt(p, si, 10); }).reduce(function (a, b) { return a + b; }) / STORES.length;
       return { p: p, pct: (now / prev - 1) * 100, now: now, prev: prev };
     }).sort(function (a, b) { return b.pct - a.pct; });
     var mkChange = function (c, i) { return { idx: '0' + (i + 1), name: c.p.name, unit: c.p.unit, fromTo: nf(c.prev) + ' → ' + nf(c.now), pct: fmtPct(c.pct), open: open(c.p.id) }; };
     var uniqueCats = ['Alle']; PRODUCTS.forEach(function (p) { if (uniqueCats.indexOf(p.cat) === -1) uniqueCats.push(p.cat); });
     return {
-      totalRegs: (PRODUCTS.reduce(function (a, p) { return a + p.regs; }, 0) + state.doneCount).toLocaleString('nb-NO').replace(/\s/g, ' '),
+      totalRegs: totalRegsText(),
       changesDisplay: q ? 'none' : 'block',
       filtered: filtered,
       changesUp: changes.slice(0, 4).map(mkChange),
@@ -197,13 +233,13 @@
   var RULE = 'height: 1px; border: 0; margin: 0 0 24px; background: var(--color-divider);';
   var NAME_STYLE = 'font-family: var(--font-heading); font-weight: 600; font-size: 18px; letter-spacing: 0.02em; text-transform: uppercase;';
 
-  function renderNav(v) {
+  function renderNav(totalText) {
     return h('nav', { cls: 'nav', 'data-screen-label': 'Topplinje', style: 'padding-inline: max(24px, calc((100% - 1160px) / 2 + 24px));' }, [
       h('span', { cls: 'nav-brand', onClick: nav('home'), style: 'cursor: pointer;', text: 'Prisboka' }),
-      h('a', { href: '#', onClick: nav('home'), text: 'Leksikon' }),
-      h('a', { href: '#', onClick: nav('scan'), text: 'Bidra med priser' }),
+      h('a', { href: '#/', onClick: nav('home'), text: 'Leksikon' }),
+      h('a', { href: '#/skann', onClick: nav('scan'), text: 'Bidra med priser' }),
       h('span', { style: 'flex: 1;' }),
-      h('span', { style: 'font-size: 13px; letter-spacing: 0.06em; text-transform: uppercase; color: ' + MUTED70 + "; font-feature-settings: 'tnum' 1;", text: v.totalRegs + ' priser · fellesskapsregistrert' }),
+      h('span', { style: 'font-size: 13px; letter-spacing: 0.06em; text-transform: uppercase; color: ' + MUTED70 + "; font-feature-settings: 'tnum' 1;", text: totalText + ' priser · fellesskapsregistrert' }),
       h('button', { type: 'button', cls: 'btn btn-primary', onClick: nav('scan'), text: 'Skann kvittering' })
     ]);
   }
@@ -231,7 +267,7 @@
     var hero = h('div', { style: 'padding: 72px 0 48px;' }, [
       h('h1', { style: 'margin: -0.052em 0 0; font-size: clamp(44px, 6vw, 76px); line-height: 1.04; letter-spacing: 0.01em; text-transform: uppercase;' }, ['Matvareleksikonet', h('br'), 'med prisene i klartekst']),
       h('p', { style: 'margin: 20px 0 0; max-width: 60ch; font-size: 16px; line-height: 24px;' }, [
-        'Hver pris i boka er sett på en hylle og registrert av noen som handlet der. Søk opp en vare, se hva den koster hos Rema 1000, Kiwi, Extra og Meny — og hvor prisen er på vei.'
+        'Hver pris i boka er sett på en hylle og registrert av noen som handlet der. Søk opp en vare, se hva den koster hos Rema 1000, Kiwi, Extra og Meny — og hvor prisen er på vei.'
       ]),
       h('div', { style: 'display: flex; gap: 10px; margin-top: 28px; max-width: 640px;' }, [
         h('input', {
@@ -276,7 +312,7 @@
       chips, grid,
       v.noHits ? h('p', { style: 'font-size: 15px; color: ' + MUTED70 + ';' }, [
         'Ingen treff på «' + v.query + '» i leksikonet ennå. Har du sett varen i butikk? ',
-        h('a', { href: '#', onClick: nav('scan'), text: 'Skann kvitteringen' }),
+        h('a', { href: '#/skann', onClick: nav('scan'), text: 'Skann kvitteringen' }),
         ' og legg den til.'
       ]) : null
     ]);
@@ -286,7 +322,7 @@
 
   function renderProduct() {
     var p = PRODUCTS.filter(function (x) { return x.id === state.productId; })[0];
-    if (!p) { setState({ view: 'home' }); return h('div'); }
+    if (!p) { go('#/'); return h('div'); }
     var months = state.chartMonths;
     var prices = STORES.map(function (s, si) { return priceAt(p, si, 11); });
     var minP = Math.min.apply(null, prices);
@@ -299,7 +335,7 @@
     var rangeLabel = 'siste ' + months + ' måneder';
 
     var head = h('div', { style: 'padding: 40px 0 24px;' }, [
-      h('a', { href: '#', onClick: nav('home'), style: 'font-size: 13px; letter-spacing: 0.08em; text-transform: uppercase; font-weight: 600;', text: '← Tilbake til leksikonet' }),
+      h('a', { href: '#/', onClick: nav('home'), style: 'font-size: 13px; letter-spacing: 0.08em; text-transform: uppercase; font-weight: 600;', text: '← Tilbake til leksikonet' }),
       h('div', { style: 'display: flex; flex-wrap: wrap; align-items: baseline; gap: 16px; margin-top: 20px;' }, [
         h('h1', { style: 'margin: -0.052em 0 0; font-size: clamp(36px, 5vw, 60px); line-height: 1.04; letter-spacing: 0.01em; text-transform: uppercase;', text: prod.name }),
         h('span', { cls: 'tag tag-accent', text: prod.cat }),
@@ -329,7 +365,10 @@
     var tableBlock = h('div', { style: 'padding-bottom: 40px;' }, [
       h('span', { style: KICKER, text: '01 · Pris per butikk' }),
       h('hr', { style: RULE }),
-      h('div', { cls: 'blueprint', style: 'padding: 0;' }, corners().concat([tableHeader]).concat(tableRows))
+      // Horizontal scroll wrapper keeps the fixed columns intact on small screens.
+      h('div', { style: 'overflow-x: auto; -webkit-overflow-scrolling: touch;' }, [
+        h('div', { cls: 'blueprint', style: 'padding: 0; min-width: 560px;' }, corners().concat([tableHeader]).concat(tableRows))
+      ])
     ]);
 
     var legendEls = legend.map(function (l) {
@@ -415,8 +454,8 @@
           h('select', { cls: 'input', 'data-focus-id': 'scan-store', style: 'min-height: 38px; min-width: 180px;', value: state.scanStore, onChange: function (e) {
             var s = STORES.filter(function (x) { return x.name === e.target.value; })[0];
             setState({ scanStore: e.target.value, scanPlace: s ? s.places[0] : state.scanPlace });
-          } }, ['Rema 1000', 'Kiwi', 'Extra', 'Meny'].map(function (nm) {
-            return h('option', { value: nm, selected: nm === state.scanStore ? 'selected' : false, text: nm });
+          } }, STORES.map(function (s) {
+            return h('option', { value: s.name, selected: s.name === state.scanStore ? 'selected' : false, text: s.name });
           }))
         ]),
         h('label', { style: 'display: flex; flex-direction: column; gap: 6px; font-size: 12px; letter-spacing: 0.08em; text-transform: uppercase; font-weight: 600;' }, [
@@ -438,11 +477,10 @@
           }, text: '✕' })
         ]);
       }));
-      var actions = h('div', { style: 'display: flex; gap: 10px; align-items: center;' }, [
-        h('button', { type: 'button', cls: 'btn btn-primary', onClick: function () {
-          setState({ scanPhase: 'done', doneCount: state.doneCount + state.scanItems.length, doneMsgN: state.scanItems.length });
-        }, text: 'Legg til ' + state.scanItems.length + ' priser i databasen' }),
-        h('button', { type: 'button', cls: 'btn btn-ghost', onClick: function () { setState({ scanPhase: 'idle', scanItems: [] }); }, text: 'Forkast' })
+      var actions = h('div', { style: 'display: flex; gap: 10px; align-items: center; flex-wrap: wrap;' }, [
+        h('button', { type: 'button', cls: 'btn btn-primary', onClick: submitScan, disabled: state.scanSubmitting ? 'disabled' : false, text: state.scanSubmitting ? 'Lagrer …' : 'Legg til ' + state.scanItems.length + ' priser i databasen' }),
+        h('button', { type: 'button', cls: 'btn btn-ghost', onClick: function () { setState({ scanPhase: 'idle', scanItems: [] }); }, text: 'Forkast' }),
+        state.scanError ? h('span', { style: 'font-size: 13px; color: var(--color-accent-800);', text: state.scanError }) : null
       ]);
       body = h('div', { style: 'max-width: 820px;' }, [
         h('span', { style: KICKER, text: 'Kontroller varelinjene' }),
@@ -464,6 +502,31 @@
     return h('section', { 'data-screen-label': 'Skann kvittering' }, [head, body]);
   }
 
+  function centeredCard(children) {
+    return h('div', { style: 'max-width: 1160px; margin: 0 auto; padding: 96px 24px;' }, [
+      h('div', { cls: 'blueprint', style: 'max-width: 520px; padding: 28px;' }, corners().concat(children))
+    ]);
+  }
+  function loadingScreen() {
+    var frag = document.createDocumentFragment();
+    frag.appendChild(renderNav('…'));
+    frag.appendChild(centeredCard([
+      h('span', { style: 'font-family: var(--font-heading); font-weight: 600; font-size: 22px; letter-spacing: 0.02em; text-transform: uppercase;', text: 'Laster leksikonet …' }),
+      h('p', { style: 'margin: 10px 0 0; font-size: 15px; color: ' + MUTED70 + ';', text: 'Henter fellesskapets priser.' })
+    ]));
+    return frag;
+  }
+  function errorScreen() {
+    var frag = document.createDocumentFragment();
+    frag.appendChild(renderNav('—'));
+    frag.appendChild(centeredCard([
+      h('span', { style: 'font-family: var(--font-heading); font-weight: 600; font-size: 22px; letter-spacing: 0.02em; text-transform: uppercase;', text: 'Kunne ikke laste leksikonet' }),
+      h('p', { style: 'margin: 10px 0 16px; font-size: 15px; color: ' + MUTED70 + ';', text: 'Vi fikk ikke kontakt med databasen. Sjekk nettforbindelsen og prøv igjen.' }),
+      h('button', { type: 'button', cls: 'btn btn-primary', onClick: function () { setState({ phase: 'loading' }); boot(); }, text: 'Prøv igjen' })
+    ]));
+    return frag;
+  }
+
   // ── Render + focus preservation across full re-render ────────────────────
   function captureFocus() {
     var a = document.activeElement;
@@ -483,18 +546,40 @@
   var root = document.getElementById('app');
   function render() {
     var focus = captureFocus();
+    root.textContent = '';
+    if (state.phase === 'loading') { root.appendChild(loadingScreen()); return; }
+    if (state.phase === 'error') { root.appendChild(errorScreen()); return; }
     var v = homeVals();
     var frag = document.createDocumentFragment();
-    frag.appendChild(renderNav(v));
+    frag.appendChild(renderNav(v.totalRegs));
     var container = h('div', { style: 'max-width: 1160px; margin: 0 auto; padding: 0 24px 96px;' });
     if (state.view === 'home') container.appendChild(renderHome(v));
     else if (state.view === 'product') container.appendChild(renderProduct());
     else if (state.view === 'scan') container.appendChild(renderScan());
     frag.appendChild(container);
-    root.textContent = '';
     root.appendChild(frag);
     restoreFocus(focus);
   }
 
-  render();
+  // ── Boot ─────────────────────────────────────────────────────────────────
+  function boot() {
+    Promise.all([
+      sb('/ml_stores?select=*&order=sort_order').then(function (r) { if (!r.ok) throw new Error('stores ' + r.status); return r.json(); }),
+      sb('/ml_products?select=*&order=sort_order').then(function (r) { if (!r.ok) throw new Error('products ' + r.status); return r.json(); }),
+      sb('/ml_monthly_prices?select=product_id,store_id,month_index,price&limit=2000').then(function (r) { if (!r.ok) throw new Error('prices ' + r.status); return r.json(); }),
+      sb('/rpc/ml_total_regs', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' }).then(function (r) { return r.ok ? r.json() : 0; })
+    ]).then(function (out) {
+      buildData(out[0], out[1], out[2]);
+      state.bootTotal = Number(out[3]) || 0;
+      state.phase = 'ready';
+      route();
+    }).catch(function (e) {
+      state.phase = 'error'; state.errMsg = (e && e.message) || String(e);
+      render();
+    });
+  }
+
+  window.addEventListener('hashchange', route);
+  render();  // initial loading screen
+  boot();
 })();

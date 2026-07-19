@@ -1,0 +1,14 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">
+  <rect width="32" height="32" fill="#f2f2f3"/>
+  <!-- blueprint frame -->
+  <rect x="4.5" y="4.5" width="23" height="23" fill="none" stroke="#5980a6" stroke-width="1.5"/>
+  <!-- registration marks -->
+  <g stroke="#1d2d3d" stroke-width="1">
+    <path d="M4.5 2v5M2 4.5h5"/>
+    <path d="M27.5 2v5M25 4.5h5"/>
+    <path d="M4.5 25v5M2 27.5h5"/>
+    <path d="M27.5 25v5M25 27.5h5"/>
+  </g>
+  <!-- P for Prisboka -->
+  <text x="16" y="23" text-anchor="middle" font-family="'Barlow Condensed','Arial Narrow',sans-serif" font-weight="700" font-size="19" fill="#1d2d3d">P</text>
+</svg>
