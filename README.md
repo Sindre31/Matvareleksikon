@@ -41,9 +41,11 @@ python3 -m http.server 8000
 - **Produktside** `#/produkt/:id` — per-store prices with the cheapest
   flagged, and a price-trend line chart per store with a 6/12-month toggle
   (the prototype's `chartMonths` option).
-- **Skann kvittering** `#/skann` — upload or (simulated) camera → reading
-  progress → editable line items → submit, which **persists** the prices to
-  Supabase and counts them toward the community total.
+- **Skann kvittering** `#/skann` — upload a photo (or use the phone camera)
+  → **real OCR runs in the browser** (Tesseract.js, Norwegian model) →
+  the parsed line items and detected store are pre-filled for review →
+  submit **persists** the prices to Supabase and counts them toward the
+  community total.
 
 ## Backend (Supabase)
 
@@ -74,9 +76,18 @@ small SVG-aware hyperscript with full re-render on state change and
 focus/selection preservation for text inputs. Screens are hash-routed for
 shareable URLs and working back/forward.
 
-Note: the receipt **OCR is simulated** (the parsed line items are canned),
-but the contribution itself is real — it writes to `ml_registrations`.
-Wiring a real OCR provider is the natural next step.
+### Receipt OCR
+
+The scan flow runs **real OCR entirely in the browser** with
+[Tesseract.js](https://tesseract.projectnaptha.com/) (loaded on demand from a
+CDN, Norwegian language model) — no backend, no API key, no per-scan cost.
+The photo is downscaled on a canvas, recognized, and the text is parsed into
+candidate `{ name, price }` line items (`parseReceiptText`), with the store
+auto-detected from the header (`detectStore`). Results are pre-filled into the
+review step for the user to correct before saving. If OCR can't load or finds
+nothing, it degrades gracefully to manual entry. A server-side OCR (e.g. a
+cloud vision API in a Supabase Edge Function) would raise accuracy but adds a
+key and cost; the client-side path keeps the app self-contained.
 
 ## Deployment
 

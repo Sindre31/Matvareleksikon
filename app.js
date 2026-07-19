@@ -52,7 +52,7 @@
     view: 'home', productId: null, query: '', cat: 'Alle',
     scanPhase: 'idle', scanPct: 0, scanStep: '', scanItems: [],
     scanStore: 'Kiwi', scanPlace: 'Kiwi Grünerløkka, Oslo',
-    scanSubmitting: false, scanError: null,
+    scanSubmitting: false, scanError: null, scanImageUrl: null, scanNote: null,
     bootTotal: 0, doneCount: 0, doneMsgN: 0,
     chartMonths: 12 // prototype prop `chartMonths` (enum 6|12, default 12)
   };
@@ -94,22 +94,120 @@
     for (var mt = start; mt < 12; mt++) monthTicks.push({ x: x(mt).toFixed(1), label: MONTHS[mt] + (mt < 5 ? ' 25' : ' 26') });
     return { chartLines: chartLines, gridLines: gridLines, monthTicks: monthTicks };
   }
-  function scanReceipt() {
-    timers.forEach(clearTimeout); timers = [];
-    setState({ scanPhase: 'scanning', scanPct: 0, scanStep: 'Retter opp bildet …', scanError: null });
-    var steps = [[30, 'Retter opp bildet …'], [62, 'Finner varelinjene …'], [88, 'Matcher mot leksikonet …'], [100, 'Ferdig']];
-    steps.forEach(function (step, i) {
-      timers.push(setTimeout(function () {
-        if (step[0] === 100) {
-          setState({ scanPhase: 'review', scanItems: [
-            { name: 'Lettmelk 1 l', price: '23.90' }, { name: 'Grovbrød 750 g', price: '44.90' },
-            { name: 'Bananer 1,04 kg', price: '27.60' }, { name: 'Egg 12 stk', price: '56.90' },
-            { name: 'Kaffe filtermalt 250 g', price: '69.90' } ] });
-        } else {
-          setState({ scanPct: step[0], scanStep: step[1] });
-        }
-      }, 500 + i * 650));
+  // ── Real OCR: Tesseract.js in the browser (no backend, no API key) ───────
+  var TESSERACT_SRC = 'https://cdn.jsdelivr.net/npm/tesseract.js@5.1.1/dist/tesseract.min.js';
+  var tesseractPromise = null;
+  function loadTesseract() {
+    if (window.Tesseract) return Promise.resolve(window.Tesseract);
+    if (tesseractPromise) return tesseractPromise;
+    tesseractPromise = new Promise(function (resolve, reject) {
+      var s = document.createElement('script');
+      s.src = TESSERACT_SRC; s.async = true;
+      s.onload = function () { window.Tesseract ? resolve(window.Tesseract) : reject(new Error('Tesseract lastet ikke')); };
+      s.onerror = function () { reject(new Error('Kunne ikke laste tekstgjenkjenning')); };
+      document.head.appendChild(s);
     });
+    return tesseractPromise;
+  }
+
+  // Downscale large photos before OCR — faster, and usually cleaner text.
+  function preprocessImage(file) {
+    return new Promise(function (resolve) {
+      if (!/^image\//.test(file.type)) { resolve(file); return; }
+      var url = URL.createObjectURL(file);
+      var img = new Image();
+      img.onload = function () {
+        var max = 1600, w = img.naturalWidth, h = img.naturalHeight;
+        if (Math.max(w, h) <= max) { URL.revokeObjectURL(url); resolve(file); return; }
+        var scale = max / Math.max(w, h);
+        var c = document.createElement('canvas');
+        c.width = Math.round(w * scale); c.height = Math.round(h * scale);
+        c.getContext('2d').drawImage(img, 0, 0, c.width, c.height);
+        URL.revokeObjectURL(url);
+        c.toBlob(function (blob) { resolve(blob || file); }, 'image/png');
+      };
+      img.onerror = function () { URL.revokeObjectURL(url); resolve(file); };
+      img.src = url;
+    });
+  }
+
+  // Turn raw OCR text into candidate line items (name + price).
+  function parseReceiptText(text) {
+    var lines = String(text || '').split(/\r?\n/).map(function (s) { return s.trim(); }).filter(Boolean);
+    var priceRe = /(-?\d{1,4}[.,]\d{2})(?:\s*kr)?\s*[*A-Za-z]?\s*$/i;
+    var skipRe = /(sum|total|totalt|å\s*betale|betalt|kontant|bankkort|bankaxept|\bkort\b|visa|mastercard|beløp|\bmva\b|moms|avrund|veksel|tilbake|gebyr|rabatt|kvittering|org\.?\s*nr|kundekort|bonus|\bdato\b|\bkasse\b|antall|takk for)/i;
+    var items = [];
+    for (var i = 0; i < lines.length && items.length < 15; i++) {
+      var line = lines[i];
+      var m = line.match(priceRe);
+      if (!m || skipRe.test(line)) continue;
+      var price = parseFloat(m[1].replace(',', '.'));
+      if (!isFinite(price) || price <= 0 || price > 100000) continue;
+      var name = line.slice(0, m.index).replace(/[.\s]+$/, '').replace(/\s{2,}/g, ' ').trim();
+      name = name.replace(/^\d+\s*(x|stk\.?|kg)?\s*/i, '').trim();
+      if (name.replace(/[^a-zA-ZæøåÆØÅ]/g, '').length < 2) continue;
+      items.push({ name: name, price: m[1].replace(',', '.') });
+    }
+    return items;
+  }
+  function detectStore(text) {
+    var up = String(text || '').toUpperCase();
+    if (up.indexOf('REMA') !== -1) return 'Rema 1000';
+    if (up.indexOf('KIWI') !== -1) return 'Kiwi';
+    if (up.indexOf('EXTRA') !== -1) return 'Extra';
+    if (up.indexOf('MENY') !== -1) return 'Meny';
+    return null;
+  }
+
+  var OCR_STEPS = {
+    'loading tesseract core': 'Laster tekstgjenkjenning …',
+    'initializing tesseract': 'Starter tekstgjenkjenning …',
+    'loading language traineddata': 'Laster norsk språkmodell …',
+    'initializing api': 'Klargjør …',
+    'recognizing text': 'Leser varelinjene …'
+  };
+
+  function onScanFile(file) {
+    if (!file) return;
+    if (state.scanImageUrl) URL.revokeObjectURL(state.scanImageUrl);
+    var previewUrl = /^image\//.test(file.type) ? URL.createObjectURL(file) : null;
+    setState({ scanPhase: 'scanning', scanPct: 0, scanStep: 'Laster tekstgjenkjenning …', scanError: null, scanNote: null, scanImageUrl: previewUrl });
+    runOcr(file);
+  }
+
+  function runOcr(file) {
+    var worker = null;
+    loadTesseract()
+      .then(function (T) { return preprocessImage(file).then(function (img) { return { T: T, img: img }; }); })
+      .then(function (ctx) {
+        return ctx.T.createWorker('nor', 1, {
+          logger: function (m) {
+            if (!m || m.status == null) return;
+            var step = OCR_STEPS[m.status] || state.scanStep;
+            var pct = Math.max(0, Math.min(100, Math.round((m.progress || 0) * 100)));
+            setState({ scanStep: step, scanPct: pct });
+          }
+        }).then(function (w) { worker = w; return w.recognize(ctx.img); });
+      })
+      .then(function (res) {
+        var text = (res && res.data && res.data.text) || '';
+        var items = parseReceiptText(text);
+        var store = detectStore(text);
+        var patch = { scanPhase: 'review', scanPct: 100 };
+        if (store) { patch.scanStore = store; var s = STORES.filter(function (x) { return x.name === store; })[0]; if (s) patch.scanPlace = s.places[0]; }
+        if (items.length) { patch.scanItems = items; patch.scanNote = 'Fant ' + items.length + ' varelinjer' + (store ? ' · gjenkjente butikk: ' + store : '') + '. Kontroller dem før du lagrer.'; }
+        else { patch.scanItems = [{ name: '', price: '' }]; patch.scanNote = 'Fant ingen varelinjer automatisk — skriv dem inn manuelt, eller prøv et skarpere bilde.'; }
+        setState(patch);
+      })
+      .catch(function () {
+        setState({ scanPhase: 'review', scanItems: [{ name: '', price: '' }], scanNote: 'Kunne ikke lese bildet automatisk — skriv inn varelinjene manuelt.', scanError: null });
+      })
+      .then(function () { if (worker && worker.terminate) worker.terminate(); });
+  }
+  function addScanRow() { setState({ scanItems: state.scanItems.concat([{ name: '', price: '' }]) }); }
+  function resetScan() {
+    if (state.scanImageUrl) URL.revokeObjectURL(state.scanImageUrl);
+    setState({ scanPhase: 'idle', scanItems: [], scanImageUrl: null, scanNote: null, scanError: null });
   }
   function submitScan() {
     if (state.scanSubmitting || !state.scanItems.length) return;
@@ -414,37 +512,32 @@
 
     var body;
     if (state.scanPhase === 'idle') {
-      var fileInput = h('input', { type: 'file', accept: 'image/*,.pdf', style: 'display: none;', onChange: function () { scanReceipt(); } });
+      var uploadInput = h('input', { type: 'file', accept: 'image/*', style: 'display: none;', onChange: function (e) { onScanFile(e.target.files && e.target.files[0]); } });
+      var cameraInput = h('input', { type: 'file', accept: 'image/*', capture: 'environment', style: 'display: none;', onChange: function (e) { onScanFile(e.target.files && e.target.files[0]); } });
       var uploadCard = h('div', { cls: 'blueprint', style: 'padding: 28px; display: flex; flex-direction: column; gap: 12px;' }, corners().concat([
         h('span', { style: 'font-family: var(--font-heading); font-weight: 600; font-size: 24px; letter-spacing: 0.02em; text-transform: uppercase;', text: 'Last opp bilde' }),
-        h('p', { style: 'margin: 0; font-size: 15px; line-height: 22px; color: ' + MUTED78 + ';', text: 'Velg et foto av kvitteringen fra enheten din. JPG, PNG eller PDF.' }),
-        h('label', { cls: 'btn btn-primary', style: 'align-self: flex-start; cursor: pointer; margin-top: 8px;' }, ['Velg fil', fileInput])
+        h('p', { style: 'margin: 0; font-size: 15px; line-height: 22px; color: ' + MUTED78 + ';', text: 'Velg et foto av kvitteringen fra enheten din. Vi leser varelinjene med tekstgjenkjenning direkte i nettleseren.' }),
+        h('label', { cls: 'btn btn-primary', style: 'align-self: flex-start; cursor: pointer; margin-top: 8px;' }, ['Velg bilde', uploadInput])
       ]));
       var cameraCard = h('div', { cls: 'blueprint', style: 'padding: 28px; display: flex; flex-direction: column; gap: 12px;' }, corners().concat([
         h('span', { style: 'font-family: var(--font-heading); font-weight: 600; font-size: 24px; letter-spacing: 0.02em; text-transform: uppercase;', text: 'Bruk kameraet' }),
-        h('p', { style: 'margin: 0; font-size: 15px; line-height: 22px; color: ' + MUTED78 + ';', text: 'Ta bilde av kvitteringen direkte. Hold den flatt og i godt lys.' }),
-        h('button', { type: 'button', cls: 'btn btn-ghost', onClick: function () { setState({ scanPhase: 'camera' }); }, style: 'align-self: flex-start; margin-top: 8px;', text: 'Åpne kamera' })
+        h('p', { style: 'margin: 0; font-size: 15px; line-height: 22px; color: ' + MUTED78 + ';', text: 'Ta bilde av kvitteringen direkte på mobil. Hold den flatt og i godt lys.' }),
+        h('label', { cls: 'btn btn-ghost', style: 'align-self: flex-start; cursor: pointer; margin-top: 8px;' }, ['Åpne kamera', cameraInput])
       ]));
       body = h('div', { style: 'display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 40px; max-width: 820px;' }, [uploadCard, cameraCard]);
-    } else if (state.scanPhase === 'camera') {
-      body = h('div', { cls: 'blueprint', style: 'max-width: 520px; padding: 24px;' }, corners().concat([
-        h('div', { style: 'position: relative; aspect-ratio: 3 / 4; background: var(--color-accent-900); display: flex; align-items: center; justify-content: center; overflow: hidden;' }, [
-          h('div', { style: 'position: absolute; inset: 16px; border: 1px dashed color-mix(in srgb, var(--color-bg) 60%, transparent);' }),
-          h('span', { style: 'font-family: var(--font-heading); font-weight: 600; font-size: 20px; letter-spacing: 0.08em; text-transform: uppercase; color: var(--color-bg); opacity: 0.75;', text: 'Søker — hold kvitteringen i ro' }),
-          h('div', { style: 'position: absolute; left: 16px; right: 16px; height: 2px; background: color-mix(in srgb, var(--color-bg) 80%, transparent); animation: scanline 2.6s ease-in-out infinite;' })
-        ]),
-        h('div', { style: 'display: flex; gap: 10px; margin-top: 16px;' }, [
-          h('button', { type: 'button', cls: 'btn btn-primary', onClick: function () { scanReceipt(); }, text: 'Ta bilde' }),
-          h('button', { type: 'button', cls: 'btn btn-ghost', onClick: function () { setState({ scanPhase: 'idle', scanItems: [] }); }, text: 'Avbryt' })
-        ]),
-        h('p', { style: 'margin: 12px 0 0; font-size: 13px; color: ' + MUTED60 + ';', text: 'Kameraet er simulert i denne prototypen.' })
-      ]));
     } else if (state.scanPhase === 'scanning') {
-      body = h('div', { cls: 'blueprint', style: 'max-width: 520px; padding: 28px;' }, corners().concat([
+      var preview = state.scanImageUrl
+        ? h('div', { style: 'position: relative; aspect-ratio: 3 / 4; max-height: 320px; background: var(--color-accent-900); overflow: hidden; margin-bottom: 16px;' }, [
+            h('img', { src: state.scanImageUrl, alt: 'Kvittering under lesing', style: 'width: 100%; height: 100%; object-fit: contain; opacity: 0.9;' }),
+            h('div', { style: 'position: absolute; left: 0; right: 0; top: 4%; height: 2px; background: color-mix(in srgb, var(--color-bg) 85%, transparent); box-shadow: 0 0 8px var(--color-bg); animation: scanline 2.6s ease-in-out infinite;' })
+          ])
+        : null;
+      body = h('div', { cls: 'blueprint', style: 'max-width: 520px; padding: 24px;' }, corners().concat([
+        preview,
         h('span', { style: 'font-family: var(--font-heading); font-weight: 600; font-size: 22px; letter-spacing: 0.02em; text-transform: uppercase;', text: 'Leser kvitteringen …' }),
-        h('p', { style: 'margin: 10px 0 16px; font-size: 15px; color: ' + MUTED78 + ';', text: state.scanStep }),
+        h('p', { style: 'margin: 10px 0 16px; font-size: 15px; color: ' + MUTED78 + ';', text: state.scanStep + (state.scanPct ? ' (' + state.scanPct + ' %)' : '') }),
         h('div', { style: 'height: 4px; background: var(--color-accent-200);' }, [
-          h('div', { style: 'height: 100%; background: var(--color-accent); width: ' + state.scanPct + '%;' })
+          h('div', { style: 'height: 100%; background: var(--color-accent); width: ' + state.scanPct + '%; transition: width 0.2s ease;' })
         ])
       ]));
     } else if (state.scanPhase === 'review') {
@@ -477,15 +570,17 @@
           }, text: '✕' })
         ]);
       }));
+      var addRowBtn = h('button', { type: 'button', cls: 'btn btn-ghost', onClick: addScanRow, style: 'align-self: flex-start;', text: '+ Legg til varelinje' });
       var actions = h('div', { style: 'display: flex; gap: 10px; align-items: center; flex-wrap: wrap;' }, [
         h('button', { type: 'button', cls: 'btn btn-primary', onClick: submitScan, disabled: state.scanSubmitting ? 'disabled' : false, text: state.scanSubmitting ? 'Lagrer …' : 'Legg til ' + state.scanItems.length + ' priser i databasen' }),
-        h('button', { type: 'button', cls: 'btn btn-ghost', onClick: function () { setState({ scanPhase: 'idle', scanItems: [] }); }, text: 'Forkast' }),
+        h('button', { type: 'button', cls: 'btn btn-ghost', onClick: resetScan, text: 'Forkast' }),
         state.scanError ? h('span', { style: 'font-size: 13px; color: var(--color-accent-800);', text: state.scanError }) : null
       ]);
       body = h('div', { style: 'max-width: 820px;' }, [
         h('span', { style: KICKER, text: 'Kontroller varelinjene' }),
         h('hr', { style: RULE }),
-        h('div', { cls: 'blueprint', style: 'padding: 24px; display: flex; flex-direction: column; gap: 16px;' }, corners().concat([controls, rows, actions]))
+        state.scanNote ? h('p', { style: 'margin: 0 0 16px; font-size: 14px; line-height: 20px; color: ' + MUTED70 + ';', text: state.scanNote }) : null,
+        h('div', { cls: 'blueprint', style: 'padding: 24px; display: flex; flex-direction: column; gap: 16px;' }, corners().concat([controls, rows, addRowBtn, actions]))
       ]);
     } else if (state.scanPhase === 'done') {
       var doneMsg = (state.doneMsgN || state.scanItems.length) + ' priser registrert ved ' + state.scanPlace + '.';
@@ -494,7 +589,7 @@
         h('p', { style: 'margin: 12px 0 0; font-size: 15px; line-height: 22px;', text: doneMsg + ' Prisene er ført inn i leksikonet og teller med i månedens statistikk.' }),
         h('div', { style: 'display: flex; gap: 10px; margin-top: 20px;' }, [
           h('button', { type: 'button', cls: 'btn btn-primary', onClick: nav('home'), text: 'Til leksikonet' }),
-          h('button', { type: 'button', cls: 'btn btn-ghost', onClick: function () { setState({ scanPhase: 'idle', scanItems: [] }); }, text: 'Skann en ny kvittering' })
+          h('button', { type: 'button', cls: 'btn btn-ghost', onClick: resetScan, text: 'Skann en ny kvittering' })
         ])
       ]));
     }
@@ -578,6 +673,9 @@
       render();
     });
   }
+
+  // Exposed for tests (pure helpers; no side effects).
+  window.__ml = { parseReceiptText: parseReceiptText, detectStore: detectStore };
 
   window.addEventListener('hashchange', route);
   render();  // initial loading screen
