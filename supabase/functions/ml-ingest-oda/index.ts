@@ -98,9 +98,39 @@ Deno.serve(async (_req: Request) => {
     if (res.ok) historyInserted += chunk.length; else console.error("history failed", res.status, await res.text());
   }
 
-  return json({ productsFound: rows.length, inserted, historyInserted });
+  const backfillInserted = await backfillPreviousWeek(SB_URL, sbHeaders, historyRows, today);
+
+  return json({ productsFound: rows.length, inserted, historyInserted, backfillInserted });
 });
 
 function json(body: unknown, status = 200) {
   return new Response(JSON.stringify(body), { status, headers: { "Content-Type": "application/json" } });
+}
+// Back-fill: when a product is on offer (has a real before-price), record that
+// before-price as *last week's* price point (a plain, non-offer observation) so
+// the history chart shows the drop even when we only have this week's snapshot.
+// Uses resolution=ignore-duplicates so a real measurement already recorded for
+// that week is never overwritten.
+async function backfillPreviousWeek(
+  SB_URL: string,
+  sbHeaders: Record<string, string>,
+  historyRows: any[],
+  today: string,
+): Promise<number> {
+  const lastWeek = new Date(new Date(today).getTime() - 7 * 864e5).toISOString().slice(0, 10);
+  const rows = historyRows
+    .filter((r) => r.pre_price != null && Number(r.pre_price) > Number(r.price))
+    .map((r) => ({
+      group_key: r.group_key, store_id: r.store_id, product_name: r.product_name, image_url: r.image_url,
+      price: r.pre_price, pre_price: null, is_offer: false, observed_at: lastWeek,
+    }));
+  let inserted = 0;
+  for (let i = 0; i < rows.length; i += 500) {
+    const chunk = rows.slice(i, i + 500);
+    const res = await fetch(`${SB_URL}/rest/v1/ml_price_history?on_conflict=group_key,store_id,observed_at`, {
+      method: "POST", headers: { ...sbHeaders, Prefer: "resolution=ignore-duplicates,return=minimal" }, body: JSON.stringify(chunk),
+    });
+    if (res.ok) inserted += chunk.length; else console.error("backfill failed:", res.status, await res.text());
+  }
+  return inserted;
 }

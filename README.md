@@ -44,10 +44,10 @@ python3 -m http.server 8000
   the store variants ("REMA 1000 Tacosaus Medium", "Coop Extra Tacosaus" …) with
   prices, before-prices and validity, cheapest first.
 - **Produktside (variant)** `#/vare/:key/:store` — one store's product and its
-  **price history** chart (real, built up weekly from `ml_price_history`). A
-  **"Legg til en tidligere pris"** form lets you record a price you know from an
-  earlier week (pick the week + price, optional before-price) — it's written to
-  `ml_price_history` via the `ml-add-history` Edge Function and the chart updates.
+  **price history** chart (real, built up weekly from `ml_price_history`). When a
+  product is on offer, the ingest functions automatically record its before-price
+  as *last week's* price point, so the chart shows the markdown from the first
+  time the offer is seen.
 - **Skann kvittering** `#/skann` — upload a photo, use the phone camera, or
   **drag-and-drop / paste** an image → the image is sent to a **Supabase Edge
   Function that runs Google Gemini vision** → the parsed line items and detected store are pre-filled for
@@ -62,7 +62,7 @@ schema:
 | Object | Purpose |
 | --- | --- |
 | `ml_offers` | **The leksikon's data**: real prices — weekly offers from eTilbudsavis/Tjek (`source=etilbudsavis`, with validity), shelf prices from Kassalapp across the chains (`source=kassalapp`), and the authoritative Meny assortment from NorgesGruppen's ngdata API (`source=ngdata`), and Oda's online-store prices (`source=oda`) — store, product, price, before-price, image, and a `group_key` for cross-store grouping. The front end dedupes to the cheapest row per (group, store), so overlapping Meny sources collapse to one card. |
-| `ml_price_history` | One real price point per (`group_key`, store, day), appended weekly by the ingest functions **and** by the `ml-add-history` Edge Function when you record a known earlier price → the variant price-history chart |
+| `ml_price_history` | One real price point per (`group_key`, store, day), appended weekly by the ingest functions. When an offer carries a before-price, that before-price is also back-filled as the previous week's point (non-offer, insert-if-absent) → the variant price-history chart |
 | `ml_stores` | Store metadata (name, chart colour/dash, locations) |
 | `ml_registrations` | Append-only community contributions from the scan flow |
 | `ml_scan_allow()` | RPC: per-IP rate limit for the receipt-scan function |
