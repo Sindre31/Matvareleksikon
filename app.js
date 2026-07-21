@@ -86,6 +86,24 @@
     STORES.forEach(function (s) { STORE_NAME[s.id] = s.name; STORE_STYLE[s.id] = { color: s.color, dash: s.dash }; });
   }
 
+  // Build one variant object from an offer row, incl. its price-per-unit
+  // (parsed from the name, or the source's own unit price as a fallback).
+  function buildVariant(o) {
+    var st = o.store_id, price = Number(o.price);
+    var amt = parseAmount(o.product_name);
+    var perUnit = amt ? price / amt.value : null, unitDim = amt ? amt.dim : null;
+    if (perUnit == null && o.unit_price != null) { var nd = normUnit(o.unit_price_unit || o.unit); var up = Number(o.unit_price); if (nd && up > 0) { perUnit = up; unitDim = nd; } }
+    return {
+      storeId: st, storeName: STORE_NAME[st] || st,
+      color: (STORE_STYLE[st] || {}).color || 'var(--color-accent)', dash: (STORE_STYLE[st] || {}).dash || '',
+      rawName: o.product_name, name: cleanName(o.product_name),
+      price: price, prePrice: o.pre_price != null ? Number(o.pre_price) : null,
+      unit: o.unit || null, image: o.image_url || null, validUntil: o.valid_until || null,
+      isOffer: o.pre_price != null && Number(o.pre_price) > price,
+      unitDim: unitDim, perUnit: perUnit
+    };
+  }
+
   function buildGroups(offers) {
     OFFERS = offers || [];
     var today = new Date().toISOString().slice(0, 10);
@@ -96,28 +114,23 @@
     valid.forEach(function (o) {
       var key = o.group_key || (o.product_name || '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
       if (!key) return;
-      var g = map[key] || (map[key] = { key: key, variants: {} });
-      var st = o.store_id, price = Number(o.price);
-      var prev = g.variants[st];
-      if (!prev || price < prev.price) {
-        var amt = parseAmount(o.product_name);
-        var perUnit = amt ? price / amt.value : null, unitDim = amt ? amt.dim : null;
-        if (perUnit == null && o.unit_price != null) { var nd = normUnit(o.unit_price_unit || o.unit); var up = Number(o.unit_price); if (nd && up > 0) { perUnit = up; unitDim = nd; } }
-        g.variants[st] = {
-          storeId: st, storeName: STORE_NAME[st] || st,
-          color: (STORE_STYLE[st] || {}).color || 'var(--color-accent)', dash: (STORE_STYLE[st] || {}).dash || '',
-          rawName: o.product_name, name: cleanName(o.product_name),
-          price: price, prePrice: o.pre_price != null ? Number(o.pre_price) : null,
-          unit: o.unit || null, image: o.image_url || null, validUntil: o.valid_until || null,
-          isOffer: o.pre_price != null && Number(o.pre_price) > price,
-          unitDim: unitDim, perUnit: perUnit
-        };
-      }
+      var g = map[key] || (map[key] = { key: key, byStore: {} });
+      var v = buildVariant(o);
+      (g.byStore[v.storeId] || (g.byStore[v.storeId] = [])).push(v);
     });
     GROUPS = Object.keys(map).map(function (key) {
-      var variants = Object.keys(map[key].variants).map(function (s) { return map[key].variants[s]; });
-      // Size-aware comparison: when every store's variant states the same kind of
-      // amount, order and label by price-per-unit; otherwise fall back to pack price.
+      var byStore = map[key].byStore;
+      // Per store the representative is the cheapest PER UNIT (best value) when a
+      // unit price is known — so a small carton can't beat a big one — otherwise
+      // the cheapest pack price.
+      var variants = Object.keys(byStore).map(function (st) {
+        var arr = byStore[st];
+        var withU = arr.filter(function (x) { return x.perUnit != null; });
+        if (withU.length) return withU.reduce(function (a, b) { return b.perUnit < a.perUnit ? b : a; });
+        return arr.reduce(function (a, b) { return b.price < a.price ? b : a; });
+      });
+      // Size-aware comparison: when every store's variant has a comparable unit
+      // price, order and label by price-per-unit; otherwise fall back to pack price.
       var comparable = variants.length >= 2 && variants.every(function (v) { return v.perUnit != null && v.unitDim === variants[0].unitDim; });
       if (comparable) variants.sort(function (a, b) { return a.perUnit - b.perUnit; });
       else variants.sort(function (a, b) { return a.price - b.price; });
@@ -472,7 +485,7 @@
         h('span', { style: 'display: flex; flex-direction: column; align-items: flex-end; gap: 2px;' }, [
           h('span', { style: 'display: flex; align-items: baseline; gap: 8px; justify-content: flex-end;' }, [
             v.prePrice ? h('span', { style: "font-size: 13px; color: " + MUTED60 + "; text-decoration: line-through; font-feature-settings: 'tnum' 1;", text: nf(v.prePrice) }) : null,
-            h('span', { style: "font-family: var(--font-heading); font-weight: 600; font-size: 22px; font-feature-settings: 'tnum' 1; white-space: nowrap;", text: nf(v.price) + (v.unit ? '/' + v.unit : '') })
+            h('span', { style: "font-family: var(--font-heading); font-weight: 600; font-size: 22px; font-feature-settings: 'tnum' 1; white-space: nowrap;", text: nf(v.price) })
           ]),
           (v.perUnit != null) ? h('span', { style: 'font-size: 12px; color: ' + MUTED60 + "; font-feature-settings: 'tnum' 1; white-space: nowrap;", text: nfUnit(v.perUnit, v.unitDim) }) : null
         ])
@@ -528,8 +541,9 @@
         ]),
         h('p', { style: 'margin: 12px 0 0; font-size: 15px; color: ' + MUTED70 + ';', text: v.rawName + (v.validUntil ? ' · gyldig til ' + v.validUntil.slice(8, 10) + '.' + v.validUntil.slice(5, 7) : '') }),
         h('div', { style: 'display: flex; align-items: baseline; gap: 12px; margin-top: 14px;' }, [
-          h('span', { style: "font-family: var(--font-heading); font-weight: 600; font-size: 40px; font-feature-settings: 'tnum' 1;", text: nf(v.price) + (v.unit ? '/' + v.unit : '') }),
-          v.prePrice ? h('span', { style: "font-size: 16px; color: " + MUTED60 + "; text-decoration: line-through; font-feature-settings: 'tnum' 1;", text: nf(v.prePrice) }) : null
+          h('span', { style: "font-family: var(--font-heading); font-weight: 600; font-size: 40px; font-feature-settings: 'tnum' 1;", text: nf(v.price) }),
+          v.prePrice ? h('span', { style: "font-size: 16px; color: " + MUTED60 + "; text-decoration: line-through; font-feature-settings: 'tnum' 1;", text: nf(v.prePrice) }) : null,
+          (v.perUnit != null) ? h('span', { style: 'font-size: 15px; color: ' + MUTED70 + "; font-feature-settings: 'tnum' 1;", text: nfUnit(v.perUnit, v.unitDim) }) : null
         ])
       ]),
       g.image ? h('div', { cls: 'blueprint', style: 'flex: none; width: 190px; height: 190px; background: #fff; display: flex; align-items: center; justify-content: center; overflow: hidden;' }, corners().concat([

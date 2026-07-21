@@ -54,6 +54,29 @@ function groupKey(name: string): string {
   return s;
 }
 
+// Derive a comparable per-unit price from the offer's quantity block, so
+// tilbudsavis offers (whose names often omit the size) still compare per l/kg/stk.
+function unitInfo(o: any, price: number): { up: number; unit: string } | null {
+  const q = o?.quantity;
+  if (!q) return null;
+  const sym = String(q?.unit?.si?.symbol || q?.unit?.symbol || "").toLowerCase();
+  const factor = (typeof q?.unit?.si?.factor === "number" && q.unit.si.factor > 0) ? q.unit.si.factor : 1;
+  const size = typeof q?.size?.from === "number" ? q.size.from : null;
+  if (size && size > 0 && sym) {
+    let amt = size * factor, dim: string | null = null;
+    if (sym === "l") dim = "l";
+    else if (sym === "ml") { dim = "l"; amt = amt / 1000; }
+    else if (sym === "cl") { dim = "l"; amt = amt / 100; }
+    else if (sym === "dl") { dim = "l"; amt = amt / 10; }
+    else if (sym === "kg") dim = "kg";
+    else if (sym === "g") { dim = "kg"; amt = amt / 1000; }
+    if (dim && amt > 0) return { up: price / amt, unit: dim };
+  }
+  const pieces = typeof q?.pieces?.from === "number" ? q.pieces.from : null;
+  if (pieces && pieces > 1) return { up: price / pieces, unit: "stk" };
+  return null;
+}
+
 const TJEK_HEADERS = {
   Accept: "application/json",
   "Accept-Language": "nb-NO,nb;q=0.9,en;q=0.8",
@@ -86,6 +109,7 @@ Deno.serve(async (_req: Request) => {
       const cty = dealerCountry(o?.dealer); if (cty && cty !== CTRY) continue;
       const slug = storeSlug(o?.dealer?.name); if (!slug || !o?.heading) continue;
       const pre = o?.pricing?.pre_price;
+      const ui = unitInfo(o, price as number);
       rows.push({
         external_id: String(id),
         store_id: slug,
@@ -94,6 +118,8 @@ Deno.serve(async (_req: Request) => {
         price,
         pre_price: typeof pre === "number" ? pre : null,
         unit: o?.quantity?.unit?.symbol ?? null,
+        unit_price: ui ? Number(ui.up.toFixed(4)) : null,
+        unit_price_unit: ui ? ui.unit : null,
         offer_text: typeof pre === "number" && pre > price ? `Tilbudsavis (før ${pre.toFixed(2)})` : "Tilbudsavis",
         image_url: o?.images?.view || o?.images?.zoom || o?.images?.thumb || null,
         valid_from: toDate(o?.run_from),

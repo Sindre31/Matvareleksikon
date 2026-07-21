@@ -46,8 +46,11 @@ python3 -m http.server 8000
   stated in the name, each row also shows the **price per litre/kilo/piece**, and
   when *every* store's variant is size-comparable the "cheapest" is ranked by
   that unit price — so a small carton no longer looks cheaper than a big one.
-  The size comes from the product name, or, for Meny (ngdata) and Oda where the
-  name often omits it, from the source's own unit price (`unit_price` column).
+  The size comes from the product name, or from the source's own unit price
+  (`unit_price` column) — Meny (ngdata `comparePricePerUnit`), Oda
+  (`gross_unit_price`), and offer catalogues (Tjek `quantity`). Each store's
+  **representative** variant is its **cheapest per unit**, not its cheapest pack,
+  so a small carton can't masquerade as the best deal.
 - **Produktside (variant)** `#/vare/:key/:store` — one store's product and its
   **price history** chart, with each chain drawn in its **brand colour** (Rema
   blue, Kiwi green, Extra red, Meny bordeaux, Oda purple — from `ml_stores`).
