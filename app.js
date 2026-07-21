@@ -206,7 +206,7 @@
   var state = {
     phase: 'loading', errMsg: '',
     view: 'home', groupKey: null, storeId: null, query: '', storeFilter: 'Alle',
-    scanPhase: 'idle', scanStep: '', scanItems: [], scanStore: 'Kiwi', scanPlace: 'Kiwi Grünerløkka, Oslo',
+    scanPhase: 'idle', scanStep: '', scanItems: [], scanStore: 'Kiwi', scanDate: '',
     scanSubmitting: false, scanError: null, scanImageUrl: null, scanNote: null,
     doneCount: 0, doneMsgN: 0,
     history: {} // key -> 'loading' | [rows]
@@ -268,7 +268,8 @@
           return { name: nm, price: (it.price != null ? String(it.price) : '') };
         });
         var patch = { scanPhase: 'review', scanError: null };
-        if (data.store) { patch.scanStore = data.store; var s = STORES.filter(function (x) { return x.name === data.store; })[0]; if (s) patch.scanPlace = s.places[0]; }
+        patch.scanDate = (data.purchaseDate && /^\d{4}-\d{2}-\d{2}$/.test(data.purchaseDate)) ? data.purchaseDate : new Date().toISOString().slice(0, 10);
+        if (data.store) patch.scanStore = data.store;
         if (items.length) {
           patch.scanItems = items;
           patch.scanNote = 'Fant ' + items.length + ' varelinjer' + (data.storeName ? ' fra ' + data.storeName : '') + '. Kontroller dem før du lagrer.';
@@ -290,10 +291,11 @@
   function submitScan() {
     if (state.scanSubmitting || !state.scanItems.length) return;
     var storeObj = STORES.filter(function (x) { return x.name === state.scanStore; })[0];
+    var obs = /^\d{4}-\d{2}-\d{2}$/.test(state.scanDate || '') ? state.scanDate : new Date().toISOString().slice(0, 10);
     var payload = state.scanItems.map(function (it) {
       var raw = String(it.price == null ? '' : it.price).replace(',', '.').trim();
       var price = raw === '' ? null : Number(raw);
-      return { item_name: it.name, price: (price == null || isNaN(price)) ? null : price, store_id: storeObj ? storeObj.id : null, place: null, product_id: null };
+      return { item_name: it.name, price: (price == null || isNaN(price)) ? null : price, store_id: storeObj ? storeObj.id : null, place: null, product_id: null, observed_at: obs };
     });
     var n = state.scanItems.length;
     setState({ scanSubmitting: true, scanError: null });
@@ -756,6 +758,10 @@
           h('select', { cls: 'input', 'data-focus-id': 'scan-store', style: 'min-height: 38px; min-width: 180px;', value: state.scanStore, onChange: function (e) {
             setState({ scanStore: e.target.value });
           } }, STORES.map(function (s) { return h('option', { value: s.name, selected: s.name === state.scanStore ? 'selected' : false, text: s.name }); }))
+        ]),
+        h('label', { style: 'display: flex; flex-direction: column; gap: 6px; font-size: 12px; letter-spacing: 0.08em; text-transform: uppercase; font-weight: 600;' }, [
+          'Dato',
+          h('input', { cls: 'input', type: 'date', 'data-focus-id': 'scan-date', style: 'min-height: 38px; min-width: 160px;', value: state.scanDate || '', max: new Date().toISOString().slice(0, 10), onInput: function (e) { setState({ scanDate: e.target.value }); } })
         ])
       ]);
       var rows = h('div', { style: 'display: flex; flex-direction: column; gap: 8px;' }, state.scanItems.map(function (it, i) {
@@ -778,7 +784,8 @@
         h('div', { cls: 'blueprint', style: 'padding: 24px; display: flex; flex-direction: column; gap: 16px;' }, corners().concat([controls, rows, addRowBtn, actions]))
       ]);
     } else if (state.scanPhase === 'done') {
-      var doneMsg = (state.doneMsgN || state.scanItems.length) + ' priser registrert hos ' + state.scanStore + '.';
+      var dd = state.scanDate ? (state.scanDate.slice(8, 10) + '.' + state.scanDate.slice(5, 7) + '.' + state.scanDate.slice(0, 4)) : '';
+      var doneMsg = (state.doneMsgN || state.scanItems.length) + ' priser registrert hos ' + state.scanStore + (dd ? ' (' + dd + ')' : '') + '.';
       body = h('div', { cls: 'blueprint', style: 'max-width: 560px; padding: 28px;' }, corners().concat([
         h('span', { style: 'font-family: var(--font-heading); font-weight: 600; font-size: 26px; letter-spacing: 0.02em; text-transform: uppercase;', text: 'Takk for bidraget' }),
         h('p', { style: 'margin: 12px 0 0; font-size: 15px; line-height: 22px;', text: doneMsg + ' Prisene er lagret i databasen.' }),

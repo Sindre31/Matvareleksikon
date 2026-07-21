@@ -59,14 +59,19 @@ Returner nøyaktig denne strukturen, uten tekst før eller etter:
 Regler:
 - "storeName" er butikknavnet slik det står øverst på kvitteringen.
 - "storeSlug" er kiwi, rema-1000, coop-extra eller meny hvis du kjenner igjen kjeden, ellers null.
+- "purchaseDate" er kjøpsdatoen (ofte øverst eller nederst, format «DD.MM.YY» eller
+  «DD.MM.YYYY»), konvertert til YYYY-MM-DD. F.eks. «20.07.24» -> «2024-07-20».
 - Hver vare i "items" er én kjøpt varelinje. Bruk punktum som desimaltegn (42.90).
 - "lineTotal" er totalsummen som ble belastet for linja.
-- VEKT-/ANTALLSVARER: under eller på varelinja står det ofte «0,750 kg x 24,90 kr/kg»
-  eller «3 stk x 12,90». Da skal:
-    "quantity" = mengden (0.75 eller 3),
-    "unitPrice" = prisen per enhet (24.90 eller 12.90),
+- VEKT-/ANTALLSVARER: veldig ofte står mengden og enhetsprisen på en EGEN linje
+  RETT UNDER varenavnet, i formater som «0,750 kg x 24,90 kr/kg», «0,580kg x kr 49,90»
+  eller «3 stk x 12,90». Denne under-linja er IKKE en egen vare — den hører til
+  varen rett over. Slå dem sammen til ÉN vare:
+    "quantity" = mengden (0.58, 0.75 eller 3),
+    "unitPrice" = prisen per kilo/enhet (49.90, 24.90 eller 12.90),
     "unit"      = enheten ("kg" eller "stk"),
-    "lineTotal" = totalen for linja (18.68 eller 38.70).
+    "lineTotal" = totalen som ble belastet (står på varenavn-linja, f.eks. 28.94, 18.68).
+  Lag ALDRI en egen vare av en slik «… kg x kr …»- eller «… stk x …»-linje.
   Det er VIKTIG å få med vekten/antallet — ellers blir kiloprisen feil.
 - VANLIG PAKKEVARE (kun én pris på linja, f.eks. melk til 19,90): sett
   "lineTotal" = prisen, "unitPrice" = null, "quantity" = null.
