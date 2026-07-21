@@ -52,7 +52,7 @@
     view: 'home', productId: null, query: '', cat: 'Alle',
     scanPhase: 'idle', scanPct: 0, scanStep: '', scanItems: [],
     scanStore: 'Kiwi', scanPlace: 'Kiwi Grünerløkka, Oslo',
-    scanSubmitting: false, scanError: null, scanImageUrl: null, scanNote: null,
+    scanSubmitting: false, scanError: null, scanImageUrl: null, scanNote: null, scanRawText: null,
     bootTotal: 0, doneCount: 0, doneMsgN: 0,
     chartMonths: 12 // prototype prop `chartMonths` (enum 6|12, default 12)
   };
@@ -110,20 +110,38 @@
     return tesseractPromise;
   }
 
-  // Downscale large photos before OCR — faster, and usually cleaner text.
+  // Preprocess the photo before OCR: fit to a sane size, convert to greyscale
+  // and stretch contrast. Phone photos of receipts are the hard case (glare,
+  // skew, low contrast), and a clean high-contrast greyscale helps Tesseract
+  // far more than the raw colour image.
   function preprocessImage(file) {
     return new Promise(function (resolve) {
       if (!/^image\//.test(file.type)) { resolve(file); return; }
       var url = URL.createObjectURL(file);
       var img = new Image();
       img.onload = function () {
-        var max = 1600, w = img.naturalWidth, h = img.naturalHeight;
-        if (Math.max(w, h) <= max) { URL.revokeObjectURL(url); resolve(file); return; }
-        var scale = max / Math.max(w, h);
-        var c = document.createElement('canvas');
-        c.width = Math.round(w * scale); c.height = Math.round(h * scale);
-        c.getContext('2d').drawImage(img, 0, 0, c.width, c.height);
+        var target = 2000, w = img.naturalWidth, h = img.naturalHeight;
+        var scale = Math.min(1, target / Math.max(w, h));
+        var cw = Math.max(1, Math.round(w * scale)), ch = Math.max(1, Math.round(h * scale));
+        var c = document.createElement('canvas'); c.width = cw; c.height = ch;
+        var ctx = c.getContext('2d');
+        ctx.drawImage(img, 0, 0, cw, ch);
         URL.revokeObjectURL(url);
+        try {
+          var id = ctx.getImageData(0, 0, cw, ch), d = id.data, i, lum, lo = 255, hi = 0;
+          for (i = 0; i < d.length; i += 4) {
+            lum = (d[i] * 0.299 + d[i + 1] * 0.587 + d[i + 2] * 0.114) | 0;
+            d[i] = d[i + 1] = d[i + 2] = lum;
+            if (lum < lo) lo = lum; if (lum > hi) hi = lum;
+          }
+          var range = Math.max(1, hi - lo);
+          for (i = 0; i < d.length; i += 4) {
+            var v = Math.pow((d[i] - lo) / range, 1.15);       // stretch + slight gamma
+            var o = v <= 0 ? 0 : v >= 1 ? 255 : Math.round(v * 255);
+            d[i] = d[i + 1] = d[i + 2] = o;
+          }
+          ctx.putImageData(id, 0, 0);
+        } catch (e) { /* getImageData can't be tainted for a local file; ignore */ }
         c.toBlob(function (blob) { resolve(blob || file); }, 'image/png');
       };
       img.onerror = function () { URL.revokeObjectURL(url); resolve(file); };
@@ -183,7 +201,7 @@
     if (!file) return;
     if (state.scanImageUrl) URL.revokeObjectURL(state.scanImageUrl);
     var previewUrl = /^image\//.test(file.type) ? URL.createObjectURL(file) : null;
-    setState({ scanPhase: 'scanning', scanPct: 0, scanStep: 'Laster tekstgjenkjenning …', scanError: null, scanNote: null, scanImageUrl: previewUrl });
+    setState({ scanPhase: 'scanning', scanPct: 0, scanStep: 'Laster tekstgjenkjenning …', scanError: null, scanNote: null, scanRawText: null, scanImageUrl: previewUrl });
     runOcr(file);
   }
 
@@ -205,7 +223,7 @@
         var text = (res && res.data && res.data.text) || '';
         var items = parseReceiptText(text);
         var store = detectStore(text);
-        var patch = { scanPhase: 'review', scanPct: 100 };
+        var patch = { scanPhase: 'review', scanPct: 100, scanRawText: text };
         if (store) { patch.scanStore = store; var s = STORES.filter(function (x) { return x.name === store; })[0]; if (s) patch.scanPlace = s.places[0]; }
         if (items.length) { patch.scanItems = items; patch.scanNote = 'Fant ' + items.length + ' varelinjer' + (store ? ' · gjenkjente butikk: ' + store : '') + '. Kontroller dem før du lagrer.'; }
         else { patch.scanItems = [{ name: '', price: '' }]; patch.scanNote = 'Fant ingen varelinjer automatisk — skriv dem inn manuelt, eller prøv et skarpere bilde.'; }
@@ -219,7 +237,7 @@
   function addScanRow() { setState({ scanItems: state.scanItems.concat([{ name: '', price: '' }]) }); }
   function resetScan() {
     if (state.scanImageUrl) URL.revokeObjectURL(state.scanImageUrl);
-    setState({ scanPhase: 'idle', scanItems: [], scanImageUrl: null, scanNote: null, scanError: null });
+    setState({ scanPhase: 'idle', scanItems: [], scanImageUrl: null, scanNote: null, scanError: null, scanRawText: null });
   }
   function submitScan() {
     if (state.scanSubmitting || !state.scanItems.length) return;
@@ -592,6 +610,10 @@
         h('span', { style: KICKER, text: 'Kontroller varelinjene' }),
         h('hr', { style: RULE }),
         state.scanNote ? h('p', { style: 'margin: 0 0 16px; font-size: 14px; line-height: 20px; color: ' + MUTED70 + ';', text: state.scanNote }) : null,
+        state.scanRawText ? h('details', { style: 'margin: 0 0 16px;' }, [
+          h('summary', { style: 'cursor: pointer; font-size: 13px; letter-spacing: 0.04em; text-transform: uppercase; font-weight: 600; color: var(--color-accent-700);', text: 'Vis gjenkjent tekst' }),
+          h('pre', { style: 'white-space: pre-wrap; word-break: break-word; margin: 10px 0 0; padding: 12px; border: 1px solid var(--color-divider); background: color-mix(in srgb, var(--color-text) 3%, transparent); font-size: 12px; line-height: 1.45; max-height: 260px; overflow: auto; font-family: ui-monospace, SFMono-Regular, Menlo, monospace;', text: state.scanRawText })
+        ]) : null,
         h('div', { cls: 'blueprint', style: 'padding: 24px; display: flex; flex-direction: column; gap: 16px;' }, corners().concat([controls, rows, addRowBtn, actions]))
       ]);
     } else if (state.scanPhase === 'done') {
