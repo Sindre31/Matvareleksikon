@@ -16,3 +16,17 @@ update ml_stores set color = c.col from (values
 -- dimension (l/kg/stk); populated by ml-ingest-oda and ml-ingest-ngdata.
 alter table ml_offers add column if not exists unit_price numeric;
 alter table ml_offers add column if not exists unit_price_unit text;
+
+-- Scanned receipt contributions feed the leksikon + price history.
+-- ml_registrations gains structured weight fields; a SECURITY DEFINER trigger
+-- propagates each new registration into ml_offers (source='scan', so it shows in
+-- the leksikon) and ml_price_history (the chart), computing group_key and a
+-- per-unit price for weight/count items. See the
+-- scan_contributions_feed_leksikon migration for the full ml_group_key() and
+-- ml_reg_propagate() definitions.
+alter table ml_registrations add column if not exists unit text;
+alter table ml_registrations add column if not exists quantity numeric;
+alter table ml_registrations add column if not exists line_total numeric;
+grant insert (unit, quantity, line_total) on ml_registrations to anon, authenticated;
+-- trigger: ml_reg_propagate_trg AFTER INSERT ON ml_registrations → upserts
+-- ml_offers(external_id='scan:'||store||':'||slug) and ml_price_history.

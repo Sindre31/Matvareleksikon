@@ -263,9 +263,7 @@
         }
         var data = r.body || {};
         var items = (data.items || []).map(function (it) {
-          var nm = it.name || '';
-          if (it.unit && it.quantity) nm = nm + ' (' + it.quantity + ' ' + it.unit + ')';
-          return { name: nm, price: (it.price != null ? String(it.price) : '') };
+          return { name: it.name || '', price: (it.price != null ? String(it.price) : ''), unit: it.unit || null, quantity: (it.quantity != null ? it.quantity : null), lineTotal: (it.lineTotal != null ? it.lineTotal : null) };
         });
         var patch = { scanPhase: 'review', scanError: null };
         patch.scanDate = (data.purchaseDate && /^\d{4}-\d{2}-\d{2}$/.test(data.purchaseDate)) ? data.purchaseDate : new Date().toISOString().slice(0, 10);
@@ -295,7 +293,7 @@
     var payload = state.scanItems.map(function (it) {
       var raw = String(it.price == null ? '' : it.price).replace(',', '.').trim();
       var price = raw === '' ? null : Number(raw);
-      return { item_name: it.name, price: (price == null || isNaN(price)) ? null : price, store_id: storeObj ? storeObj.id : null, place: null, product_id: null, observed_at: obs };
+      return { item_name: it.name, price: (price == null || isNaN(price)) ? null : price, store_id: storeObj ? storeObj.id : null, place: null, product_id: null, observed_at: obs, unit: it.unit || null, quantity: (it.quantity != null ? it.quantity : null), line_total: (it.lineTotal != null ? it.lineTotal : null) };
     });
     var n = state.scanItems.length;
     setState({ scanSubmitting: true, scanError: null });
@@ -764,11 +762,15 @@
           h('input', { cls: 'input', type: 'date', 'data-focus-id': 'scan-date', style: 'min-height: 38px; min-width: 160px;', value: state.scanDate || '', max: new Date().toISOString().slice(0, 10), onInput: function (e) { setState({ scanDate: e.target.value }); } })
         ])
       ]);
-      var rows = h('div', { style: 'display: flex; flex-direction: column; gap: 8px;' }, state.scanItems.map(function (it, i) {
-        return h('div', { style: 'display: grid; grid-template-columns: 1fr 120px 38px; gap: 10px; align-items: center;' }, [
-          h('input', { cls: 'input', 'aria-label': 'Varenavn', 'data-focus-id': 'scan-name-' + i, style: 'min-height: 38px;', value: it.name, onInput: function (e) { var items = state.scanItems.slice(); items[i] = Object.assign({}, items[i], { name: e.target.value }); setState({ scanItems: items }); } }),
-          h('input', { cls: 'input', type: 'number', step: '0.1', 'aria-label': 'Pris i kroner', 'data-focus-id': 'scan-price-' + i, style: "min-height: 38px; text-align: right; font-feature-settings: 'tnum' 1;", value: it.price, onInput: function (e) { var items = state.scanItems.slice(); items[i] = Object.assign({}, items[i], { price: e.target.value }); setState({ scanItems: items }); } }),
-          h('button', { type: 'button', cls: 'btn btn-ghost btn-icon', 'aria-label': 'Fjern varelinje', style: 'min-height: 38px;', onClick: function () { setState({ scanItems: state.scanItems.filter(function (x, j) { return j !== i; }) }); }, text: '✕' })
+      var rows = h('div', { style: 'display: flex; flex-direction: column; gap: 10px;' }, state.scanItems.map(function (it, i) {
+        var hint = (it.unit && it.quantity) ? (String(it.quantity).replace('.', ',') + ' ' + it.unit + ' · pris per ' + it.unit + (it.lineTotal ? ' (betalt ' + nf(Number(it.lineTotal)) + ')' : '')) : null;
+        return h('div', { style: 'display: flex; flex-direction: column; gap: 4px;' }, [
+          h('div', { style: 'display: grid; grid-template-columns: 1fr 120px 38px; gap: 10px; align-items: center;' }, [
+            h('input', { cls: 'input', 'aria-label': 'Varenavn', 'data-focus-id': 'scan-name-' + i, style: 'min-height: 38px;', value: it.name, onInput: function (e) { var items = state.scanItems.slice(); items[i] = Object.assign({}, items[i], { name: e.target.value }); setState({ scanItems: items }); } }),
+            h('input', { cls: 'input', type: 'number', step: '0.1', 'aria-label': 'Pris i kroner', 'data-focus-id': 'scan-price-' + i, style: "min-height: 38px; text-align: right; font-feature-settings: 'tnum' 1;", value: it.price, onInput: function (e) { var items = state.scanItems.slice(); items[i] = Object.assign({}, items[i], { price: e.target.value }); setState({ scanItems: items }); } }),
+            h('button', { type: 'button', cls: 'btn btn-ghost btn-icon', 'aria-label': 'Fjern varelinje', style: 'min-height: 38px;', onClick: function () { setState({ scanItems: state.scanItems.filter(function (x, j) { return j !== i; }) }); }, text: '✕' })
+          ]),
+          hint ? h('span', { style: 'font-size: 12px; color: ' + MUTED60 + '; padding-left: 2px;', text: hint }) : null
         ]);
       }));
       var addRowBtn = h('button', { type: 'button', cls: 'btn btn-ghost', onClick: addScanRow, style: 'align-self: flex-start;', text: '+ Legg til varelinje' });

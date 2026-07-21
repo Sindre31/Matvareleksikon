@@ -65,8 +65,11 @@ python3 -m http.server 8000
 - **Skann kvittering** `#/skann` — upload a photo, use the phone camera, or
   **drag-and-drop / paste** an image → the image is sent to a **Supabase Edge
   Function that runs Google Gemini vision** → the parsed line items and detected store are pre-filled for
-  review (just pick the chain — no place needed) → submit **persists** the prices
-  to Supabase and counts them toward the community total.
+  review (pick the chain and confirm the **receipt date**) → submit **persists**
+  the prices to Supabase. A trigger then feeds each scanned line into the
+  **leksikon** (`ml_offers`, `source=scan`) and the **price history**
+  (`ml_price_history`, dated to the receipt), so contributed prices show up in
+  the catalogue and on the product's chart — weight items keep their kr/kg.
 
 ## Backend (Supabase)
 
@@ -78,7 +81,7 @@ schema:
 | `ml_offers` | **The leksikon's data**: real prices — weekly offers from eTilbudsavis/Tjek (`source=etilbudsavis`, with validity), shelf prices from Kassalapp across the chains (`source=kassalapp`), and the authoritative Meny assortment from NorgesGruppen's ngdata API (`source=ngdata`), and Oda's online-store prices (`source=oda`) — store, product, price, before-price, image, and a `group_key` for cross-store grouping. The front end dedupes to the cheapest row per (group, store), so overlapping Meny sources collapse to one card. |
 | `ml_price_history` | One real price point per (`group_key`, store, day), appended weekly by the ingest functions. When an offer carries a before-price, that before-price is also back-filled as the previous week's point (non-offer, insert-if-absent) → the variant price-history chart |
 | `ml_stores` | Store metadata (name, chart colour/dash, locations) |
-| `ml_registrations` | Append-only community contributions from the scan flow |
+| `ml_registrations` | Append-only community contributions from the scan flow (item, price, store, **receipt date**, and structured unit/quantity for weight items). A trigger propagates each into `ml_offers` and `ml_price_history` |
 | `ml_scan_allow()` | RPC: per-IP rate limit for the receipt-scan function |
 | `ml_scan_rate` | Backing table for the rate limiter |
 
