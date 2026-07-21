@@ -58,7 +58,7 @@ schema:
 
 | Object | Purpose |
 | --- | --- |
-| `ml_offers` | **The leksikon's data**: real prices — weekly offers from eTilbudsavis/Tjek (`source=etilbudsavis`, with validity) **and** shelf prices from Kassalapp (`source=kassalapp`) — store, product, price, before-price, image, and a `group_key` for cross-store grouping |
+| `ml_offers` | **The leksikon's data**: real prices — weekly offers from eTilbudsavis/Tjek (`source=etilbudsavis`, with validity), shelf prices from Kassalapp across the chains (`source=kassalapp`), and the authoritative Meny assortment from NorgesGruppen's ngdata API (`source=ngdata`) — store, product, price, before-price, image, and a `group_key` for cross-store grouping. The front end dedupes to the cheapest row per (group, store), so overlapping Meny sources collapse to one card. |
 | `ml_price_history` | One real price point per (`group_key`, store, day), appended weekly → the variant price-history chart |
 | `ml_stores` | Store metadata (name, chart colour/dash, locations) |
 | `ml_registrations` | Append-only community contributions from the scan flow |
@@ -133,8 +133,26 @@ curl -X POST https://<project>.supabase.co/functions/v1/ml-ingest-offers \
 ```
 
 (The function sends a browser `User-Agent`; Tjek blocks cloud egress without
-one.) A `pg_cron` schedule or a GitHub Action could keep it fresh, as
-`billigkurv` does.
+one.) A `pg_cron` schedule keeps it fresh (see `supabase/cron.sql`).
+
+### Shelf prices (Kassalapp + ngdata)
+
+Weekly offers only cover what's discounted this week, so the bulk of the
+leksikon is **everyday shelf prices**, ingested by two more Edge Functions
+(both use the shared `group_key` scheme so they compare in the same product
+group as the offers):
+
+- **`ml-ingest-kassalapp`** — cross-chain shelf prices from the
+  [Kassalapp API](https://kassal.app) (requires the `KASSALAPP_TOKEN`
+  secret; no-ops without it). Supports a weekly search refresh (`{}`) and a
+  one-time bulk sweep of the whole catalogue (`{bulk:true,startPage,pages}`),
+  upserting on `external_id` so batched pulls accumulate safely.
+- **`ml-ingest-ngdata`** — the authoritative Meny assortment (with product
+  images) from NorgesGruppen's public **ngdata** API (keyless, browser
+  `User-Agent`), the same source `billigkurv` uses for Meny/Spar.
+
+Both run weekly via `pg_cron` (offers 04:00, Kassalapp 04:10, ngdata 04:20
+UTC every Monday = ~06:00–06:20 Oslo). See `supabase/cron.sql`.
 
 ## Deployment
 
