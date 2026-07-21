@@ -36,14 +36,15 @@ python3 -m http.server 8000
 
 ## Screens (deep-linkable)
 
-- **Leksikon (home)** `#/` — hero + live search, the month's largest price
-  moves (up / down), category filters, and the full product grid.
-- **Produktside** `#/produkt/:id` — per-store prices with the cheapest
-  flagged, and a price-trend line chart per store with a 6/12-month toggle
-  (the prototype's `chartMonths` option).
-- **Tilbud** `#/tilbud` — this week's active offers from the chains'
-  tilbudsaviser, with product images, before-prices and validity dates,
-  filterable by store.
+- **Leksikon (home)** `#/` — hero + live search, **"Ukas beste tilbud"** (the
+  biggest real markdowns this week), and the product grid. Products are grouped
+  generically (`group_key`) so store-specific items compare; cards are marked
+  **"På tilbud"**. Filter by store.
+- **Produktgruppe** `#/gruppe/:key` — a generic product and **where it's sold**:
+  the store variants ("REMA 1000 Tacosaus Medium", "Coop Extra Tacosaus" …) with
+  prices, before-prices and validity, cheapest first.
+- **Produktside (variant)** `#/vare/:key/:store` — one store's product and its
+  **price history** chart (real, built up weekly from `ml_price_history`).
 - **Skann kvittering** `#/skann` — upload a photo, use the phone camera, or
   **drag-and-drop / paste** an image → the image is sent to a **Supabase Edge
   Function that runs Google Gemini vision** → the parsed line items and detected store are pre-filled for
@@ -57,20 +58,22 @@ schema:
 
 | Object | Purpose |
 | --- | --- |
+| `ml_offers` | **The leksikon's data**: real weekly offers from eTilbudsavis/Tjek — store, product, real price, before-price, image, validity, and a `group_key` for cross-store grouping |
+| `ml_price_history` | One real price point per (`group_key`, store, day), appended weekly → the variant price-history chart |
 | `ml_stores` | Store metadata (name, chart colour/dash, locations) |
-| `ml_products` | Catalogue (name, unit, category, seeded registration count) |
-| `ml_monthly_prices` | 12 months × 4 stores × 18 products of monthly-average prices |
 | `ml_registrations` | Append-only community contributions from the scan flow |
-| `ml_offers` | Tilbudsaviser (weekly offers) ingested from eTilbudsavis/Tjek, with images and validity dates |
-| `ml_products.image_url` | A representative photo per product (from offer images) |
-| `ml_total_regs()` | RPC: seeded baseline + real contributions |
 | `ml_scan_allow()` | RPC: per-IP rate limit for the receipt-scan function |
+| `ml_scan_rate` | Backing table for the rate limiter |
+
+The leksikon is built entirely from **real prices** (`ml_offers`); the app
+groups store-specific products by `group_key` for comparison. (The earlier
+synthetic `ml_products` / `ml_monthly_prices` / `ml_total_regs()` objects are
+retained but no longer used by the app.)
 
 **Row Level Security** is enabled on every table: anyone may *read* the
-catalogue/prices and *insert* a registration (validated by table CHECK
-constraints); no updates or deletes are exposed to the public key. The
-monthly prices were seeded with the prototype's original price formula, so
-the numbers match the design exactly (e.g. total `5 801 priser` at launch).
+catalogue and *insert* a registration (validated by CHECK constraints); no
+updates or deletes are exposed to the public key. Offer/history writes happen
+only via the ingest Edge Function's service-role key.
 
 ## Implementation notes
 

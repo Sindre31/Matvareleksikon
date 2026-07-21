@@ -1,37 +1,24 @@
 // Supabase Edge Function: ml-ingest-offers
 // -----------------------------------------------------------------------------
 // Ingests tilbudsaviser (weekly grocery offer catalogues) from the public
-// Tjek / eTilbudsavis API — the same source and approach as the author's
-// `billigkurv` project — and writes them into `ml_offers`. As a bonus, offer
-// images are used to fill a representative picture for each leksikon product
-// (`ml_products.image_url`).
+// Tjek / eTilbudsavis API (same source/approach as `billigkurv`) into
+// `ml_offers`, assigns each a `group_key` so store-specific products can be
+// compared as generic items, and appends a real price point per product to
+// `ml_price_history` (so the per-product chart fills in over time).
 //
-// The Tjek API needs no key. Writes use the service-role key that Supabase
-// injects into Edge Functions, so this runs behind the platform JWT gate.
+// Tjek needs no key (but blocks cloud egress without a browser User-Agent).
+// Writes use the injected service-role key.
 import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 
 const BASE = "https://api.etilbudsavis.dk/v2";
 const CTRY = "NO";
-
-// Low-coverage chains without open price APIs — sweep their whole catalogue.
 const SWEEP: Array<[string, string]> = [["faa0Ym", "rema"], ["257bxm", "kiwi"]];
 const SWEEP_MAX_PAGES = 3;
-
-// Word searches broaden coverage and pull in Extra / Meny offers.
 const SEARCH_TERMS = [
   "meny", "coop extra", "kjøttdeig", "kylling", "laks", "kaffe", "brød", "melk",
   "ost", "pizza", "yoghurt", "juice", "brus", "frukt", "grønnsaker", "pasta",
+  "taco", "smør", "egg", "banan", "ris", "kjeks", "sjokolade", "mel",
 ];
-
-// leksikon product id -> a search term whose offer image represents it.
-const PRODUCT_TERMS: Record<string, string> = {
-  melk: "lettmelk", brod: "grovbrød", egg: "egg", smor: "meierismør",
-  norvegia: "norvegia", banan: "banan", tomat: "tomat", potet: "poteter",
-  kaffe: "filtermalt kaffe", pasta: "spaghetti", ris: "jasminris",
-  havregryn: "havregryn", kjottdeig: "kjøttdeig", laks: "laksefilet",
-  kylling: "kyllingfilet", pizza: "frossenpizza", cola: "cola",
-  appelsinjuice: "appelsinjuice",
-};
 
 function storeSlug(name: string | undefined): string | null {
   const s = (name || "").toLowerCase();
@@ -51,10 +38,25 @@ function dealerCountry(dealer: any): string | undefined {
   return !c ? undefined : (typeof c === "string" ? c : c.id);
 }
 
+// Generic grouping key: fold Norwegian letters, drop sizes/units/%, drop common
+// store/house brands, keep the descriptive words. Imperfect but groups clearly
+// similar items (e.g. "TACOSAUS MEDIUM" across stores).
+const BRAND_RE = /\b(rema|kiwi|coop|extra|meny|spar|first ?price|x-?tra|xtra|eldorado|prima|folkets|anglamark|q|tine|gilde|synnove|nordfjord|prior|stange|jacobs)\b/g;
+function groupKey(name: string): string {
+  let s = (name || "").toLowerCase()
+    .replace(/ø/g, "o").replace(/æ/g, "ae").replace(/å/g, "a")
+    .replace(/\d+([.,]\d+)?\s*(kg|hg|g|ml|cl|dl|l|stk|pk|pakk|pack|kop)\b/g, " ")
+    .replace(/\d+([.,]\d+)?\s*%/g, " ")
+    .replace(BRAND_RE, " ")
+    .replace(/[^a-z0-9 ]/g, " ")
+    .replace(/\s+/g, " ").trim();
+  if (!s) s = (name || "").toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
+  return s;
+}
+
 const TJEK_HEADERS = {
   Accept: "application/json",
   "Accept-Language": "nb-NO,nb;q=0.9,en;q=0.8",
-  // Tjek blocks requests with no / non-browser User-Agent from cloud egress.
   "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36",
 };
 async function getOffers(url: string): Promise<any[]> {
@@ -66,19 +68,12 @@ async function getOffers(url: string): Promise<any[]> {
   } catch (e) { console.error("tjek fetch error", String(e)); return []; }
 }
 
-async function searchFirstImage(term: string): Promise<string | null> {
-  const page = await getOffers(`${BASE}/offers/search?query=${encodeURIComponent(term)}&limit=10&country_id=${CTRY}`);
-  for (const o of page) { const img = o?.images?.view || o?.images?.zoom || o?.images?.thumb; if (img) return img; }
-  return null;
-}
-
-Deno.serve(async (req: Request) => {
+Deno.serve(async (_req: Request) => {
   const SB_URL = Deno.env.get("SUPABASE_URL");
   const SB_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY");
   if (!SB_URL || !SB_KEY) return json({ error: "Service role not available" }, 500);
   const sbHeaders = { "Content-Type": "application/json", apikey: SB_KEY, Authorization: `Bearer ${SB_KEY}` };
 
-  // 1) Collect offers (dedup by id) from sweeps + searches.
   const seen = new Set<string>();
   const rows: Record<string, unknown>[] = [];
   const collect = (offers: any[]) => {
@@ -95,6 +90,7 @@ Deno.serve(async (req: Request) => {
         external_id: String(id),
         store_id: slug,
         product_name: o.heading,
+        group_key: groupKey(o.heading),
         price,
         pre_price: typeof pre === "number" ? pre : null,
         unit: o?.quantity?.unit?.symbol ?? null,
@@ -117,12 +113,11 @@ Deno.serve(async (req: Request) => {
     collect(await getOffers(`${BASE}/offers/search?query=${encodeURIComponent(term)}&limit=100&country_id=${CTRY}`));
   }
 
-  // Dedup by external_id (unique key) so the bulk insert can't self-conflict.
   const byExt = new Map<string, Record<string, unknown>>();
   for (const r of rows) byExt.set(r.external_id as string, r);
   const offerRows = [...byExt.values()];
 
-  // 2) Replace this source's offers.
+  // Replace this source's offers.
   await fetch(`${SB_URL}/rest/v1/ml_offers?source=eq.etilbudsavis`, { method: "DELETE", headers: sbHeaders });
   let inserted = 0;
   for (let i = 0; i < offerRows.length; i += 500) {
@@ -130,22 +125,32 @@ Deno.serve(async (req: Request) => {
     const res = await fetch(`${SB_URL}/rest/v1/ml_offers`, {
       method: "POST", headers: { ...sbHeaders, Prefer: "return=minimal" }, body: JSON.stringify(chunk),
     });
-    if (res.ok) inserted += chunk.length;
-    else console.error("offer insert failed:", res.status, await res.text());
+    if (res.ok) inserted += chunk.length; else console.error("offer insert failed:", res.status, await res.text());
   }
 
-  // 3) Fill a representative image per leksikon product.
-  let productImages = 0;
-  for (const [productId, term] of Object.entries(PRODUCT_TERMS)) {
-    const img = await searchFirstImage(term);
-    if (!img) continue;
-    const res = await fetch(`${SB_URL}/rest/v1/ml_products?id=eq.${productId}`, {
-      method: "PATCH", headers: { ...sbHeaders, Prefer: "return=minimal" }, body: JSON.stringify({ image_url: img }),
+  // Append one price point per (group_key, store) — the cheapest today — into history.
+  const today = new Date().toISOString().slice(0, 10);
+  const histMap = new Map<string, any>();
+  for (const r of offerRows as any[]) {
+    const k = r.group_key + "|" + r.store_id;
+    const ex = histMap.get(k);
+    if (!ex || Number(r.price) < Number(ex.price)) histMap.set(k, r);
+  }
+  const historyRows = [...histMap.values()].map((r) => ({
+    group_key: r.group_key, store_id: r.store_id, product_name: r.product_name, image_url: r.image_url,
+    price: r.price, pre_price: r.pre_price, is_offer: r.pre_price != null && Number(r.pre_price) > Number(r.price),
+    observed_at: today,
+  }));
+  let historyInserted = 0;
+  for (let i = 0; i < historyRows.length; i += 500) {
+    const chunk = historyRows.slice(i, i + 500);
+    const res = await fetch(`${SB_URL}/rest/v1/ml_price_history?on_conflict=group_key,store_id,observed_at`, {
+      method: "POST", headers: { ...sbHeaders, Prefer: "resolution=merge-duplicates,return=minimal" }, body: JSON.stringify(chunk),
     });
-    if (res.ok) productImages++;
+    if (res.ok) historyInserted += chunk.length; else console.error("history upsert failed:", res.status, await res.text());
   }
 
-  return json({ offersFound: offerRows.length, offersInserted: inserted, productImages });
+  return json({ offersFound: offerRows.length, offersInserted: inserted, historyInserted });
 });
 
 function json(body: unknown, status = 200) {
