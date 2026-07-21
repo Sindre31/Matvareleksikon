@@ -41,6 +41,9 @@ python3 -m http.server 8000
 - **Produktside** `#/produkt/:id` — per-store prices with the cheapest
   flagged, and a price-trend line chart per store with a 6/12-month toggle
   (the prototype's `chartMonths` option).
+- **Tilbud** `#/tilbud` — this week's active offers from the chains'
+  tilbudsaviser, with product images, before-prices and validity dates,
+  filterable by store.
 - **Skann kvittering** `#/skann` — upload a photo (or use the phone camera)
   → the image is sent to a **Supabase Edge Function that runs Google Gemini
   vision** → the parsed line items and detected store are pre-filled for
@@ -58,7 +61,10 @@ schema:
 | `ml_products` | Catalogue (name, unit, category, seeded registration count) |
 | `ml_monthly_prices` | 12 months × 4 stores × 18 products of monthly-average prices |
 | `ml_registrations` | Append-only community contributions from the scan flow |
+| `ml_offers` | Tilbudsaviser (weekly offers) ingested from eTilbudsavis/Tjek, with images and validity dates |
+| `ml_products.image_url` | A representative photo per product (from offer images) |
 | `ml_total_regs()` | RPC: seeded baseline + real contributions |
+| `ml_scan_allow()` | RPC: per-IP rate limit for the receipt-scan function |
 
 **Row Level Security** is enabled on every table: anyone may *read* the
 catalogue/prices and *insert* a registration (validated by table CHECK
@@ -106,6 +112,26 @@ supabase secrets set GEMINI_API_KEY=your-key --project-ref jiaxeedguivvhixychcg
 
 Optional: `GEMINI_MODEL` (default `gemini-2.0-flash`). Until the secret is set
 the function returns a clear "AI-tjenesten er ikke konfigurert" message.
+
+### Tilbudsaviser & product images
+
+Weekly offers come from the **public Tjek / eTilbudsavis API** (no key), the
+same source as `billigkurv`. The `ml-ingest-offers` Edge Function
+(`supabase/functions/ml-ingest-offers/`) sweeps the Rema/Kiwi dealer
+catalogues and searches broader terms, maps offers onto the four chains, and
+writes them into `ml_offers` (via the injected service-role key). As a bonus,
+it fills `ml_products.image_url` with a representative photo per product from
+the offer images. Re-run it any time to refresh (it replaces the
+`etilbudsavis` rows):
+
+```bash
+curl -X POST https://<project>.supabase.co/functions/v1/ml-ingest-offers \
+  -H "Authorization: Bearer <anon-key>"
+```
+
+(The function sends a browser `User-Agent`; Tjek blocks cloud egress without
+one.) A `pg_cron` schedule or a GitHub Action could keep it fresh, as
+`billigkurv` does.
 
 ## Deployment
 

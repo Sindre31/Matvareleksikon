@@ -36,7 +36,7 @@
     STORES = stores.map(function (s) { return { id: s.id, name: s.name, color: s.color, dash: s.dash || '', places: s.places || [] }; });
     var storeIndex = {};
     STORES.forEach(function (s, i) { storeIndex[s.id] = i; });
-    PRODUCTS = products.map(function (p) { return { id: p.id, name: p.name, unit: p.unit, cat: p.category, regs: p.base_regs, seed: p.sort_order + 1 }; });
+    PRODUCTS = products.map(function (p) { return { id: p.id, name: p.name, unit: p.unit, cat: p.category, regs: p.base_regs, seed: p.sort_order + 1, image: p.image_url || null }; });
     PRICES = {};
     PRODUCTS.forEach(function (p) { PRICES[p.id] = STORES.map(function () { return new Array(12); }); });
     priceRows.forEach(function (row) {
@@ -54,7 +54,8 @@
     scanStore: 'Kiwi', scanPlace: 'Kiwi Grünerløkka, Oslo',
     scanSubmitting: false, scanError: null, scanImageUrl: null, scanNote: null,
     bootTotal: 0, doneCount: 0, doneMsgN: 0,
-    chartMonths: 12 // prototype prop `chartMonths` (enum 6|12, default 12)
+    chartMonths: 12, // prototype prop `chartMonths` (enum 6|12, default 12)
+    offers: [], offersLoaded: false, offersLoading: false, offerCat: 'Alle'
   };
   var timers = [];
 
@@ -231,6 +232,7 @@
     var hn = (location.hash || '').replace(/^#/, '');
     if (hn.indexOf('/produkt/') === 0) return { view: 'product', productId: decodeURIComponent(hn.slice('/produkt/'.length)) };
     if (hn === '/skann') return { view: 'scan' };
+    if (hn === '/tilbud') return { view: 'tilbud' };
     return { view: 'home' };
   }
   function route() {
@@ -241,14 +243,27 @@
       state.view = 'product'; state.productId = r.productId;
     } else if (r.view === 'scan') {
       state.view = 'scan';
+    } else if (r.view === 'tilbud') {
+      state.view = 'tilbud'; loadOffers();
     } else {
       state.view = 'home';
     }
     render();
   }
+  var HASH_FOR = { home: '#/', scan: '#/skann', tilbud: '#/tilbud' };
   function go(hash) { if (location.hash === hash || (hash === '#/' && !location.hash)) route(); else location.hash = hash; }
   function open(id) { return function () { go('#/produkt/' + id); window.scrollTo(0, 0); }; }
-  function nav(view) { return function (e) { if (e && e.preventDefault) e.preventDefault(); go(view === 'scan' ? '#/skann' : '#/'); window.scrollTo(0, 0); }; }
+  function nav(view) { return function (e) { if (e && e.preventDefault) e.preventDefault(); go(HASH_FOR[view] || '#/'); window.scrollTo(0, 0); }; }
+
+  // ── Tilbudsaviser (offers) ───────────────────────────────────────────────
+  function loadOffers() {
+    if (state.offersLoaded || state.offersLoading) return;
+    state.offersLoading = true;
+    sb('/ml_offers?select=store_id,product_name,price,pre_price,unit,offer_text,image_url,valid_from,valid_until&order=valid_until.desc.nullslast&limit=400')
+      .then(function (r) { return r.ok ? r.json() : []; })
+      .then(function (rows) { state.offers = rows || []; state.offersLoaded = true; state.offersLoading = false; if (state.view === 'tilbud') render(); })
+      .catch(function () { state.offersLoading = false; if (state.view === 'tilbud') render(); });
+  }
 
   // ── Derived home values ──────────────────────────────────────────────────
   function totalRegsText() { return (state.bootTotal + state.doneCount).toLocaleString('nb-NO').replace(/\s/g, ' '); }
@@ -262,7 +277,7 @@
       var prices = STORES.map(function (s, si) { return priceAt(p, si, 11); });
       var avgNow = prices.reduce(function (a, b) { return a + b; }) / STORES.length;
       var avgPrev = STORES.map(function (s, si) { return priceAt(p, si, 10); }).reduce(function (a, b) { return a + b; }) / STORES.length;
-      return { name: p.name, cat: p.cat, unit: p.unit, regs: p.regs, from: 'fra ' + nf(Math.min.apply(null, prices)), pct: fmtPct((avgNow / avgPrev - 1) * 100), open: open(p.id) };
+      return { name: p.name, cat: p.cat, unit: p.unit, regs: p.regs, image: p.image, from: 'fra ' + nf(Math.min.apply(null, prices)), pct: fmtPct((avgNow / avgPrev - 1) * 100), open: open(p.id) };
     });
     var changes = PRODUCTS.map(function (p) {
       var now = STORES.map(function (s, si) { return priceAt(p, si, 11); }).reduce(function (a, b) { return a + b; }) / STORES.length;
@@ -298,6 +313,7 @@
     return h('nav', { cls: 'nav', 'data-screen-label': 'Topplinje', style: 'padding-inline: max(24px, calc((100% - 1160px) / 2 + 24px));' }, [
       h('span', { cls: 'nav-brand', onClick: nav('home'), style: 'cursor: pointer;', text: 'Prisboka' }),
       h('a', { href: '#/', onClick: nav('home'), text: 'Leksikon' }),
+      h('a', { href: '#/tilbud', onClick: nav('tilbud'), text: 'Tilbud' }),
       h('a', { href: '#/skann', onClick: nav('scan'), text: 'Bidra med priser' }),
       h('span', { style: 'flex: 1;' }),
       h('span', { style: 'font-size: 13px; letter-spacing: 0.06em; text-transform: uppercase; color: ' + MUTED70 + "; font-feature-settings: 'tnum' 1;", text: totalText + ' priser · fellesskapsregistrert' }),
@@ -356,6 +372,9 @@
 
     var grid = h('div', { style: 'display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: 32px;' }, v.filtered.map(function (p) {
       return h('div', { cls: 'blueprint card-hover', onClick: p.open, style: 'padding: 20px; cursor: pointer; display: flex; flex-direction: column; gap: 8px;' }, corners().concat([
+        p.image ? h('div', { style: 'margin: -20px -20px 4px; height: 128px; background: #fff; display: flex; align-items: center; justify-content: center; overflow: hidden; border-bottom: 1px solid var(--color-divider);' }, [
+          h('img', { src: p.image, alt: p.name, loading: 'lazy', style: 'max-width: 88%; max-height: 100%; object-fit: contain; mix-blend-mode: multiply;' })
+        ]) : null,
         h('span', { style: 'font-size: 12px; letter-spacing: 0.08em; text-transform: uppercase; font-weight: 600; color: ' + MUTED60 + ';', text: p.cat }),
         h('span', { style: 'font-family: var(--font-heading); font-weight: 600; font-size: 24px; line-height: 1.1; letter-spacing: 0.02em; text-transform: uppercase;', text: p.name }),
         h('span', { style: 'font-size: 13px; color: ' + MUTED60 + ';', text: p.unit }),
@@ -395,7 +414,7 @@
     var chart = chartFor(p, months);
     var rangeLabel = 'siste ' + months + ' måneder';
 
-    var head = h('div', { style: 'padding: 40px 0 24px;' }, [
+    var headText = h('div', { style: 'flex: 1; min-width: 260px;' }, [
       h('a', { href: '#/', onClick: nav('home'), style: 'font-size: 13px; letter-spacing: 0.08em; text-transform: uppercase; font-weight: 600;', text: '← Tilbake til leksikonet' }),
       h('div', { style: 'display: flex; flex-wrap: wrap; align-items: baseline; gap: 16px; margin-top: 20px;' }, [
         h('h1', { style: 'margin: -0.052em 0 0; font-size: clamp(36px, 5vw, 60px); line-height: 1.04; letter-spacing: 0.01em; text-transform: uppercase;', text: prod.name }),
@@ -407,6 +426,10 @@
         h('strong', { style: 'color: var(--color-text);', text: prod.cheapest })
       ])
     ]);
+    var headImg = p.image ? h('div', { cls: 'blueprint', style: 'flex: none; width: 190px; height: 190px; background: #fff; display: flex; align-items: center; justify-content: center; overflow: hidden;' }, corners().concat([
+      h('img', { src: p.image, alt: prod.name, style: 'max-width: 82%; max-height: 82%; object-fit: contain; mix-blend-mode: multiply;' })
+    ])) : null;
+    var head = h('div', { style: 'padding: 40px 0 24px; display: flex; flex-wrap: wrap; gap: 28px; align-items: flex-start;' }, [headText, headImg]);
 
     var tableHeader = h('div', { style: 'display: grid; grid-template-columns: 1fr 110px 150px 1.2fr; gap: 8px; align-items: center; padding: 12px 20px; border-bottom: 1px solid var(--color-divider); font-size: 12px; letter-spacing: 0.08em; text-transform: uppercase; font-weight: 600; color: ' + MUTED70 + ';' }, [
       h('span', { text: 'Butikk' }), h('span', { style: 'text-align: right;', text: 'Pris' }), h('span', { text: 'Sist registrert' }), h('span', { text: 'Registrert ved' })
@@ -560,6 +583,59 @@
     return h('section', { 'data-screen-label': 'Skann kvittering' }, [head, body]);
   }
 
+  function renderTilbud() {
+    var storeName = {}; STORES.forEach(function (s) { storeName[s.id] = s.name; });
+    var today = new Date().toISOString().slice(0, 10);
+    var cat = state.offerCat || 'Alle';
+    var valid = state.offers.filter(function (o) { return !o.valid_until || o.valid_until >= today; });
+    var list = valid.filter(function (o) { return cat === 'Alle' || storeName[o.store_id] === cat; })
+      .sort(function (a, b) { return Number(a.price) - Number(b.price); });
+
+    var head = h('div', { style: 'padding: 56px 0 24px;' }, [
+      h('h1', { style: 'margin: -0.052em 0 0; font-size: clamp(36px, 5vw, 60px); line-height: 1.04; letter-spacing: 0.01em; text-transform: uppercase;', text: 'Tilbud denne uka' }),
+      h('p', { style: 'margin: 16px 0 0; max-width: 60ch; font-size: 16px; line-height: 24px;', text: 'Aktive tilbud hentet fra kjedenes tilbudsaviser. Kilde: eTilbudsavis.' })
+    ]);
+    var chips = h('div', { style: 'display: flex; flex-wrap: wrap; gap: 10px; margin: 0 0 28px;' }, ['Alle', 'Rema 1000', 'Kiwi', 'Extra', 'Meny'].map(function (c) {
+      var count = c === 'Alle' ? valid.length : valid.filter(function (o) { return storeName[o.store_id] === c; }).length;
+      return h('button', { type: 'button', cls: 'btn ' + (c === cat ? 'btn-primary' : 'btn-ghost'), onClick: function () { setState({ offerCat: c }); }, style: 'min-height: 34px; padding: 4px 14px; font-size: 13px; letter-spacing: 0.06em; text-transform: uppercase;', text: c + ' (' + count + ')' });
+    }));
+
+    var body;
+    if (state.offersLoading && !state.offersLoaded) {
+      body = h('p', { style: 'font-size: 15px; color: ' + MUTED70 + ';', text: 'Laster tilbud …' });
+    } else if (!list.length) {
+      body = h('p', { style: 'font-size: 15px; color: ' + MUTED70 + ';', text: 'Ingen aktive tilbud å vise akkurat nå.' });
+    } else {
+      body = h('div', { style: 'display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 28px;' }, list.map(function (o) {
+        var vu = o.valid_until;
+        var validTxt = vu ? 'Gyldig til ' + vu.slice(8, 10) + '.' + vu.slice(5, 7) : 'Tilbud';
+        var hasPre = o.pre_price && Number(o.pre_price) > Number(o.price);
+        return h('div', { cls: 'blueprint', style: 'padding: 0; display: flex; flex-direction: column;' }, corners().concat([
+          o.image_url ? h('div', { style: 'height: 150px; background: #fff; display: flex; align-items: center; justify-content: center; overflow: hidden; border-bottom: 1px solid var(--color-divider);' }, [
+            h('img', { src: o.image_url, alt: o.product_name, loading: 'lazy', style: 'max-width: 90%; max-height: 100%; object-fit: contain; mix-blend-mode: multiply;' })
+          ]) : null,
+          h('div', { style: 'padding: 14px 16px; display: flex; flex-direction: column; gap: 6px;' }, [
+            h('div', { style: 'display: flex; justify-content: space-between; align-items: center; gap: 8px;' }, [
+              h('span', { cls: 'tag tag-outline', text: storeName[o.store_id] || o.store_id }),
+              h('span', { style: 'font-size: 12px; color: ' + MUTED60 + ';', text: validTxt })
+            ]),
+            h('span', { style: 'font-family: var(--font-heading); font-weight: 600; font-size: 18px; line-height: 1.12; letter-spacing: 0.02em; text-transform: uppercase;', text: o.product_name }),
+            h('div', { style: 'display: flex; align-items: baseline; gap: 8px; margin-top: 2px;' }, [
+              h('span', { style: "font-family: var(--font-heading); font-weight: 600; font-size: 24px; font-feature-settings: 'tnum' 1;", text: nf(Number(o.price)) }),
+              hasPre ? h('span', { style: "font-size: 13px; color: " + MUTED60 + "; text-decoration: line-through; font-feature-settings: 'tnum' 1;", text: nf(Number(o.pre_price)) }) : null,
+              o.unit ? h('span', { style: 'font-size: 12px; color: ' + MUTED60 + ';', text: '/ ' + o.unit }) : null
+            ])
+          ])
+        ]));
+      }));
+    }
+    return h('section', { 'data-screen-label': 'Tilbud' }, [
+      head,
+      h('hr', { style: 'height: 1px; border: 0; margin: 20px 0 24px; background: var(--color-divider);' }),
+      chips, body
+    ]);
+  }
+
   function centeredCard(children) {
     return h('div', { style: 'max-width: 1160px; margin: 0 auto; padding: 96px 24px;' }, [
       h('div', { cls: 'blueprint', style: 'max-width: 520px; padding: 28px;' }, corners().concat(children))
@@ -614,6 +690,7 @@
     if (state.view === 'home') container.appendChild(renderHome(v));
     else if (state.view === 'product') container.appendChild(renderProduct());
     else if (state.view === 'scan') container.appendChild(renderScan());
+    else if (state.view === 'tilbud') container.appendChild(renderTilbud());
     frag.appendChild(container);
     root.appendChild(frag);
     restoreFocus(focus);
