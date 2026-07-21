@@ -42,7 +42,10 @@ python3 -m http.server 8000
   **"På tilbud"**. Filter by store.
 - **Produktgruppe** `#/gruppe/:key` — a generic product and **where it's sold**:
   the store variants ("REMA 1000 Tacosaus Medium", "Coop Extra Tacosaus" …) with
-  prices, before-prices and validity, cheapest first.
+  prices, before-prices and validity, cheapest first. Where a package size is
+  stated in the name, each row also shows the **price per litre/kilo/piece**, and
+  when *every* store's variant is size-comparable the "cheapest" is ranked by
+  that unit price — so a small carton no longer looks cheaper than a big one.
 - **Produktside (variant)** `#/vare/:key/:store` — one store's product and its
   **price history** chart (real, built up weekly from `ml_price_history`). When a
   product is on offer, the ingest functions automatically record its before-price
@@ -79,6 +82,13 @@ updates or deletes are exposed to the public key. Offer/history writes happen
 only via the ingest Edge Function's service-role key.
 
 ## Implementation notes
+
+**Accessibility & empty states.** Clickable cards and table rows are exposed as
+keyboard-operable buttons (`role="button"`, `tabindex`, Enter/Space) with
+descriptive `aria-label`s; the store filter is an `aria-pressed` button group.
+Every screen has a real empty/error state: a distinct message for no-search-hits
+vs. an empty store filter vs. an empty catalogue, a "fant ikke varen" view for a
+dead product deep link, and a boot-failure screen with a retry button.
 
 The prototype's React-based `DCLogic` component is ported to plain
 JavaScript. The rendering and the `chartFor()` / price-change / cheapest-per

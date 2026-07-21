@@ -36,6 +36,42 @@
   }
   function pctOff(v) { return v.prePrice ? Math.round((1 - v.price / v.prePrice) * 100) : 0; }
 
+  // Parse a comparable amount out of a product name so prices can be compared
+  // per litre / kilogram / piece — otherwise "billigst" wrongly favours small
+  // packs (a 0,5 l carton looks cheaper than a 1 l one). Returns { value, dim }
+  // in base units (l, kg, stk) or null when no size is stated.
+  function baseAmount(n, u) {
+    n = parseFloat(n);
+    if (!isFinite(n) || n <= 0) return null;
+    var f = { l: 1, dl: 0.1, cl: 0.01, ml: 0.001, kg: 1, hg: 0.1, g: 0.001 }[u];
+    if (f == null) return null;
+    return { value: n * f, dim: (u === 'kg' || u === 'hg' || u === 'g') ? 'kg' : 'l' };
+  }
+  function parseAmount(name) {
+    var s = ' ' + String(name || '').toLowerCase().replace(/,/g, '.') + ' ';
+    // multipack: "4 x 1.5l", "6x33cl"
+    var mp = s.match(/(\d+(?:\.\d+)?)\s*[x×]\s*(\d+(?:\.\d+)?)\s*(kg|hg|g|dl|cl|ml|l)(?![a-zæøå])/);
+    if (mp) { var b = baseAmount(mp[2], mp[3]); if (b) return { value: b.value * parseFloat(mp[1]), dim: b.dim }; }
+    // largest single weight/volume token
+    var re = /(\d+(?:\.\d+)?)\s*(kg|hg|g|dl|cl|ml|l)(?![a-zæøå])/g, m, best = null;
+    while ((m = re.exec(s))) { var b2 = baseAmount(m[1], m[2]); if (b2 && (!best || b2.value > best.value)) best = b2; }
+    if (best) return best;
+    // count: "6 stk", "10-pk", "4 pakk"
+    var pk = s.match(/(\d+)\s*[-\s]?\s*(?:stk|pk|pakk|stykk)(?![a-zæøå])/);
+    if (pk) { var c = parseFloat(pk[1]); if (c > 0) return { value: c, dim: 'stk' }; }
+    return null;
+  }
+  function nfUnit(perUnit, dim) { return nf(perUnit) + '/' + dim; }
+
+  // Make a non-native clickable element keyboard-operable (Enter/Space) and
+  // announced as a button. Merge the returned props into the element.
+  function activate(handler, label) {
+    return {
+      role: 'button', tabindex: '0', 'aria-label': label || false, onClick: handler,
+      onKeydown: function (e) { if (e.key === 'Enter' || e.key === ' ' || e.key === 'Spacebar') { e.preventDefault(); handler(e); } }
+    };
+  }
+
   function buildStores(rows) {
     STORES = rows.map(function (s) { return { id: s.id, name: s.name, color: s.color, dash: s.dash || '', places: s.places || [] }; });
     STORE_NAME = {}; STORE_STYLE = {};
@@ -56,23 +92,32 @@
       var st = o.store_id, price = Number(o.price);
       var prev = g.variants[st];
       if (!prev || price < prev.price) {
+        var amt = parseAmount(o.product_name);
         g.variants[st] = {
           storeId: st, storeName: STORE_NAME[st] || st,
           color: (STORE_STYLE[st] || {}).color || 'var(--color-accent)', dash: (STORE_STYLE[st] || {}).dash || '',
           rawName: o.product_name, name: cleanName(o.product_name),
           price: price, prePrice: o.pre_price != null ? Number(o.pre_price) : null,
           unit: o.unit || null, image: o.image_url || null, validUntil: o.valid_until || null,
-          isOffer: o.pre_price != null && Number(o.pre_price) > price
+          isOffer: o.pre_price != null && Number(o.pre_price) > price,
+          unitDim: amt ? amt.dim : null, perUnit: amt ? price / amt.value : null
         };
       }
     });
     GROUPS = Object.keys(map).map(function (key) {
-      var variants = Object.keys(map[key].variants).map(function (s) { return map[key].variants[s]; })
-        .sort(function (a, b) { return a.price - b.price; });
+      var variants = Object.keys(map[key].variants).map(function (s) { return map[key].variants[s]; });
+      // Size-aware comparison: when every store's variant states the same kind of
+      // amount, order and label by price-per-unit; otherwise fall back to pack price.
+      var comparable = variants.length >= 2 && variants.every(function (v) { return v.perUnit != null && v.unitDim === variants[0].unitDim; });
+      if (comparable) variants.sort(function (a, b) { return a.perUnit - b.perUnit; });
+      else variants.sort(function (a, b) { return a.price - b.price; });
       var img = null; for (var i = 0; i < variants.length; i++) { if (variants[i].image) { img = variants[i].image; break; } }
       return {
         key: key, name: variants[0] ? variants[0].name : key, variants: variants, image: img,
-        minPrice: variants[0] ? variants[0].price : 0, storeCount: variants.length,
+        minPrice: variants.reduce(function (m, v) { return Math.min(m, v.price); }, Infinity),
+        storeCount: variants.length,
+        compDim: comparable ? variants[0].unitDim : null,
+        minUnit: comparable ? variants[0].perUnit : null,
         onOffer: variants.some(function (v) { return v.isOffer; }),
         bestOff: variants.reduce(function (m, v) { return Math.max(m, pctOff(v)); }, 0),
         searchText: (variants.map(function (v) { return v.rawName; }).join(' ') + ' ' + key).toLowerCase()
@@ -276,7 +321,7 @@
 
   function renderNav() {
     return h('nav', { cls: 'nav', 'data-screen-label': 'Topplinje', style: 'padding-inline: max(24px, calc((100% - 1160px) / 2 + 24px));' }, [
-      h('span', { cls: 'nav-brand', onClick: nav('home'), style: 'cursor: pointer;', text: 'Prisboka' }),
+      h('span', Object.assign({ cls: 'nav-brand', style: 'cursor: pointer;', text: 'Prisboka' }, activate(nav('home'), 'Prisboka — til forsiden'))),
       h('a', { href: '#/', onClick: nav('home'), text: 'Leksikon' }),
       h('a', { href: '#/skann', onClick: nav('scan'), text: 'Bidra med priser' }),
       h('span', { style: 'flex: 1;' }),
@@ -319,7 +364,7 @@
         h('hr', { style: RULE }),
         h('div', { style: 'display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 28px;' }, offers.slice(0, 8).map(function (o) {
           var v = o.v;
-          return h('div', { cls: 'blueprint card-hover', onClick: openGroup(o.g.key), style: 'padding: 0; cursor: pointer; display: flex; flex-direction: column;' }, corners().concat([
+          return h('div', Object.assign({ cls: 'blueprint card-hover', style: 'padding: 0; cursor: pointer; display: flex; flex-direction: column;' }, activate(openGroup(o.g.key), o.g.name + ', tilbud hos ' + v.storeName + ', ' + nf(v.price))), corners().concat([
             imgBox(v.image, v.name, '150px'),
             h('div', { style: 'padding: 14px 16px; display: flex; flex-direction: column; gap: 6px;' }, [
               h('div', { style: 'display: flex; justify-content: space-between; align-items: center; gap: 8px;' }, [
@@ -337,14 +382,15 @@
       ]);
     }
 
-    var chips = h('div', { style: 'display: flex; flex-wrap: wrap; gap: 10px; margin-bottom: 32px;' }, ['Alle', 'Rema 1000', 'Kiwi', 'Extra', 'Meny'].map(function (c) {
-      return h('button', { type: 'button', cls: 'btn ' + (c === sf ? 'btn-primary' : 'btn-ghost'), onClick: function () { setState({ storeFilter: c }); }, style: 'min-height: 34px; padding: 4px 14px; font-size: 13px; letter-spacing: 0.06em; text-transform: uppercase;', text: c });
+    var storeChips = ['Alle'].concat(STORES.map(function (s) { return s.name; }));
+    var chips = h('div', { role: 'group', 'aria-label': 'Filtrer på butikk', style: 'display: flex; flex-wrap: wrap; gap: 10px; margin-bottom: 32px;' }, storeChips.map(function (c) {
+      return h('button', { type: 'button', cls: 'btn ' + (c === sf ? 'btn-primary' : 'btn-ghost'), 'aria-pressed': c === sf ? 'true' : 'false', onClick: function () { setState({ storeFilter: c }); }, style: 'min-height: 34px; padding: 4px 14px; font-size: 13px; letter-spacing: 0.06em; text-transform: uppercase;', text: c });
     }));
 
     var grid = h('div', { style: 'display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: 32px;' }, shown.map(function (g) {
       var priceTxt = g.storeCount > 1 ? 'fra ' + nf(g.minPrice) : nf(g.minPrice);
       var whereTxt = g.storeCount > 1 ? 'hos ' + g.storeCount + ' butikker' : g.variants[0].storeName;
-      return h('div', { cls: 'blueprint card-hover', onClick: openGroup(g.key), style: 'padding: 0; cursor: pointer; display: flex; flex-direction: column;' }, corners().concat([
+      return h('div', Object.assign({ cls: 'blueprint card-hover', style: 'padding: 0; cursor: pointer; display: flex; flex-direction: column;' }, activate(openGroup(g.key), g.name + ', ' + priceTxt + ' ' + whereTxt)), corners().concat([
         imgBox(g.image, g.name, '150px'),
         h('div', { style: 'padding: 16px 18px 18px; display: flex; flex-direction: column; gap: 6px;' }, [
           h('div', { style: 'display: flex; gap: 8px; align-items: center; min-height: 20px;' }, [
@@ -364,16 +410,29 @@
       h('hr', { style: 'height: 1px; border: 0; margin: 0 0 20px; background: var(--color-divider);' }),
       chips, grid,
       filtered.length > CAP ? h('p', { style: 'margin-top: 24px; font-size: 14px; color: ' + MUTED70 + ';', text: 'Viser de første ' + CAP + ' av ' + filtered.length + ' varer — søk for å finne flere.' }) : null,
-      filtered.length === 0 ? h('p', { style: 'font-size: 15px; color: ' + MUTED70 + ';', text: 'Ingen treff på «' + state.query + '». Prøv et annet søk, eller bidra med priser ved å skanne en kvittering.' }) : null
+      filtered.length === 0 ? h('p', { style: 'font-size: 15px; color: ' + MUTED70 + ';', text:
+        GROUPS.length === 0 ? 'Leksikonet er tomt akkurat nå. Prøv igjen om litt, eller bidra med priser ved å skanne en kvittering.'
+        : q ? ('Ingen treff på «' + state.query + '»' + (sf !== 'Alle' ? ' hos ' + sf : '') + '. Prøv et annet søk, eller bidra med priser ved å skanne en kvittering.')
+        : ('Ingen varer' + (sf !== 'Alle' ? ' hos ' + sf : '') + ' akkurat nå. Velg en annen butikk eller nullstill filteret.') }) : null
     ]);
 
     return h('section', { 'data-screen-label': 'Hovedside' }, [hero, bestSection, catalog]);
   }
 
+  function notFoundView(msg) {
+    return h('section', { 'data-screen-label': 'Ikke funnet' }, [
+      h('div', { style: 'padding: 64px 0 24px;' }, [
+        h('h1', { style: H1, text: 'Fant ikke varen' }),
+        h('p', { style: 'margin: 16px 0 24px; max-width: 56ch; font-size: 16px; line-height: 24px; color: ' + MUTED70 + ';', text: msg }),
+        h('a', { href: '#/', onClick: nav('home'), cls: 'btn btn-primary', text: 'Til leksikonet' })
+      ])
+    ]);
+  }
+
   // ── Group page: similar products + where sold ────────────────────────────
   function renderGroup() {
     var g = GROUP_BY_KEY[state.groupKey];
-    if (!g) { go('#/'); return h('div'); }
+    if (!g) return notFoundView('Denne varen finnes ikke i leksikonet lenger — den kan ha gått ut av ukas sortiment. Søk den opp på nytt fra forsiden.');
     var head = h('div', { style: 'padding: 40px 0 24px; display: flex; flex-wrap: wrap; gap: 28px; align-items: flex-start;' }, [
       h('div', { style: 'flex: 1; min-width: 260px;' }, [
         h('a', { href: '#/', onClick: nav('home'), style: 'font-size: 13px; letter-spacing: 0.08em; text-transform: uppercase; font-weight: 600;', text: '← Tilbake til leksikonet' }),
@@ -381,7 +440,8 @@
           h('h1', { style: H1, text: g.name }),
           g.onOffer ? offerTag() : null
         ]),
-        h('p', { style: 'margin: 12px 0 0; font-size: 15px; color: ' + MUTED70 + ';', text: g.storeCount > 1 ? ('Selges hos ' + g.storeCount + ' butikker · billigst ' + nf(g.minPrice)) : ('Selges hos ' + g.variants[0].storeName + ' · ' + nf(g.minPrice)) })
+        h('p', { style: 'margin: 12px 0 0; font-size: 15px; color: ' + MUTED70 + ';', text: g.storeCount > 1 ? ('Selges hos ' + g.storeCount + ' butikker · billigst ' + (g.compDim ? nfUnit(g.minUnit, g.compDim) : nf(g.minPrice))) : ('Selges hos ' + g.variants[0].storeName + ' · ' + nf(g.minPrice)) }),
+        g.compDim ? h('p', { style: 'margin: 6px 0 0; font-size: 13px; color: ' + MUTED60 + ';', text: 'Sammenlignet per ' + g.compDim + ' siden pakningsstørrelsene er ulike.' }) : null
       ]),
       g.image ? h('div', { cls: 'blueprint', style: 'flex: none; width: 190px; height: 190px; background: #fff; display: flex; align-items: center; justify-content: center; overflow: hidden;' }, corners().concat([
         h('img', { src: g.image, alt: g.name, style: 'max-width: 82%; max-height: 82%; object-fit: contain; mix-blend-mode: multiply;' })
@@ -390,7 +450,7 @@
 
     var rows = g.variants.map(function (v) {
       var vu = v.validUntil ? 'Gyldig til ' + v.validUntil.slice(8, 10) + '.' + v.validUntil.slice(5, 7) : '';
-      return h('div', { cls: 'row-hover', onClick: openVariant(g.key, v.storeId), style: 'display: grid; grid-template-columns: 1fr auto auto; gap: 12px; align-items: center; cursor: pointer; padding: 14px 20px; border-bottom: 1px solid color-mix(in srgb, var(--color-text) 8%, transparent);' }, [
+      return h('div', Object.assign({ cls: 'row-hover', style: 'display: grid; grid-template-columns: 1fr auto auto; gap: 12px; align-items: center; cursor: pointer; padding: 14px 20px; border-bottom: 1px solid color-mix(in srgb, var(--color-text) 8%, transparent);' }, activate(openVariant(g.key, v.storeId), v.storeName + ', ' + nf(v.price) + ', se prishistorikk')), [
         h('span', { style: 'display: flex; align-items: center; gap: 12px;' }, [
           storeLine(v.color, v.dash, 18),
           h('span', {}, [
@@ -399,9 +459,12 @@
           ])
         ]),
         v.isOffer ? h('span', { cls: 'tag tag-outline', text: '−' + pctOff(v) + ' %' }) : h('span'),
-        h('span', { style: 'display: flex; align-items: baseline; gap: 8px; justify-content: flex-end;' }, [
-          v.prePrice ? h('span', { style: "font-size: 13px; color: " + MUTED60 + "; text-decoration: line-through; font-feature-settings: 'tnum' 1;", text: nf(v.prePrice) }) : null,
-          h('span', { style: "font-family: var(--font-heading); font-weight: 600; font-size: 22px; font-feature-settings: 'tnum' 1; white-space: nowrap;", text: nf(v.price) + (v.unit ? '/' + v.unit : '') })
+        h('span', { style: 'display: flex; flex-direction: column; align-items: flex-end; gap: 2px;' }, [
+          h('span', { style: 'display: flex; align-items: baseline; gap: 8px; justify-content: flex-end;' }, [
+            v.prePrice ? h('span', { style: "font-size: 13px; color: " + MUTED60 + "; text-decoration: line-through; font-feature-settings: 'tnum' 1;", text: nf(v.prePrice) }) : null,
+            h('span', { style: "font-family: var(--font-heading); font-weight: 600; font-size: 22px; font-feature-settings: 'tnum' 1; white-space: nowrap;", text: nf(v.price) + (v.unit ? '/' + v.unit : '') })
+          ]),
+          (v.perUnit != null) ? h('span', { style: 'font-size: 12px; color: ' + MUTED60 + "; font-feature-settings: 'tnum' 1; white-space: nowrap;", text: nfUnit(v.perUnit, v.unitDim) }) : null
         ])
       ]);
     });
@@ -443,7 +506,7 @@
 
   function renderVariant() {
     var g = GROUP_BY_KEY[state.groupKey];
-    if (!g) { go('#/'); return h('div'); }
+    if (!g) return notFoundView('Denne varen finnes ikke i leksikonet lenger — den kan ha gått ut av ukas sortiment. Søk den opp på nytt fra forsiden.');
     var v = g.variants.filter(function (x) { return x.storeId === state.storeId; })[0] || g.variants[0];
 
     var head = h('div', { style: 'padding: 40px 0 24px; display: flex; flex-wrap: wrap; gap: 28px; align-items: flex-start;' }, [
