@@ -279,7 +279,7 @@
       h('a', { href: '#/', onClick: nav('home'), text: 'Leksikon' }),
       h('a', { href: '#/skann', onClick: nav('scan'), text: 'Bidra med priser' }),
       h('span', { style: 'flex: 1;' }),
-      h('span', { style: 'font-size: 13px; letter-spacing: 0.06em; text-transform: uppercase; color: ' + MUTED70 + "; font-feature-settings: 'tnum' 1;", text: VALID_COUNT + ' priser · fra tilbudsaviser' }),
+      h('span', { style: 'font-size: 13px; letter-spacing: 0.06em; text-transform: uppercase; color: ' + MUTED70 + "; font-feature-settings: 'tnum' 1;", text: VALID_COUNT + ' ekte priser · oppdatert ukentlig' }),
       h('button', { type: 'button', cls: 'btn btn-primary', onClick: nav('scan'), text: 'Skann kvittering' })
     ]);
   }
@@ -292,7 +292,9 @@
       if (sf !== 'Alle' && !g.variants.some(function (v) { return v.storeName === sf; })) return false;
       if (q && g.searchText.indexOf(q) === -1) return false;
       return true;
-    }).sort(function (a, b) { return a.name.localeCompare(b.name, 'nb'); });
+    }).sort(function (a, b) { return (b.onOffer - a.onOffer) || a.name.localeCompare(b.name, 'nb'); });
+    var CAP = 150;
+    var shown = filtered.slice(0, CAP);
 
     var hero = h('div', { style: 'padding: 64px 0 40px;' }, [
       h('h1', { style: 'margin: -0.052em 0 0; font-size: clamp(44px, 6vw, 76px); line-height: 1.04; letter-spacing: 0.01em; text-transform: uppercase;' }, ['Matvareleksikonet', h('br'), 'med ekte priser']),
@@ -338,7 +340,7 @@
       return h('button', { type: 'button', cls: 'btn ' + (c === sf ? 'btn-primary' : 'btn-ghost'), onClick: function () { setState({ storeFilter: c }); }, style: 'min-height: 34px; padding: 4px 14px; font-size: 13px; letter-spacing: 0.06em; text-transform: uppercase;', text: c });
     }));
 
-    var grid = h('div', { style: 'display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: 32px;' }, filtered.map(function (g) {
+    var grid = h('div', { style: 'display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: 32px;' }, shown.map(function (g) {
       var priceTxt = g.storeCount > 1 ? 'fra ' + nf(g.minPrice) : nf(g.minPrice);
       var whereTxt = g.storeCount > 1 ? 'hos ' + g.storeCount + ' butikker' : g.variants[0].storeName;
       return h('div', { cls: 'blueprint card-hover', onClick: openGroup(g.key), style: 'padding: 0; cursor: pointer; display: flex; flex-direction: column;' }, corners().concat([
@@ -360,6 +362,7 @@
       h('span', { style: KICKER, text: q ? 'Treff i leksikonet (' + filtered.length + ')' : (bestSection ? '02 · Hele leksikonet (' + filtered.length + ' varer)' : 'Hele leksikonet (' + filtered.length + ' varer)') }),
       h('hr', { style: 'height: 1px; border: 0; margin: 0 0 20px; background: var(--color-divider);' }),
       chips, grid,
+      filtered.length > CAP ? h('p', { style: 'margin-top: 24px; font-size: 14px; color: ' + MUTED70 + ';', text: 'Viser de første ' + CAP + ' av ' + filtered.length + ' varer — søk for å finne flere.' }) : null,
       filtered.length === 0 ? h('p', { style: 'font-size: 15px; color: ' + MUTED70 + ';', text: 'Ingen treff på «' + state.query + '». Prøv et annet søk, eller bidra med priser ved å skanne en kvittering.' }) : null
     ]);
 
@@ -647,10 +650,23 @@
   }
 
   // ── Boot ─────────────────────────────────────────────────────────────────
+  // PostgREST caps a response at 1000 rows, so page through all offers.
+  var OFFER_COLS = 'store_id,product_name,group_key,price,pre_price,unit,image_url,valid_from,valid_until,source';
+  function fetchAllOffers() {
+    return new Promise(function (resolve, reject) {
+      var all = [];
+      (function page(offset) {
+        sb('/ml_offers?select=' + OFFER_COLS + '&order=external_id&limit=1000&offset=' + offset)
+          .then(function (r) { if (!r.ok) throw new Error('offers ' + r.status); return r.json(); })
+          .then(function (rows) { all = all.concat(rows || []); if (!rows || rows.length < 1000 || offset >= 9000) resolve(all); else page(offset + 1000); })
+          .catch(reject);
+      })(0);
+    });
+  }
   function boot() {
     Promise.all([
       sb('/ml_stores?select=*&order=sort_order').then(function (r) { if (!r.ok) throw new Error('stores ' + r.status); return r.json(); }),
-      sb('/ml_offers?select=store_id,product_name,group_key,price,pre_price,unit,image_url,valid_from,valid_until&limit=1000').then(function (r) { if (!r.ok) throw new Error('offers ' + r.status); return r.json(); })
+      fetchAllOffers()
     ]).then(function (out) {
       buildStores(out[0]);
       buildGroups(out[1]);
