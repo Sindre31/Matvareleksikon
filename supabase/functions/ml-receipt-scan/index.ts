@@ -17,7 +17,7 @@ const CORS: Record<string, string> = {
   "Access-Control-Allow-Methods": "POST, OPTIONS",
 };
 
-const GEMINI_MODEL = Deno.env.get("GEMINI_MODEL") || "gemini-2.0-flash";
+const GEMINI_MODEL = Deno.env.get("GEMINI_MODEL") || "gemini-flash-latest";
 const API_BASE = "https://generativelanguage.googleapis.com/v1beta/models";
 const RATE_LIMIT = 30;        // scans …
 const RATE_WINDOW_SECS = 3600; // … per hour per IP
@@ -164,6 +164,7 @@ async function requestGemini(parts: unknown[], apiKey: string): Promise<string> 
         if (text) return text as string;
         lastReason = "tomt svar";
       } else {
+        console.error("gemini", GEMINI_MODEL, res.status, JSON.stringify(data)?.slice(0, 400));
         if (!RETRYABLE.has(res.status)) {
           throw new Error("Klarte ikke å kontakte AI-tjenesten. Sjekk at GEMINI_API_KEY er gyldig.");
         }

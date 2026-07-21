@@ -113,8 +113,11 @@ supabase secrets set GEMINI_API_KEY=your-key --project-ref jiaxeedguivvhixychcg
 # or: Supabase dashboard → Project Settings → Edge Functions → Secrets
 ```
 
-Optional: `GEMINI_MODEL` (default `gemini-2.0-flash`). Until the secret is set
-the function returns a clear "AI-tjenesten er ikke konfigurert" message.
+Optional: `GEMINI_MODEL` (default `gemini-flash-latest` — a stable alias that
+tracks a current Gemini Flash vision model; older pinned ids like
+`gemini-2.0-flash` may be quota-limited or `gemini-2.5-flash` deprecated for
+new keys). Until the secret is set the function returns a clear
+"AI-tjenesten er ikke konfigurert" message.
 
 ### Tilbudsaviser & product images
 
