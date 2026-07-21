@@ -52,7 +52,7 @@
     view: 'home', productId: null, query: '', cat: 'Alle',
     scanPhase: 'idle', scanPct: 0, scanStep: '', scanItems: [],
     scanStore: 'Kiwi', scanPlace: 'Kiwi Grünerløkka, Oslo',
-    scanSubmitting: false, scanError: null, scanImageUrl: null, scanNote: null, scanRawText: null,
+    scanSubmitting: false, scanError: null, scanImageUrl: null, scanNote: null,
     bootTotal: 0, doneCount: 0, doneMsgN: 0,
     chartMonths: 12 // prototype prop `chartMonths` (enum 6|12, default 12)
   };
@@ -94,150 +94,83 @@
     for (var mt = start; mt < 12; mt++) monthTicks.push({ x: x(mt).toFixed(1), label: MONTHS[mt] + (mt < 5 ? ' 25' : ' 26') });
     return { chartLines: chartLines, gridLines: gridLines, monthTicks: monthTicks };
   }
-  // ── Real OCR: Tesseract.js in the browser (no backend, no API key) ───────
-  var TESSERACT_SRC = 'https://cdn.jsdelivr.net/npm/tesseract.js@5.1.1/dist/tesseract.min.js';
-  var tesseractPromise = null;
-  function loadTesseract() {
-    if (window.Tesseract) return Promise.resolve(window.Tesseract);
-    if (tesseractPromise) return tesseractPromise;
-    tesseractPromise = new Promise(function (resolve, reject) {
-      var s = document.createElement('script');
-      s.src = TESSERACT_SRC; s.async = true;
-      s.onload = function () { window.Tesseract ? resolve(window.Tesseract) : reject(new Error('Tesseract lastet ikke')); };
-      s.onerror = function () { reject(new Error('Kunne ikke laste tekstgjenkjenning')); };
-      document.head.appendChild(s);
-    });
-    return tesseractPromise;
-  }
+  // ── Receipt OCR via a Supabase Edge Function (Gemini vision, server-side) ─
+  // The image is sent to the `ml-receipt-scan` function, which runs Google
+  // Gemini with a Norwegian receipt prompt and returns clean line items. The
+  // API key lives server-side; the browser only sees the parsed result.
+  var SCAN_FN_URL = SUPABASE_URL + '/functions/v1/ml-receipt-scan';
 
-  // Preprocess the photo before OCR: fit to a sane size, convert to greyscale
-  // and stretch contrast. Phone photos of receipts are the hard case (glare,
-  // skew, low contrast), and a clean high-contrast greyscale helps Tesseract
-  // far more than the raw colour image.
-  function preprocessImage(file) {
-    return new Promise(function (resolve) {
-      if (!/^image\//.test(file.type)) { resolve(file); return; }
+  // Downscale the photo and encode as JPEG to keep the upload small and fast.
+  function imageToDataUrl(file) {
+    return new Promise(function (resolve, reject) {
       var url = URL.createObjectURL(file);
       var img = new Image();
       img.onload = function () {
-        var target = 2000, w = img.naturalWidth, h = img.naturalHeight;
+        var target = 1600, w = img.naturalWidth, h = img.naturalHeight;
         var scale = Math.min(1, target / Math.max(w, h));
         var cw = Math.max(1, Math.round(w * scale)), ch = Math.max(1, Math.round(h * scale));
         var c = document.createElement('canvas'); c.width = cw; c.height = ch;
-        var ctx = c.getContext('2d');
-        ctx.drawImage(img, 0, 0, cw, ch);
+        c.getContext('2d').drawImage(img, 0, 0, cw, ch);
         URL.revokeObjectURL(url);
-        try {
-          var id = ctx.getImageData(0, 0, cw, ch), d = id.data, i, lum, lo = 255, hi = 0;
-          for (i = 0; i < d.length; i += 4) {
-            lum = (d[i] * 0.299 + d[i + 1] * 0.587 + d[i + 2] * 0.114) | 0;
-            d[i] = d[i + 1] = d[i + 2] = lum;
-            if (lum < lo) lo = lum; if (lum > hi) hi = lum;
-          }
-          var range = Math.max(1, hi - lo);
-          for (i = 0; i < d.length; i += 4) {
-            var v = Math.pow((d[i] - lo) / range, 1.15);       // stretch + slight gamma
-            var o = v <= 0 ? 0 : v >= 1 ? 255 : Math.round(v * 255);
-            d[i] = d[i + 1] = d[i + 2] = o;
-          }
-          ctx.putImageData(id, 0, 0);
-        } catch (e) { /* getImageData can't be tainted for a local file; ignore */ }
-        c.toBlob(function (blob) { resolve(blob || file); }, 'image/png');
+        try { resolve(c.toDataURL('image/jpeg', 0.85)); } catch (e) { reject(e); }
       };
-      img.onerror = function () { URL.revokeObjectURL(url); resolve(file); };
+      img.onerror = function () { URL.revokeObjectURL(url); reject(new Error('Kunne ikke lese bildefila.')); };
       img.src = url;
     });
   }
 
-  // Turn raw OCR text into candidate line items (name + price).
-  function parseReceiptText(text) {
-    var lines = String(text || '').split(/\r?\n/).map(function (s) { return s.trim(); }).filter(Boolean);
-    // Price = the last money token on the line (optionally trailed by a tax code letter/*).
-    var priceRe = /(-?\d{1,4}[.,]\d{2})\s*[*A-Za-z]?\s*$/;
-    // Norwegian MVA-rate column that sits between the name and the price (e.g. "… 15%  25,40").
-    var vatTailRe = /[\s.]*(?:0|11|12|15|25)\s*[%xX]?\s*$/;
-    // Summary / payment / footer / membership lines — never products.
-    var skipRe = /(sum\b|total|totalt|å\s*betale|\bbetal|kontant|\bbank\b|bankaxept|\bkort\b|visa|mastercard|beløp|\bmva\b|moms|grunnlag|avrund|veksel|tilbake|gebyr|rabatt|kvittering|foretaksreg|org\.?\s*nr|serienr|kvitt\b|opernr|\bkasse\b|\btrumf|\bkunde|medlem|saldo|pluss|bonus|\bvarer\b|terminal|\baid\b|contactless|autoris|authorization|godkjent|velkommen|antall|takk)/i;
-    // Weight / unit-price detail lines (e.g. "0,580kg x kr 49,90"): the item above already
-    // carries the line total, so these must not become separate items.
-    var detailRe = /(\d[.,]?\d*\s*(?:kg|hg|g|l|dl|stk)\s*[x×*]\s*kr|[x×*]\s*kr\b|kr\s*\/\s*(?:kg|l|stk)|pris\s*pr)/i;
-    var items = [];
-    for (var i = 0; i < lines.length && items.length < 40; i++) {
-      var line = lines[i];
-      if (skipRe.test(line) || detailRe.test(line)) continue;
-      var m = line.match(priceRe);
-      if (!m) continue;
-      var price = parseFloat(m[1].replace(',', '.'));
-      if (!isFinite(price) || price <= 0 || price > 100000) continue;
-      var name = line.slice(0, m.index)
-        .replace(vatTailRe, '')                    // drop the trailing "15%" / "25" VAT column
-        .replace(/[.\s]+$/, '')
-        .replace(/^\d+\s*(?:x|stk\.?)\s+/i, '')    // drop a leading "2 x " / "3 stk " quantity
-        .replace(/\s{2,}/g, ' ')
-        .trim();
-      if (name.replace(/[^a-zA-ZæøåÆØÅ]/g, '').length < 2) continue;
-      items.push({ name: name, price: m[1].replace(',', '.') });
-    }
-    return items;
-  }
-  function detectStore(text) {
-    var up = String(text || '').toUpperCase();
-    if (up.indexOf('REMA') !== -1) return 'Rema 1000';
-    if (up.indexOf('KIWI') !== -1) return 'Kiwi';
-    if (up.indexOf('EXTRA') !== -1) return 'Extra';
-    if (up.indexOf('MENY') !== -1) return 'Meny';
-    return null;
-  }
-
-  var OCR_STEPS = {
-    'loading tesseract core': 'Laster tekstgjenkjenning …',
-    'initializing tesseract': 'Starter tekstgjenkjenning …',
-    'loading language traineddata': 'Laster norsk språkmodell …',
-    'initializing api': 'Klargjør …',
-    'recognizing text': 'Leser varelinjene …'
-  };
-
   function onScanFile(file) {
     if (!file) return;
+    if (!/^image\//.test(file.type)) {
+      setState({ scanPhase: 'review', scanItems: [{ name: '', price: '' }], scanNote: 'Filen ser ikke ut som et bilde. Skriv inn varelinjene manuelt.', scanError: null });
+      return;
+    }
     if (state.scanImageUrl) URL.revokeObjectURL(state.scanImageUrl);
-    var previewUrl = /^image\//.test(file.type) ? URL.createObjectURL(file) : null;
-    setState({ scanPhase: 'scanning', scanPct: 0, scanStep: 'Laster tekstgjenkjenning …', scanError: null, scanNote: null, scanRawText: null, scanImageUrl: previewUrl });
-    runOcr(file);
+    var previewUrl = URL.createObjectURL(file);
+    setState({ scanPhase: 'scanning', scanStep: 'Leser kvitteringen med AI …', scanError: null, scanNote: null, scanImageUrl: previewUrl });
+    runScan(file);
   }
 
-  function runOcr(file) {
-    var worker = null;
-    loadTesseract()
-      .then(function (T) { return preprocessImage(file).then(function (img) { return { T: T, img: img }; }); })
-      .then(function (ctx) {
-        return ctx.T.createWorker('nor', 1, {
-          logger: function (m) {
-            if (!m || m.status == null) return;
-            var step = OCR_STEPS[m.status] || state.scanStep;
-            var pct = Math.max(0, Math.min(100, Math.round((m.progress || 0) * 100)));
-            setState({ scanStep: step, scanPct: pct });
-          }
-        }).then(function (w) { worker = w; return w.recognize(ctx.img); });
+  function runScan(file) {
+    imageToDataUrl(file)
+      .then(function (dataUrl) {
+        return fetch(SCAN_FN_URL, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', apikey: SUPABASE_KEY, Authorization: 'Bearer ' + SUPABASE_KEY },
+          body: JSON.stringify({ image: dataUrl, mimeType: 'image/jpeg' })
+        });
       })
-      .then(function (res) {
-        var text = (res && res.data && res.data.text) || '';
-        var items = parseReceiptText(text);
-        var store = detectStore(text);
-        var patch = { scanPhase: 'review', scanPct: 100, scanRawText: text };
-        if (store) { patch.scanStore = store; var s = STORES.filter(function (x) { return x.name === store; })[0]; if (s) patch.scanPlace = s.places[0]; }
-        if (items.length) { patch.scanItems = items; patch.scanNote = 'Fant ' + items.length + ' varelinjer' + (store ? ' · gjenkjente butikk: ' + store : '') + '. Kontroller dem før du lagrer.'; }
-        else { patch.scanItems = [{ name: '', price: '' }]; patch.scanNote = 'Fant ingen varelinjer automatisk — skriv dem inn manuelt, eller prøv et skarpere bilde.'; }
+      .then(function (res) { return res.json().then(function (b) { return { ok: res.ok, body: b }; }, function () { return { ok: res.ok, body: {} }; }); })
+      .then(function (r) {
+        if (!r.ok) {
+          setState({ scanPhase: 'review', scanItems: [{ name: '', price: '' }], scanNote: null, scanError: (r.body && r.body.error) || 'Kunne ikke lese kvitteringen. Prøv igjen eller skriv inn manuelt.' });
+          return;
+        }
+        var data = r.body || {};
+        var items = (data.items || []).map(function (it) {
+          var nm = it.name || '';
+          if (it.unit && it.quantity) nm = nm + ' (' + it.quantity + ' ' + it.unit + ')';
+          return { name: nm, price: (it.price != null ? String(it.price) : '') };
+        });
+        var patch = { scanPhase: 'review', scanError: null };
+        if (data.store) { patch.scanStore = data.store; var s = STORES.filter(function (x) { return x.name === data.store; })[0]; if (s) patch.scanPlace = s.places[0]; }
+        if (items.length) {
+          patch.scanItems = items;
+          patch.scanNote = 'Fant ' + items.length + ' varelinjer' + (data.storeName ? ' fra ' + data.storeName : '') + '. Kontroller dem før du lagrer.';
+        } else {
+          patch.scanItems = [{ name: '', price: '' }];
+          patch.scanNote = 'Fant ingen varelinjer på bildet — skriv dem inn manuelt, eller prøv et tydeligere bilde av hele kvitteringen.';
+        }
         setState(patch);
       })
       .catch(function () {
-        setState({ scanPhase: 'review', scanItems: [{ name: '', price: '' }], scanNote: 'Kunne ikke lese bildet automatisk — skriv inn varelinjene manuelt.', scanError: null });
-      })
-      .then(function () { if (worker && worker.terminate) worker.terminate(); });
+        setState({ scanPhase: 'review', scanItems: [{ name: '', price: '' }], scanError: 'Kunne ikke lese bildet nå. Sjekk nettforbindelsen og prøv igjen, eller skriv inn manuelt.' });
+      });
   }
   function addScanRow() { setState({ scanItems: state.scanItems.concat([{ name: '', price: '' }]) }); }
   function resetScan() {
     if (state.scanImageUrl) URL.revokeObjectURL(state.scanImageUrl);
-    setState({ scanPhase: 'idle', scanItems: [], scanImageUrl: null, scanNote: null, scanError: null, scanRawText: null });
+    setState({ scanPhase: 'idle', scanItems: [], scanImageUrl: null, scanNote: null, scanError: null });
   }
   function submitScan() {
     if (state.scanSubmitting || !state.scanItems.length) return;
@@ -546,7 +479,7 @@
       var cameraInput = h('input', { type: 'file', accept: 'image/*', capture: 'environment', style: 'display: none;', onChange: function (e) { onScanFile(e.target.files && e.target.files[0]); } });
       var uploadCard = h('div', { cls: 'blueprint', style: 'padding: 28px; display: flex; flex-direction: column; gap: 12px;' }, corners().concat([
         h('span', { style: 'font-family: var(--font-heading); font-weight: 600; font-size: 24px; letter-spacing: 0.02em; text-transform: uppercase;', text: 'Last opp bilde' }),
-        h('p', { style: 'margin: 0; font-size: 15px; line-height: 22px; color: ' + MUTED78 + ';', text: 'Velg et foto av kvitteringen fra enheten din. Vi leser varelinjene med tekstgjenkjenning direkte i nettleseren.' }),
+        h('p', { style: 'margin: 0; font-size: 15px; line-height: 22px; color: ' + MUTED78 + ';', text: 'Velg et foto av kvitteringen fra enheten din. Vi leser varelinjene automatisk med AI.' }),
         h('label', { cls: 'btn btn-primary', style: 'align-self: flex-start; cursor: pointer; margin-top: 8px;' }, ['Velg bilde', uploadInput])
       ]));
       var cameraCard = h('div', { cls: 'blueprint', style: 'padding: 28px; display: flex; flex-direction: column; gap: 12px;' }, corners().concat([
@@ -565,9 +498,9 @@
       body = h('div', { cls: 'blueprint', style: 'max-width: 520px; padding: 24px;' }, corners().concat([
         preview,
         h('span', { style: 'font-family: var(--font-heading); font-weight: 600; font-size: 22px; letter-spacing: 0.02em; text-transform: uppercase;', text: 'Leser kvitteringen …' }),
-        h('p', { style: 'margin: 10px 0 16px; font-size: 15px; color: ' + MUTED78 + ';', text: state.scanStep + (state.scanPct ? ' (' + state.scanPct + ' %)' : '') }),
-        h('div', { style: 'height: 4px; background: var(--color-accent-200);' }, [
-          h('div', { style: 'height: 100%; background: var(--color-accent); width: ' + state.scanPct + '%; transition: width 0.2s ease;' })
+        h('p', { style: 'margin: 10px 0 16px; font-size: 15px; color: ' + MUTED78 + ';', text: (state.scanStep || 'Leser kvitteringen med AI …') + ' Dette tar vanligvis noen sekunder.' }),
+        h('div', { style: 'height: 4px; background: var(--color-accent-200); overflow: hidden;' }, [
+          h('div', { style: 'height: 100%; width: 38%; background: var(--color-accent); animation: mlbar 1.15s ease-in-out infinite;' })
         ])
       ]));
     } else if (state.scanPhase === 'review') {
@@ -610,10 +543,6 @@
         h('span', { style: KICKER, text: 'Kontroller varelinjene' }),
         h('hr', { style: RULE }),
         state.scanNote ? h('p', { style: 'margin: 0 0 16px; font-size: 14px; line-height: 20px; color: ' + MUTED70 + ';', text: state.scanNote }) : null,
-        state.scanRawText ? h('details', { style: 'margin: 0 0 16px;' }, [
-          h('summary', { style: 'cursor: pointer; font-size: 13px; letter-spacing: 0.04em; text-transform: uppercase; font-weight: 600; color: var(--color-accent-700);', text: 'Vis gjenkjent tekst' }),
-          h('pre', { style: 'white-space: pre-wrap; word-break: break-word; margin: 10px 0 0; padding: 12px; border: 1px solid var(--color-divider); background: color-mix(in srgb, var(--color-text) 3%, transparent); font-size: 12px; line-height: 1.45; max-height: 260px; overflow: auto; font-family: ui-monospace, SFMono-Regular, Menlo, monospace;', text: state.scanRawText })
-        ]) : null,
         h('div', { cls: 'blueprint', style: 'padding: 24px; display: flex; flex-direction: column; gap: 16px;' }, corners().concat([controls, rows, addRowBtn, actions]))
       ]);
     } else if (state.scanPhase === 'done') {
@@ -707,9 +636,6 @@
       render();
     });
   }
-
-  // Exposed for tests (pure helpers; no side effects).
-  window.__ml = { parseReceiptText: parseReceiptText, detectStore: detectStore };
 
   window.addEventListener('hashchange', route);
   render();  // initial loading screen

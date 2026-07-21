@@ -42,10 +42,10 @@ python3 -m http.server 8000
   flagged, and a price-trend line chart per store with a 6/12-month toggle
   (the prototype's `chartMonths` option).
 - **Skann kvittering** `#/skann` — upload a photo (or use the phone camera)
-  → **real OCR runs in the browser** (Tesseract.js, Norwegian model) →
-  the parsed line items and detected store are pre-filled for review →
-  submit **persists** the prices to Supabase and counts them toward the
-  community total.
+  → the image is sent to a **Supabase Edge Function that runs Google Gemini
+  vision** → the parsed line items and detected store are pre-filled for
+  review → submit **persists** the prices to Supabase and counts them toward
+  the community total.
 
 ## Backend (Supabase)
 
@@ -78,20 +78,34 @@ shareable URLs and working back/forward.
 
 ### Receipt OCR
 
-The scan flow runs **real OCR entirely in the browser** with
-[Tesseract.js](https://tesseract.projectnaptha.com/) (loaded on demand from a
-CDN, Norwegian language model) — no backend, no API key, no per-scan cost.
-The photo is downscaled on a canvas, recognized, and the text is parsed into
-candidate `{ name, price }` line items (`parseReceiptText`), with the store
-auto-detected from the header (`detectStore`). The parser is tuned against
-real Norwegian grocery receipts: it strips the MVA-rate column that sits
-between the item name and price (`… 15%  25,40`), skips weight/unit sub-lines
-(`0,580kg x kr 49,90`), and drops summary/payment/membership rows
-(`Sum`, `BANK`, the MVA table, `Trumf …`). Results are pre-filled into the
-review step for the user to correct before saving. If OCR can't load or finds
-nothing, it degrades gracefully to manual entry. A server-side OCR (e.g. a
-cloud vision API in a Supabase Edge Function) would raise accuracy but adds a
-key and cost; the client-side path keeps the app self-contained.
+The scan flow uses **server-side OCR with Google Gemini vision**, via the
+`ml-receipt-scan` **Supabase Edge Function** (`supabase/functions/ml-receipt-scan/`).
+This mirrors the approach proven in the author's
+[`billigkurv`](https://github.com/sindre31/billigkurv) project: the photo is
+downscaled to a JPEG in the browser and POSTed to the function, which sends it
+to Gemini with a Norwegian receipt prompt and returns clean line items. Key
+properties:
+
+- **The Gemini API key never reaches the browser** — it lives as a Supabase
+  secret and is only read server-side.
+- Weight/quantity items are normalized to a **canonical unit price** (e.g.
+  18,68 kr for 0,750 kg → 24,90 kr/kg), and pant/rabatt/mva/total/payment
+  lines are excluded — handled by the prompt + a `normalizeItem` step.
+- The store is mapped onto Prisboka's four chains and pre-selected.
+- The endpoint is public but self-protecting: **per-IP rate limiting**
+  (`ml_scan_allow` RPC, 30/hour) plus size and MIME checks.
+- If Gemini is unavailable or finds nothing, the flow degrades to manual entry.
+
+**Required secret.** Set a Gemini API key ([aistudio.google.com/apikey](https://aistudio.google.com/apikey))
+as an Edge Function secret named `GEMINI_API_KEY`:
+
+```bash
+supabase secrets set GEMINI_API_KEY=your-key --project-ref jiaxeedguivvhixychcg
+# or: Supabase dashboard → Project Settings → Edge Functions → Secrets
+```
+
+Optional: `GEMINI_MODEL` (default `gemini-2.0-flash`). Until the secret is set
+the function returns a clear "AI-tjenesten er ikke konfigurert" message.
 
 ## Deployment
 
