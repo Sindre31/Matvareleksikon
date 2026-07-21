@@ -27,9 +27,11 @@ select cron.schedule(
 
 -- Real shelf prices via Kassalapp, 10 min after the offers job (needs the
 -- KASSALAPP_TOKEN secret; the function no-ops without it).
--- deleteFirst:false → the weekly run UPSERTS (refreshes the default search
--- terms' prices) but never deletes, so the large one-time bulk catalogue is
--- preserved instead of being replaced by the smaller weekly search result.
+-- Rotates through the WHOLE catalogue every week: one net.http_post per page
+-- range (40 pages each, pages 1..480), all in accumulate mode
+-- (deleteFirst:false), so every product's price is refreshed weekly and nothing
+-- is deleted. A single edge invocation only fits ~40 pages in its time budget,
+-- so pg_net fires the batches in parallel via generate_series.
 select cron.schedule(
   'ml-ingest-kassalapp-weekly',
   '10 4 * * 1',
@@ -37,9 +39,10 @@ select cron.schedule(
   select net.http_post(
     url := 'https://jiaxeedguivvhixychcg.supabase.co/functions/v1/ml-ingest-kassalapp',
     headers := jsonb_build_object('Content-Type','application/json','Authorization','Bearer <SUPABASE_ANON_KEY>'),
-    body := '{"deleteFirst": false}'::jsonb,
+    body := jsonb_build_object('bulk', true, 'startPage', p, 'pages', 40, 'deleteFirst', false),
     timeout_milliseconds := 170000
-  );
+  )
+  from generate_series(1, 441, 40) as p;
   $cmd$
 );
 
