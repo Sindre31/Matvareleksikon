@@ -45,9 +45,12 @@ function rowFrom(hit: any): any | null {
   const orig = hit?.pricePerUnitOriginal;
   const prePrice = isOffer && typeof orig === "number" && orig > price ? orig : null;
   const image = hit?.imagePath ? `https://bilder.ngdata.no/${hit.imagePath}/medium.png` : null;
+  const cmpUnit = hit?.compareUnit ?? null;
+  const cmpPrice = (typeof hit?.comparePricePerUnit === "number" && isFinite(hit.comparePricePerUnit) && hit.comparePricePerUnit > 0) ? hit.comparePricePerUnit : null;
   return {
     external_id: "ngdata:meny:" + nameSlug(name), store_id: MENY.store, product_name: name,
     group_key: groupKey(name), price, pre_price: prePrice, unit: hit?.unit ?? null,
+    unit_price: cmpPrice, unit_price_unit: cmpUnit,
     offer_text: isOffer ? "Tilbud" : null, image_url: image, valid_from: null, valid_until: null, source: "ngdata",
   };
 }

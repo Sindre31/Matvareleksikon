@@ -62,6 +62,14 @@
     return null;
   }
   function nfUnit(perUnit, dim) { return nf(perUnit) + '/' + dim; }
+  // Normalise a source unit label to our comparison dimensions.
+  function normUnit(u) {
+    u = String(u || '').toLowerCase().trim();
+    if (u === 'l' || u === 'liter' || u === 'ltr') return 'l';
+    if (u === 'kg' || u === 'kilo' || u === 'kilogram') return 'kg';
+    if (u === 'stk' || u === 'stykk' || u === 'pk' || u === 'pakke') return 'stk';
+    return null;
+  }
 
   // Make a non-native clickable element keyboard-operable (Enter/Space) and
   // announced as a button. Merge the returned props into the element.
@@ -93,6 +101,8 @@
       var prev = g.variants[st];
       if (!prev || price < prev.price) {
         var amt = parseAmount(o.product_name);
+        var perUnit = amt ? price / amt.value : null, unitDim = amt ? amt.dim : null;
+        if (perUnit == null && o.unit_price != null) { var nd = normUnit(o.unit_price_unit || o.unit); var up = Number(o.unit_price); if (nd && up > 0) { perUnit = up; unitDim = nd; } }
         g.variants[st] = {
           storeId: st, storeName: STORE_NAME[st] || st,
           color: (STORE_STYLE[st] || {}).color || 'var(--color-accent)', dash: (STORE_STYLE[st] || {}).dash || '',
@@ -100,7 +110,7 @@
           price: price, prePrice: o.pre_price != null ? Number(o.pre_price) : null,
           unit: o.unit || null, image: o.image_url || null, validUntil: o.valid_until || null,
           isOffer: o.pre_price != null && Number(o.pre_price) > price,
-          unitDim: amt ? amt.dim : null, perUnit: amt ? price / amt.value : null
+          unitDim: unitDim, perUnit: perUnit
         };
       }
     });
@@ -217,7 +227,7 @@
     var payload = state.scanItems.map(function (it) {
       var raw = String(it.price == null ? '' : it.price).replace(',', '.').trim();
       var price = raw === '' ? null : Number(raw);
-      return { item_name: it.name, price: (price == null || isNaN(price)) ? null : price, store_id: storeObj ? storeObj.id : null, place: state.scanPlace, product_id: null };
+      return { item_name: it.name, price: (price == null || isNaN(price)) ? null : price, store_id: storeObj ? storeObj.id : null, place: null, product_id: null };
     });
     var n = state.scanItems.length;
     setState({ scanSubmitting: true, scanError: null });
@@ -557,8 +567,33 @@
       ]));
     }
 
+    // ── Registreringer: the recorded price points behind the chart ─────────
+    var regRows = (Array.isArray(hist) ? hist.slice() : []).sort(function (a, b) {
+      return a.observed_at < b.observed_at ? 1 : (a.observed_at > b.observed_at ? -1 : Number(a.price) - Number(b.price));
+    }).map(function (r) {
+      var color = (STORE_STYLE[r.store_id] || {}).color || 'var(--color-accent)';
+      var dash = (STORE_STYLE[r.store_id] || {}).dash || '';
+      var d = String(r.observed_at || '');
+      var dateTxt = d.length >= 10 ? d.slice(8, 10) + '.' + d.slice(5, 7) + '.' + d.slice(0, 4) : d;
+      return h('div', { style: 'display: grid; grid-template-columns: 1fr auto auto; gap: 12px; align-items: center; padding: 12px 20px; border-bottom: 1px solid color-mix(in srgb, var(--color-text) 8%, transparent);' }, [
+        h('span', { style: 'display: flex; align-items: center; gap: 12px;' }, [storeLine(color, dash, 18), h('span', { style: NAME_STYLE, text: STORE_NAME[r.store_id] || r.store_id })]),
+        h('span', { style: 'font-size: 13px; color: ' + MUTED60 + "; font-feature-settings: 'tnum' 1;", text: dateTxt }),
+        h('span', { style: 'display: flex; align-items: baseline; gap: 8px; justify-content: flex-end;' }, [
+          r.is_offer ? h('span', { cls: 'tag tag-outline', text: 'Tilbud' }) : null,
+          h('span', { style: "font-family: var(--font-heading); font-weight: 600; font-size: 20px; font-feature-settings: 'tnum' 1; white-space: nowrap;", text: nf(Number(r.price)) })
+        ])
+      ]);
+    });
+    var regBlock = regRows.length
+      ? h('div', {}, [
+          h('div', { cls: 'blueprint', style: 'padding: 0;' }, corners().concat(regRows)),
+          h('p', { style: 'margin: 16px 0 0; font-size: 13px; color: ' + MUTED60 + ';', text: 'Hver registrering er en observert pris hos en butikk på en gitt dato.' })
+        ])
+      : h('p', { style: 'font-size: 15px; color: ' + MUTED70 + ';', text: (hist === 'loading' || hist == null) ? 'Laster registreringer …' : 'Ingen registreringer ennå.' });
+
     return h('section', { 'data-screen-label': 'Produktside' }, [head,
-      h('div', {}, [h('span', { style: KICKER, text: '01 · Prishistorikk' }), h('hr', { style: RULE }), chartBlock])
+      h('div', {}, [h('span', { style: KICKER, text: '01 · Prishistorikk' }), h('hr', { style: RULE }), chartBlock]),
+      h('div', { style: 'margin-top: 40px;' }, [h('span', { style: KICKER, text: '02 · Registreringer' }), h('hr', { style: RULE }), regBlock])
     ]);
   }
 
@@ -611,13 +646,8 @@
         h('label', { style: 'display: flex; flex-direction: column; gap: 6px; font-size: 12px; letter-spacing: 0.08em; text-transform: uppercase; font-weight: 600;' }, [
           'Butikk',
           h('select', { cls: 'input', 'data-focus-id': 'scan-store', style: 'min-height: 38px; min-width: 180px;', value: state.scanStore, onChange: function (e) {
-            var s = STORES.filter(function (x) { return x.name === e.target.value; })[0];
-            setState({ scanStore: e.target.value, scanPlace: s ? s.places[0] : state.scanPlace });
+            setState({ scanStore: e.target.value });
           } }, STORES.map(function (s) { return h('option', { value: s.name, selected: s.name === state.scanStore ? 'selected' : false, text: s.name }); }))
-        ]),
-        h('label', { style: 'display: flex; flex-direction: column; gap: 6px; font-size: 12px; letter-spacing: 0.08em; text-transform: uppercase; font-weight: 600;' }, [
-          'Sted',
-          h('input', { cls: 'input', 'data-focus-id': 'scan-place', style: 'min-height: 38px; min-width: 220px;', value: state.scanPlace, onInput: function (e) { setState({ scanPlace: e.target.value }); } })
         ])
       ]);
       var rows = h('div', { style: 'display: flex; flex-direction: column; gap: 8px;' }, state.scanItems.map(function (it, i) {
@@ -640,7 +670,7 @@
         h('div', { cls: 'blueprint', style: 'padding: 24px; display: flex; flex-direction: column; gap: 16px;' }, corners().concat([controls, rows, addRowBtn, actions]))
       ]);
     } else if (state.scanPhase === 'done') {
-      var doneMsg = (state.doneMsgN || state.scanItems.length) + ' priser registrert ved ' + state.scanPlace + '.';
+      var doneMsg = (state.doneMsgN || state.scanItems.length) + ' priser registrert hos ' + state.scanStore + '.';
       body = h('div', { cls: 'blueprint', style: 'max-width: 560px; padding: 28px;' }, corners().concat([
         h('span', { style: 'font-family: var(--font-heading); font-weight: 600; font-size: 26px; letter-spacing: 0.02em; text-transform: uppercase;', text: 'Takk for bidraget' }),
         h('p', { style: 'margin: 12px 0 0; font-size: 15px; line-height: 22px;', text: doneMsg + ' Prisene er lagret i databasen.' }),
@@ -715,7 +745,7 @@
 
   // ── Boot ─────────────────────────────────────────────────────────────────
   // PostgREST caps a response at 1000 rows, so page through all offers.
-  var OFFER_COLS = 'store_id,product_name,group_key,price,pre_price,unit,image_url,valid_from,valid_until,source';
+  var OFFER_COLS = 'store_id,product_name,group_key,price,pre_price,unit,unit_price,unit_price_unit,image_url,valid_from,valid_until,source';
   function fetchAllOffers() {
     return new Promise(function (resolve, reject) {
       var all = [];

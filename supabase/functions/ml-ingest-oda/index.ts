@@ -49,10 +49,11 @@ function rowFrom(a: any): any | null {
   if (price == null || price <= 0 || !name) return null;
   if (a?.currency && a.currency !== "NOK") return null;
   const img = a?.images?.[0]?.thumbnail?.url || a?.images?.[0]?.large?.url || null;
+  const unitAbbr = a?.unit_price_quantity_abbreviation ?? null;
   return {
     external_id: "oda:" + nameSlug(name), store_id: STORE, product_name: name,
     group_key: groupKey(name), price, pre_price: null,
-    unit: a?.unit_price_quantity_abbreviation ?? null,
+    unit: unitAbbr, unit_price: num(a?.gross_unit_price), unit_price_unit: unitAbbr,
     offer_text: null, image_url: img, valid_from: null, valid_until: null, source: "oda",
   };
 }

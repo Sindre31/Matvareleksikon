@@ -46,16 +46,20 @@ python3 -m http.server 8000
   stated in the name, each row also shows the **price per litre/kilo/piece**, and
   when *every* store's variant is size-comparable the "cheapest" is ranked by
   that unit price — so a small carton no longer looks cheaper than a big one.
+  The size comes from the product name, or, for Meny (ngdata) and Oda where the
+  name often omits it, from the source's own unit price (`unit_price` column).
 - **Produktside (variant)** `#/vare/:key/:store` — one store's product and its
-  **price history** chart (real, built up weekly from `ml_price_history`). When a
-  product is on offer, the ingest functions automatically record its before-price
-  as *last week's* price point, so the chart shows the markdown from the first
-  time the offer is seen.
+  **price history** chart, with each chain drawn in its **brand colour** (Rema
+  blue, Kiwi green, Extra red, Meny bordeaux, Oda purple — from `ml_stores`).
+  Below the chart, **"Registreringer"** lists every recorded price point (store,
+  price, date). When a product is on offer, the ingest functions automatically
+  record its before-price as *last week's* price point, so the chart shows the
+  markdown from the first time the offer is seen.
 - **Skann kvittering** `#/skann` — upload a photo, use the phone camera, or
   **drag-and-drop / paste** an image → the image is sent to a **Supabase Edge
   Function that runs Google Gemini vision** → the parsed line items and detected store are pre-filled for
-  review → submit **persists** the prices to Supabase and counts them toward
-  the community total.
+  review (just pick the chain — no place needed) → submit **persists** the prices
+  to Supabase and counts them toward the community total.
 
 ## Backend (Supabase)
 
