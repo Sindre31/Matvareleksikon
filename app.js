@@ -157,11 +157,16 @@
       });
       var comparable = variants.length >= 2 && variants.every(function (v) { return v.perUnit != null && v.unitDim === variants[0].unitDim; });
       var img = null; for (var i = 0; i < variants.length; i++) { if (variants[i].image) { img = variants[i].image; break; } }
+      // Cheapest unit price across the group (variants are sorted unit-price
+      // first, so variants[0] carries it when any variant has one).
+      var cheapUnit = (variants[0] && variants[0].perUnit != null) ? variants[0].perUnit : null;
+      var cheapUnitDim = cheapUnit != null ? variants[0].unitDim : null;
       return {
         key: key, name: variants[0] ? variants[0].name : key, variants: variants, image: img,
         allByStore: byStore,
         minPrice: variants.reduce(function (m, v) { return Math.min(m, v.price); }, Infinity),
         storeCount: variants.length,
+        unitPrice: cheapUnit, unitDim: cheapUnitDim,
         compDim: comparable ? variants[0].unitDim : null,
         minUnit: comparable ? variants[0].perUnit : null,
         onOffer: variants.some(function (v) { return v.isOffer; }),
@@ -434,8 +439,11 @@
     }));
 
     var grid = h('div', { style: 'display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: 32px;' }, shown.map(function (g) {
-      var priceTxt = g.storeCount > 1 ? 'fra ' + nf(g.minPrice) : nf(g.minPrice);
+      var hasUnit = g.unitPrice != null;
+      var pre = g.storeCount > 1 ? 'fra ' : '';
+      var priceTxt = hasUnit ? (pre + nfUnit(g.unitPrice, g.unitDim)) : (pre + nf(g.minPrice));
       var whereTxt = g.storeCount > 1 ? 'hos ' + g.storeCount + ' butikker' : g.variants[0].storeName;
+      var subTxt = hasUnit ? ('fra ' + nf(g.minPrice) + ' · ' + whereTxt) : (g.storeCount > 1 ? whereTxt : (g.onOffer ? whereTxt : ''));
       return h('div', Object.assign({ cls: 'blueprint card-hover', style: 'padding: 0; cursor: pointer; display: flex; flex-direction: column;' }, activate(openGroup(g.key), g.name + ', ' + priceTxt + ' ' + whereTxt)), corners().concat([
         imgBox(g.image, g.name, '150px'),
         h('div', { style: 'padding: 16px 18px 18px; display: flex; flex-direction: column; gap: 6px;' }, [
@@ -446,7 +454,7 @@
           h('div', { style: 'display: flex; align-items: baseline; gap: 10px; margin-top: 6px;' }, [
             h('span', { style: "font-family: var(--font-heading); font-weight: 600; font-size: 24px; font-feature-settings: 'tnum' 1;", text: priceTxt })
           ]),
-          h('span', { style: 'font-size: 13px; color: ' + MUTED60 + ';', text: g.storeCount > 1 ? whereTxt : (g.onOffer ? whereTxt : '') })
+          h('span', { style: 'font-size: 13px; color: ' + MUTED60 + ';', text: subTxt })
         ])
       ]));
     }));

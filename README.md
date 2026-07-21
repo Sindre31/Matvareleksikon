@@ -37,9 +37,11 @@ python3 -m http.server 8000
 ## Screens (deep-linkable)
 
 - **Leksikon (home)** `#/` — hero + live search, **"Ukas beste tilbud"** (the
-  biggest real markdowns this week), and the product grid. Products are grouped
-  generically (`group_key`) so store-specific items compare; cards are marked
-  **"På tilbud"**. Filter by store.
+  biggest real markdowns this week), and the product grid. Each card leads with
+  the **cheapest price per litre/kilo/piece** (the pack price shown beneath),
+  so items compare on unit price by default. Products are grouped generically
+  (`group_key`) so store-specific items compare; cards are marked **"På tilbud"**.
+  Filter by store.
 - **Produktgruppe** `#/gruppe/:key` — a generic product and **where it's sold**:
   the store variants ("REMA 1000 Tacosaus Medium", "Coop Extra Tacosaus" …) with
   prices, before-prices and validity, **ranked by price per litre/kilo** (a
