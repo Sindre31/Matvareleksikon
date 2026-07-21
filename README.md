@@ -181,9 +181,11 @@ group as the offers):
 
 - **`ml-ingest-kassalapp`** — cross-chain shelf prices from the
   [Kassalapp API](https://kassal.app) (requires the `KASSALAPP_TOKEN`
-  secret; no-ops without it). Supports a weekly search refresh (`{}`) and a
-  one-time bulk sweep of the whole catalogue (`{bulk:true,startPage,pages}`),
-  upserting on `external_id` so batched pulls accumulate safely.
+  secret; no-ops without it). **Accumulate-by-default**: every run adds/updates
+  rows (upsert on `external_id`) and appends a daily `ml_price_history` point, so
+  historical prices and offers are preserved — it never deletes unless called
+  with `{deleteFirst:true}`. Supports a weekly search refresh (`{}`) and a
+  one-time bulk sweep of the whole catalogue (`{bulk:true,startPage,pages}`).
 - **`ml-ingest-ngdata`** — the authoritative Meny assortment (with product
   images) from NorgesGruppen's public **ngdata** API (keyless, browser
   `User-Agent`), the same source `billigkurv` uses for Meny/Spar.

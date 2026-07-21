@@ -5,11 +5,15 @@
 // (validity null = always current) with the same group_key scheme as the
 // tilbudsaviser, so shelf prices and Tjek offers compare in one product group.
 //
+// Accumulate-by-default: every run ADDS/updates rows (upsert on external_id) and
+// appends a daily point to ml_price_history, so historical prices and offers are
+// kept. It never deletes unless the caller passes deleteFirst:true.
+//
 // Modes (POST JSON body):
-//   {}                                  weekly refresh: default terms, replace
-//   { terms:[...], pages:N, deleteFirst:false }   append a batch (one-time bulk)
-//   { bulk:true, startPage:N, pages:M, deleteFirst:false }   page /products (no search)
-// Rows are UPSERTed on external_id, so batched one-time pulls accumulate safely.
+//   {}                                  refresh default terms (add/update, no delete)
+//   { terms:[...], pages:N }            add a batch for specific terms
+//   { bulk:true, startPage:N, pages:M } page the whole /products catalogue
+//   { deleteFirst:true, ... }           opt in to wiping kassalapp rows first
 // Requires the KASSALAPP_TOKEN secret; a no-op ({skipped}) without it.
 import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 
@@ -90,7 +94,11 @@ Deno.serve(async (req: Request) => {
   const sbHeaders = { "Content-Type": "application/json", apikey: SB_KEY, Authorization: `Bearer ${SB_KEY}` };
 
   const body = await req.json().catch(() => ({} as any));
-  const deleteFirst = body.deleteFirst !== false && !body.bulk && (!body.terms);
+  // Accumulate by default: only wipe existing kassalapp rows when the caller
+  // explicitly asks (deleteFirst:true). Every run otherwise ADDS/updates prices
+  // (upsert on external_id) and appends history, so historical prices and
+  // offers are preserved.
+  const deleteFirst = body.deleteFirst === true;
   const bulk = !!body.bulk;
   const pages = Math.max(1, Number(body.pages) || (bulk ? 40 : 2));
   const startPage = Math.max(1, Number(body.startPage) || 1);
