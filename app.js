@@ -658,7 +658,7 @@
       (function page(offset) {
         sb('/ml_offers?select=' + OFFER_COLS + '&order=external_id&limit=1000&offset=' + offset)
           .then(function (r) { if (!r.ok) throw new Error('offers ' + r.status); return r.json(); })
-          .then(function (rows) { all = all.concat(rows || []); if (!rows || rows.length < 1000 || offset >= 9000) resolve(all); else page(offset + 1000); })
+          .then(function (rows) { all = all.concat(rows || []); if (!rows || rows.length < 1000 || offset >= 40000) resolve(all); else page(offset + 1000); })
           .catch(reject);
       })(0);
     });
