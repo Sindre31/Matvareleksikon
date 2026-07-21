@@ -58,7 +58,7 @@ schema:
 
 | Object | Purpose |
 | --- | --- |
-| `ml_offers` | **The leksikon's data**: real weekly offers from eTilbudsavis/Tjek — store, product, real price, before-price, image, validity, and a `group_key` for cross-store grouping |
+| `ml_offers` | **The leksikon's data**: real prices — weekly offers from eTilbudsavis/Tjek (`source=etilbudsavis`, with validity) **and** shelf prices from Kassalapp (`source=kassalapp`) — store, product, price, before-price, image, and a `group_key` for cross-store grouping |
 | `ml_price_history` | One real price point per (`group_key`, store, day), appended weekly → the variant price-history chart |
 | `ml_stores` | Store metadata (name, chart colour/dash, locations) |
 | `ml_registrations` | Append-only community contributions from the scan flow |
