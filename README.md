@@ -42,20 +42,22 @@ python3 -m http.server 8000
   **"På tilbud"**. Filter by store.
 - **Produktgruppe** `#/gruppe/:key` — a generic product and **where it's sold**:
   the store variants ("REMA 1000 Tacosaus Medium", "Coop Extra Tacosaus" …) with
-  prices, before-prices and validity, cheapest first. Where a package size is
-  stated in the name, each row also shows the **price per litre/kilo/piece**, and
-  when *every* store's variant is size-comparable the "cheapest" is ranked by
-  that unit price — so a small carton no longer looks cheaper than a big one.
+  prices, before-prices and validity, **ranked by price per litre/kilo** (a
+  store showing its cheapest-per-unit size; "N størrelser" hints there are more,
+  listed on the product page). Each row shows the **price per litre/kilo/piece**,
+  and when *every* store is size-comparable the "cheapest" headline is that unit
+  price — so a small carton no longer looks cheaper than a big one.
   The size comes from the product name, or from the source's own unit price
   (`unit_price` column) — Meny (ngdata `comparePricePerUnit`), Oda
   (`gross_unit_price`), and offer catalogues (Tjek `quantity`). Each store's
   **representative** variant is its **cheapest per unit**, not its cheapest pack,
   so a small carton can't masquerade as the best deal.
-- **Produktside (variant)** `#/vare/:key/:store` — one store's product and its
-  **price history** chart, with each chain drawn in its **brand colour** (Rema
-  blue, Kiwi green, Extra red, Meny bordeaux, Oda purple — from `ml_stores`).
-  Below the chart, **"Registreringer"** lists every recorded price point (store,
-  price, date). When a product is on offer, the ingest functions automatically
+- **Produktside (variant)** `#/vare/:key/:store` — one store's product with, when
+  the store carries it in several sizes, a **"Størrelser"** list (every size,
+  sorted by price per litre/kilo, cheapest-per-unit highlighted); a **price
+  history** chart with each chain in its **brand colour** (Rema blue, Kiwi green,
+  Extra red, Meny bordeaux, Oda purple — from `ml_stores`); and a
+  **"Registreringer"** list of every recorded price point (store, price, date). When a product is on offer, the ingest functions automatically
   record its before-price as *last week's* price point, so the chart shows the
   markdown from the first time the offer is seen.
 - **Skann kvittering** `#/skann` — upload a photo, use the phone camera, or

@@ -104,6 +104,23 @@
     };
   }
 
+  // All distinct sizes a store carries of a product, cheapest-per-unit first
+  // (unit price when known, else pack price). De-duped across sources by name.
+  function sizesFor(g, storeId) {
+    var arr = (g.allByStore && g.allByStore[storeId]) || [];
+    var byName = {};
+    arr.forEach(function (v) {
+      var sig = (v.rawName || '').toLowerCase().replace(/\s+/g, ' ').trim();
+      if (!byName[sig] || v.price < byName[sig].price) byName[sig] = v;
+    });
+    return Object.keys(byName).map(function (k) { return byName[k]; }).sort(function (a, b) {
+      if (a.perUnit != null && b.perUnit != null) return a.perUnit - b.perUnit;
+      if (a.perUnit != null) return -1;
+      if (b.perUnit != null) return 1;
+      return a.price - b.price;
+    });
+  }
+
   function buildGroups(offers) {
     OFFERS = offers || [];
     var today = new Date().toISOString().slice(0, 10);
@@ -129,14 +146,20 @@
         if (withU.length) return withU.reduce(function (a, b) { return b.perUnit < a.perUnit ? b : a; });
         return arr.reduce(function (a, b) { return b.price < a.price ? b : a; });
       });
-      // Size-aware comparison: when every store's variant has a comparable unit
-      // price, order and label by price-per-unit; otherwise fall back to pack price.
+      // Always order by price-per-unit when known (nulls last), so litre/kilo
+      // price drives the ranking. The "billigst per X" headline is only claimed
+      // when *every* store is unit-comparable, to avoid a misleading claim.
+      variants.sort(function (a, b) {
+        if (a.perUnit != null && b.perUnit != null) return a.perUnit - b.perUnit;
+        if (a.perUnit != null) return -1;
+        if (b.perUnit != null) return 1;
+        return a.price - b.price;
+      });
       var comparable = variants.length >= 2 && variants.every(function (v) { return v.perUnit != null && v.unitDim === variants[0].unitDim; });
-      if (comparable) variants.sort(function (a, b) { return a.perUnit - b.perUnit; });
-      else variants.sort(function (a, b) { return a.price - b.price; });
       var img = null; for (var i = 0; i < variants.length; i++) { if (variants[i].image) { img = variants[i].image; break; } }
       return {
         key: key, name: variants[0] ? variants[0].name : key, variants: variants, image: img,
+        allByStore: byStore,
         minPrice: variants.reduce(function (m, v) { return Math.min(m, v.price); }, Infinity),
         storeCount: variants.length,
         compDim: comparable ? variants[0].unitDim : null,
@@ -473,12 +496,14 @@
 
     var rows = g.variants.map(function (v) {
       var vu = v.validUntil ? 'Gyldig til ' + v.validUntil.slice(8, 10) + '.' + v.validUntil.slice(5, 7) : '';
-      return h('div', Object.assign({ cls: 'row-hover', style: 'display: grid; grid-template-columns: 1fr auto auto; gap: 12px; align-items: center; cursor: pointer; padding: 14px 20px; border-bottom: 1px solid color-mix(in srgb, var(--color-text) 8%, transparent);' }, activate(openVariant(g.key, v.storeId), v.storeName + ', ' + nf(v.price) + ', se prishistorikk')), [
+      var nSizes = sizesFor(g, v.storeId).length;
+      var sub = v.rawName + (vu ? ' · ' + vu : '') + (nSizes > 1 ? ' · ' + nSizes + ' størrelser' : '');
+      return h('div', Object.assign({ cls: 'row-hover', style: 'display: grid; grid-template-columns: 1fr auto auto; gap: 12px; align-items: center; cursor: pointer; padding: 14px 20px; border-bottom: 1px solid color-mix(in srgb, var(--color-text) 8%, transparent);' }, activate(openVariant(g.key, v.storeId), v.storeName + ', ' + nf(v.price) + (nSizes > 1 ? ', ' + nSizes + ' størrelser' : '') + ', se prishistorikk')), [
         h('span', { style: 'display: flex; align-items: center; gap: 12px;' }, [
           storeLine(v.color, v.dash, 18),
           h('span', {}, [
             h('span', { style: NAME_STYLE, text: v.storeName }),
-            h('span', { style: 'display: block; font-size: 13px; color: ' + MUTED60 + ';', text: v.rawName + (vu ? ' · ' + vu : '') })
+            h('span', { style: 'display: block; font-size: 13px; color: ' + MUTED60 + ';', text: sub })
           ])
         ]),
         v.isOffer ? h('span', { cls: 'tag tag-outline', text: '−' + pctOff(v) + ' %' }) : h('span'),
@@ -496,7 +521,7 @@
       h('span', { style: KICKER, text: '01 · Selges hos' }),
       h('hr', { style: RULE }),
       h('div', { cls: 'blueprint', style: 'padding: 0;' }, corners().concat(rows)),
-      h('p', { style: 'margin: 16px 0 0; font-size: 13px; color: ' + MUTED60 + ';', text: 'Trykk på en butikk for å se prishistorikk. Kilde: tilbudsaviser (eTilbudsavis).' })
+      h('p', { style: 'margin: 16px 0 0; font-size: 13px; color: ' + MUTED60 + ';', text: 'Prisene sammenlignes per liter/kilo. Trykk på en butikk for å se størrelsene den har og prishistorikken.' })
     ]);
 
     return h('section', { 'data-screen-label': 'Produktgruppe' }, [head, table]);
@@ -605,10 +630,39 @@
         ])
       : h('p', { style: 'font-size: 15px; color: ' + MUTED70 + ';', text: (hist === 'loading' || hist == null) ? 'Laster registreringer …' : 'Ingen registreringer ennå.' });
 
-    return h('section', { 'data-screen-label': 'Produktside' }, [head,
-      h('div', {}, [h('span', { style: KICKER, text: '01 · Prishistorikk' }), h('hr', { style: RULE }), chartBlock]),
-      h('div', { style: 'margin-top: 40px;' }, [h('span', { style: KICKER, text: '02 · Registreringer' }), h('hr', { style: RULE }), regBlock])
-    ]);
+    // ── Størrelser: the same product in the sizes this store carries ───────
+    var sizes = sizesFor(g, v.storeId);
+    var sizeBlock = null;
+    if (sizes.length > 1) {
+      var sizeRows = sizes.map(function (s) {
+        return h('div', { style: 'display: grid; grid-template-columns: 1fr auto auto; gap: 12px; align-items: center; padding: 12px 20px; border-bottom: 1px solid color-mix(in srgb, var(--color-text) 8%, transparent);' + (s === v ? ' background: color-mix(in srgb, var(--color-accent) 6%, transparent);' : '') }, [
+          h('span', { style: 'font-size: 15px;' }, [s.rawName, s.storeId === v.storeId && s === v ? h('span', { style: 'margin-left: 8px; font-size: 11px; letter-spacing: 0.06em; text-transform: uppercase; color: ' + MUTED60 + ';', text: 'billigst per ' + (s.unitDim || 'enhet') }) : null]),
+          s.isOffer ? h('span', { cls: 'tag tag-outline', text: '−' + pctOff(s) + ' %' }) : h('span'),
+          h('span', { style: 'display: flex; flex-direction: column; align-items: flex-end; gap: 2px;' }, [
+            h('span', { style: 'display: flex; align-items: baseline; gap: 8px; justify-content: flex-end;' }, [
+              s.prePrice ? h('span', { style: "font-size: 12px; color: " + MUTED60 + "; text-decoration: line-through; font-feature-settings: 'tnum' 1;", text: nf(s.prePrice) }) : null,
+              h('span', { style: "font-family: var(--font-heading); font-weight: 600; font-size: 20px; font-feature-settings: 'tnum' 1; white-space: nowrap;", text: nf(s.price) })
+            ]),
+            (s.perUnit != null) ? h('span', { style: 'font-size: 12px; color: ' + MUTED60 + "; font-feature-settings: 'tnum' 1; white-space: nowrap;", text: nfUnit(s.perUnit, s.unitDim) }) : null
+          ])
+        ]);
+      });
+      sizeBlock = h('div', {}, [
+        h('div', { cls: 'blueprint', style: 'padding: 0;' }, corners().concat(sizeRows)),
+        h('p', { style: 'margin: 16px 0 0; font-size: 13px; color: ' + MUTED60 + ';', text: v.storeName + ' fører denne varen i flere størrelser — sortert etter pris per liter/kilo.' })
+      ]);
+    }
+
+    var sections = [];
+    if (sizeBlock) sections.push({ title: 'Størrelser hos ' + v.storeName, body: sizeBlock });
+    sections.push({ title: 'Prishistorikk', body: chartBlock });
+    sections.push({ title: 'Registreringer', body: regBlock });
+    var body = sections.map(function (s, i) {
+      return h('div', { style: i > 0 ? 'margin-top: 40px;' : '' }, [
+        h('span', { style: KICKER, text: '0' + (i + 1) + ' · ' + s.title }), h('hr', { style: RULE }), s.body
+      ]);
+    });
+    return h('section', { 'data-screen-label': 'Produktside' }, [head].concat(body));
   }
 
   // ── Scan screen (unchanged) ──────────────────────────────────────────────
