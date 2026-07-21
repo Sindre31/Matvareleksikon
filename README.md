@@ -44,9 +44,9 @@ python3 -m http.server 8000
 - **Tilbud** `#/tilbud` — this week's active offers from the chains'
   tilbudsaviser, with product images, before-prices and validity dates,
   filterable by store.
-- **Skann kvittering** `#/skann` — upload a photo (or use the phone camera)
-  → the image is sent to a **Supabase Edge Function that runs Google Gemini
-  vision** → the parsed line items and detected store are pre-filled for
+- **Skann kvittering** `#/skann` — upload a photo, use the phone camera, or
+  **drag-and-drop / paste** an image → the image is sent to a **Supabase Edge
+  Function that runs Google Gemini vision** → the parsed line items and detected store are pre-filled for
   review → submit **persists** the prices to Supabase and counts them toward
   the community total.
 

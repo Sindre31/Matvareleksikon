@@ -201,9 +201,7 @@
       if (k === 'cls') { el.setAttribute('class', val); }
       else if (k === 'style') { el.setAttribute('style', val); }
       else if (k === 'text') { el.textContent = val; }
-      else if (k === 'onClick') { el.addEventListener('click', val); }
-      else if (k === 'onInput') { el.addEventListener('input', val); }
-      else if (k === 'onChange') { el.addEventListener('change', val); }
+      else if (/^on[A-Z]/.test(k) && typeof val === 'function') { el.addEventListener(k.slice(2).toLowerCase(), val); }
       else if (k === 'value') { el.value = val; if (el.setAttribute) el.setAttribute('value', val); }
       else { el.setAttribute(k, val); }
     });
@@ -510,7 +508,24 @@
         h('p', { style: 'margin: 0; font-size: 15px; line-height: 22px; color: ' + MUTED78 + ';', text: 'Ta bilde av kvitteringen direkte på mobil. Hold den flatt og i godt lys.' }),
         h('label', { cls: 'btn btn-ghost', style: 'align-self: flex-start; cursor: pointer; margin-top: 8px;' }, ['Åpne kamera', cameraInput])
       ]));
-      body = h('div', { style: 'display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 40px; max-width: 820px;' }, [uploadCard, cameraCard]);
+      var grid = h('div', { style: 'display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 40px;' }, [uploadCard, cameraCard]);
+      var DROP_IDLE = 'color-mix(in srgb, var(--color-text) 28%, transparent)';
+      var dropHi = function (e, on) {
+        e.preventDefault();
+        e.currentTarget.style.background = on ? 'color-mix(in srgb, var(--color-accent) 8%, transparent)' : 'transparent';
+        e.currentTarget.style.borderColor = on ? 'var(--color-accent)' : DROP_IDLE;
+      };
+      var dropZone = h('div', {
+        style: 'border: 1px dashed ' + DROP_IDLE + '; padding: 22px; background: transparent; transition: background 0.12s ease, border-color 0.12s ease;',
+        onDragEnter: function (e) { dropHi(e, true); },
+        onDragOver: function (e) { dropHi(e, true); },
+        onDragLeave: function (e) { dropHi(e, false); },
+        onDrop: function (e) { dropHi(e, false); var f = e.dataTransfer && e.dataTransfer.files && e.dataTransfer.files[0]; if (f) onScanFile(f); }
+      }, [
+        h('p', { style: 'margin: 0 0 20px; font-size: 14px; color: ' + MUTED70 + ';', text: 'Dra og slipp et bilde av kvitteringen her — eller lim det inn (Ctrl/⌘+V), eller bruk knappene under.' }),
+        grid
+      ]);
+      body = h('div', { style: 'max-width: 820px;' }, [dropZone]);
     } else if (state.scanPhase === 'scanning') {
       var preview = state.scanImageUrl
         ? h('div', { style: 'position: relative; aspect-ratio: 3 / 4; max-height: 320px; background: var(--color-accent-900); overflow: hidden; margin-bottom: 16px;' }, [
@@ -715,6 +730,19 @@
   }
 
   window.addEventListener('hashchange', route);
+
+  // Paste an image (Ctrl/⌘+V) while on the scan screen to feed it to OCR.
+  document.addEventListener('paste', function (e) {
+    if (state.phase !== 'ready' || state.view !== 'scan' || state.scanPhase !== 'idle') return;
+    var items = (e.clipboardData && e.clipboardData.items) || [];
+    for (var i = 0; i < items.length; i++) {
+      if (items[i].type && items[i].type.indexOf('image') === 0) {
+        var f = items[i].getAsFile();
+        if (f) { e.preventDefault(); onScanFile(f); return; }
+      }
+    }
+  });
+
   render();  // initial loading screen
   boot();
 })();
