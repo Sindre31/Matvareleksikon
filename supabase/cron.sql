@@ -27,6 +27,9 @@ select cron.schedule(
 
 -- Real shelf prices via Kassalapp, 10 min after the offers job (needs the
 -- KASSALAPP_TOKEN secret; the function no-ops without it).
+-- deleteFirst:false → the weekly run UPSERTS (refreshes the default search
+-- terms' prices) but never deletes, so the large one-time bulk catalogue is
+-- preserved instead of being replaced by the smaller weekly search result.
 select cron.schedule(
   'ml-ingest-kassalapp-weekly',
   '10 4 * * 1',
@@ -34,7 +37,7 @@ select cron.schedule(
   select net.http_post(
     url := 'https://jiaxeedguivvhixychcg.supabase.co/functions/v1/ml-ingest-kassalapp',
     headers := jsonb_build_object('Content-Type','application/json','Authorization','Bearer <SUPABASE_ANON_KEY>'),
-    body := '{}'::jsonb,
+    body := '{"deleteFirst": false}'::jsonb,
     timeout_milliseconds := 170000
   );
   $cmd$

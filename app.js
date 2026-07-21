@@ -71,6 +71,30 @@
     return null;
   }
 
+  // Cross-store grouping key computed client-side from the product name, so
+  // stores that word the same item differently still group together. Folds
+  // Norwegian letters, strips sizes/units/%/house-brands and filler, then sorts
+  // the remaining words so word order doesn't matter ("knuste tomater" ==
+  // "tomater knuste"). Each offer keeps its own server group_key for history.
+  var GK_STOP = {
+    rema: 1, kiwi: 1, coop: 1, extra: 1, meny: 1, spar: 1, first: 1, price: 1, xtra: 1,
+    eldorado: 1, prima: 1, folkets: 1, anglamark: 1, q: 1, tine: 1, gilde: 1, synnove: 1,
+    nordfjord: 1, prior: 1, stange: 1, jacobs: 1, den: 1, stolte: 1, hane: 1, mills: 1,
+    og: 1, med: 1, i: 1, av: 1, til: 1, pk: 1, stk: 1, pack: 1, ca: 1
+  };
+  function ckey(name) {
+    var s = String(name || '').toLowerCase()
+      .replace(/ø/g, 'o').replace(/æ/g, 'ae').replace(/å/g, 'a')
+      .replace(/\d+([.,]\d+)?\s*(kg|hg|g|ml|cl|dl|l|stk|pk|pakk|pack|kop)\b/g, ' ')
+      .replace(/\d+([.,]\d+)?\s*%/g, ' ')
+      .replace(/[^a-z0-9 ]/g, ' ')
+      .replace(/\s+/g, ' ').trim();
+    var words = s.split(' ').filter(function (w) { return w && !GK_STOP[w]; });
+    if (!words.length) words = s.split(' ').filter(Boolean);
+    words.sort();
+    return words.join(' ') || (name || '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
+  }
+
   // Make a non-native clickable element keyboard-operable (Enter/Space) and
   // announced as a button. Merge the returned props into the element.
   function activate(handler, label) {
@@ -96,7 +120,7 @@
     return {
       storeId: st, storeName: STORE_NAME[st] || st,
       color: (STORE_STYLE[st] || {}).color || 'var(--color-accent)', dash: (STORE_STYLE[st] || {}).dash || '',
-      rawName: o.product_name, name: cleanName(o.product_name),
+      rawName: o.product_name, name: cleanName(o.product_name), serverKey: o.group_key || ckey(o.product_name),
       price: price, prePrice: o.pre_price != null ? Number(o.pre_price) : null,
       unit: o.unit || null, image: o.image_url || null, validUntil: o.valid_until || null,
       isOffer: o.pre_price != null && Number(o.pre_price) > price,
@@ -129,10 +153,11 @@
     VALID_COUNT = valid.length;
     var map = {};
     valid.forEach(function (o) {
-      var key = o.group_key || (o.product_name || '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
+      var key = ckey(o.product_name);
       if (!key) return;
-      var g = map[key] || (map[key] = { key: key, byStore: {} });
+      var g = map[key] || (map[key] = { key: key, byStore: {}, serverKeys: {} });
       var v = buildVariant(o);
+      g.serverKeys[v.serverKey] = 1;
       (g.byStore[v.storeId] || (g.byStore[v.storeId] = [])).push(v);
     });
     GROUPS = Object.keys(map).map(function (key) {
@@ -163,7 +188,7 @@
       var cheapUnitDim = cheapUnit != null ? variants[0].unitDim : null;
       return {
         key: key, name: variants[0] ? variants[0].name : key, variants: variants, image: img,
-        allByStore: byStore,
+        allByStore: byStore, serverKeys: Object.keys(map[key].serverKeys),
         minPrice: variants.reduce(function (m, v) { return Math.min(m, v.price); }, Infinity),
         storeCount: variants.length,
         unitPrice: cheapUnit, unitDim: cheapUnitDim,
@@ -337,7 +362,7 @@
     } else if (r.view === 'vare') {
       if (!GROUP_BY_KEY[r.groupKey]) { location.hash = '#/'; return; }
       state.view = 'vare'; state.groupKey = r.groupKey; state.storeId = r.storeId;
-      loadHistory(r.groupKey);
+      loadHistory(GROUP_BY_KEY[r.groupKey]);
     } else if (r.view === 'scan') {
       state.view = 'scan';
     } else {
@@ -351,10 +376,16 @@
   function openGroup(key) { return function () { go('#/gruppe/' + encodeURIComponent(key)); window.scrollTo(0, 0); }; }
   function openVariant(key, store) { return function () { go('#/vare/' + encodeURIComponent(key) + '/' + encodeURIComponent(store)); window.scrollTo(0, 0); }; }
 
-  function loadHistory(key) {
+  function loadHistory(g) {
+    if (!g) return;
+    var key = g.key;
     if (state.history[key]) return;
     state.history[key] = 'loading';
-    sb('/ml_price_history?select=store_id,price,pre_price,is_offer,observed_at&group_key=eq.' + encodeURIComponent(key) + '&order=observed_at.asc')
+    // History rows are keyed by the servers' own group_key; a client group may
+    // merge several of them, so fetch by the set of server keys it contains.
+    var keys = (g.serverKeys && g.serverKeys.length) ? g.serverKeys : [key];
+    var inList = keys.map(function (k) { return '"' + String(k).replace(/"/g, '') + '"'; }).join(',');
+    sb('/ml_price_history?select=store_id,price,pre_price,is_offer,observed_at&group_key=in.(' + encodeURIComponent(inList) + ')&order=observed_at.asc')
       .then(function (r) { return r.ok ? r.json() : []; })
       .then(function (rows) { state.history[key] = rows || []; if (state.view === 'vare' && state.groupKey === key) render(); })
       .catch(function () { state.history[key] = []; if (state.view === 'vare') render(); });
@@ -426,7 +457,8 @@
               h('div', { style: 'display: flex; align-items: baseline; gap: 8px;' }, [
                 h('span', { style: "font-family: var(--font-heading); font-weight: 600; font-size: 24px; font-feature-settings: 'tnum' 1;", text: nf(v.price) }),
                 v.prePrice ? h('span', { style: "font-size: 13px; color: " + MUTED60 + "; text-decoration: line-through; font-feature-settings: 'tnum' 1;", text: nf(v.prePrice) }) : null
-              ])
+              ]),
+              (v.perUnit != null) ? h('span', { style: 'font-size: 12px; color: ' + MUTED60 + "; font-feature-settings: 'tnum' 1;", text: nfUnit(v.perUnit, v.unitDim) }) : null
             ])
           ]));
         }))

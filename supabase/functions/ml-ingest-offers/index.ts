@@ -14,11 +14,21 @@ const BASE = "https://api.etilbudsavis.dk/v2";
 const CTRY = "NO";
 const SWEEP: Array<[string, string]> = [["faa0Ym", "rema"], ["257bxm", "kiwi"]];
 const SWEEP_MAX_PAGES = 3;
+// Broad net so Kiwi/Rema/Extra offers (which only exist as weekly flyers, not
+// shelf-price APIs) are surfaced across all dealers via /offers/search.
 const SEARCH_TERMS = [
-  "meny", "coop extra", "kjøttdeig", "kylling", "laks", "kaffe", "brød", "melk",
-  "ost", "pizza", "yoghurt", "juice", "brus", "frukt", "grønnsaker", "pasta",
-  "taco", "smør", "egg", "banan", "ris", "kjeks", "sjokolade", "mel",
+  "meny", "coop extra", "kiwi", "rema", "kjøttdeig", "kjøttkaker", "karbonade",
+  "kylling", "kyllingfilet", "laks", "torsk", "fisk", "reker", "bacon", "pølser",
+  "skinke", "leverpostei", "kaffe", "te", "brød", "rundstykker", "knekkebrød",
+  "melk", "lettmelk", "ost", "brunost", "smør", "margarin", "rømme", "fløte",
+  "yoghurt", "egg", "pizza", "pasta", "spaghetti", "ris", "nudler", "taco",
+  "tortilla", "juice", "brus", "vann", "saft", "frukt", "eple", "banan", "druer",
+  "grønnsaker", "tomat", "agurk", "paprika", "løk", "potet", "gulrot", "salat",
+  "brokkoli", "mais", "bønner", "kjeks", "sjokolade", "godteri", "snacks", "chips",
+  "is", "mel", "sukker", "havregryn", "müsli", "cornflakes", "ketchup", "majones",
+  "sennep", "olje", "krydder", "suppe", "hermetikk", "bleier", "vaskemiddel",
 ];
+const SEARCH_PAGES = 2;
 
 function storeSlug(name: string | undefined): string | null {
   const s = (name || "").toLowerCase();
@@ -136,7 +146,11 @@ Deno.serve(async (_req: Request) => {
     }
   }
   for (const term of SEARCH_TERMS) {
-    collect(await getOffers(`${BASE}/offers/search?query=${encodeURIComponent(term)}&limit=100&country_id=${CTRY}`));
+    for (let p = 0; p < SEARCH_PAGES; p++) {
+      const page = await getOffers(`${BASE}/offers/search?query=${encodeURIComponent(term)}&limit=100&offset=${p * 100}&country_id=${CTRY}`);
+      collect(page);
+      if (page.length < 100) break;
+    }
   }
 
   const byExt = new Map<string, Record<string, unknown>>();

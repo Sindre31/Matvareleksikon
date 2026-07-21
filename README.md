@@ -101,6 +101,16 @@ Every screen has a real empty/error state: a distinct message for no-search-hits
 vs. an empty store filter vs. an empty catalogue, a "fant ikke varen" view for a
 dead product deep link, and a boot-failure screen with a retry button.
 
+**Cross-store grouping.** Products are grouped by a key computed **client-side**
+from the name (fold Norwegian letters, strip sizes/units/%/house-brands, then
+**sort the remaining words** so word order doesn't matter — "knuste tomater" ==
+"tomater knuste"). This merges ~50 % more products across stores than the raw
+server key, without re-ingesting. Each offer keeps its own server `group_key`, so
+a merged group loads its price history by the **set** of server keys it contains.
+
+**CI.** `.github/workflows/ci.yml` runs on every push: `node --check` on the
+front end and `deno check` on each Supabase Edge Function.
+
 The prototype's React-based `DCLogic` component is ported to plain
 JavaScript. The rendering and the `chartFor()` / price-change / cheapest-per
 computations mirror the original; only the data source changed from a

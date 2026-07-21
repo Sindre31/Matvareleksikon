@@ -1,0 +1,37 @@
+name: CI
+
+on:
+  push:
+    branches: ['**']
+  pull_request:
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Syntax-check the front end (app.js, build.mjs)
+        run: |
+          node --check app.js
+          if [ -f build.mjs ]; then node --check build.mjs; fi
+
+      - name: Validate JSON config
+        run: |
+          for f in vercel.json; do
+            [ -f "$f" ] && node -e "JSON.parse(require('fs').readFileSync('$f','utf8'))" && echo "ok: $f"
+          done
+
+      - uses: denoland/setup-deno@v2
+        with:
+          deno-version: v2.x
+
+      - name: Type-check the Supabase Edge Functions
+        run: |
+          status=0
+          for f in supabase/functions/*/index.ts; do
+            echo "::group::deno check $f"
+            deno check "$f" || status=1
+            echo "::endgroup::"
+          done
+          exit $status
