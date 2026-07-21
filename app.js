@@ -88,7 +88,8 @@
     scanPhase: 'idle', scanStep: '', scanItems: [], scanStore: 'Kiwi', scanPlace: 'Kiwi Grünerløkka, Oslo',
     scanSubmitting: false, scanError: null, scanImageUrl: null, scanNote: null,
     doneCount: 0, doneMsgN: 0,
-    history: {} // key -> 'loading' | [rows]
+    history: {}, // key -> 'loading' | [rows]
+    histPrice: '', histPre: '', histWeek: '', histSubmitting: false, histError: null, histMsg: null
   };
   function setState(patch) { Object.assign(state, patch); render(); }
 
@@ -96,6 +97,16 @@
 
   // ── Receipt OCR (Gemini vision Edge Function) — unchanged pipeline ────────
   var SCAN_FN_URL = SUPABASE_URL + '/functions/v1/ml-receipt-scan';
+  var ADD_HIST_FN_URL = SUPABASE_URL + '/functions/v1/ml-add-history';
+
+  // Monday of a given week, YYYY-MM-DD. offsetWeeks=0 → this week, 1 → last week.
+  function mondayOf(offsetWeeks) {
+    var d = new Date();
+    d.setHours(12, 0, 0, 0);
+    var day = (d.getDay() + 6) % 7; // 0 = Monday
+    d.setDate(d.getDate() - day - (offsetWeeks || 0) * 7);
+    return d.toISOString().slice(0, 10);
+  }
   function imageToDataUrl(file) {
     return new Promise(function (resolve, reject) {
       var url = URL.createObjectURL(file);
@@ -181,6 +192,30 @@
       .catch(function () { setState({ scanSubmitting: false, scanError: 'Kunne ikke lagre prisene nå. Sjekk nettforbindelsen og prøv igjen.' }); });
   }
 
+  function addHistoryPoint(g, v) {
+    if (state.histSubmitting) return;
+    var raw = String(state.histPrice == null ? '' : state.histPrice).replace(',', '.').trim();
+    var price = raw === '' ? NaN : Number(raw);
+    if (!(price > 0)) { setState({ histError: 'Skriv inn en gyldig pris.', histMsg: null }); return; }
+    var preRaw = String(state.histPre == null ? '' : state.histPre).replace(',', '.').trim();
+    var pre = preRaw === '' ? null : Number(preRaw);
+    var week = state.histWeek || mondayOf(1);
+    setState({ histSubmitting: true, histError: null, histMsg: null });
+    fetch(ADD_HIST_FN_URL, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', apikey: SUPABASE_KEY, Authorization: 'Bearer ' + SUPABASE_KEY },
+      body: JSON.stringify({ group_key: g.key, store_id: v.storeId, product_name: v.rawName, price: price, pre_price: (pre != null && !isNaN(pre)) ? pre : null, observed_at: week })
+    })
+      .then(function (res) { return res.json().then(function (b) { return { ok: res.ok, body: b }; }, function () { return { ok: res.ok, body: {} }; }); })
+      .then(function (r) {
+        if (!r.ok) { setState({ histSubmitting: false, histError: (r.body && r.body.error) || 'Kunne ikke lagre prispunktet.' }); return; }
+        delete state.history[g.key];
+        setState({ histSubmitting: false, histPrice: '', histPre: '', histError: null, histMsg: 'Lagret: ' + nf(price) + ' hos ' + v.storeName + ' (uke fra ' + week + '). Grafen er oppdatert.' });
+        loadHistory(g.key);
+      })
+      .catch(function () { setState({ histSubmitting: false, histError: 'Nettverksfeil. Prøv igjen.' }); });
+  }
+
   // ── Tiny hyperscript ─────────────────────────────────────────────────────
   var SVG_NS = 'http://www.w3.org/2000/svg';
   var SVG_TAGS = { svg: 1, line: 1, text: 1, polyline: 1, circle: 1, g: 1, rect: 1, path: 1 };
@@ -239,6 +274,9 @@
       state.view = 'gruppe'; state.groupKey = r.groupKey;
     } else if (r.view === 'vare') {
       if (!GROUP_BY_KEY[r.groupKey]) { location.hash = '#/'; return; }
+      if (state.groupKey !== r.groupKey || state.storeId !== r.storeId) {
+        state.histPrice = ''; state.histPre = ''; state.histWeek = ''; state.histError = null; state.histMsg = null;
+      }
       state.view = 'vare'; state.groupKey = r.groupKey; state.storeId = r.storeId;
       loadHistory(r.groupKey);
     } else if (r.view === 'scan') {
@@ -493,8 +531,37 @@
       ]));
     }
 
+    // ── Add a known earlier price ──────────────────────────────────────────
+    var defaultWeek = state.histWeek || mondayOf(1);
+    var weekOpts = [{ v: mondayOf(0), label: mondayOf(0) + ' (denne uka)' }];
+    for (var wi = 1; wi <= 9; wi++) weekOpts.push({ v: mondayOf(wi), label: mondayOf(wi) + (wi === 1 ? ' (forrige uke)' : '') });
+    var labelStyle = 'display: block; font-size: 12px; letter-spacing: 0.06em; text-transform: uppercase; font-weight: 600; color: ' + MUTED70 + '; margin-bottom: 6px;';
+    var histForm = h('div', { cls: 'blueprint', style: 'padding: 24px;' }, corners().concat([
+      h('p', { style: 'margin: 0 0 4px; font-size: 15px; line-height: 22px; max-width: 62ch;', text: 'Vet du hva ' + v.storeName + ' tok for «' + v.rawName + '» en tidligere uke? Legg det inn som et målepunkt, så vises det i grafen over.' }),
+      h('div', { style: 'display: flex; flex-wrap: wrap; gap: 16px; align-items: flex-end; margin-top: 18px;' }, [
+        h('label', { style: 'flex: 1 1 200px;' }, [
+          h('span', { style: labelStyle, text: 'Uke' }),
+          h('select', { cls: 'input', style: 'min-height: 40px; width: 100%;', value: defaultWeek, onChange: function (e) { setState({ histWeek: e.target.value }); } },
+            weekOpts.map(function (o) { return h('option', { value: o.v, selected: o.v === defaultWeek ? 'selected' : false, text: o.label }); }))
+        ]),
+        h('label', { style: 'flex: 0 1 130px;' }, [
+          h('span', { style: labelStyle, text: 'Pris (kr)' }),
+          h('input', { cls: 'input', type: 'number', step: '0.1', min: '0', 'data-focus-id': 'hist-price', style: "min-height: 40px; width: 100%; text-align: right; font-feature-settings: 'tnum' 1;", value: state.histPrice, onInput: function (e) { setState({ histPrice: e.target.value }); } })
+        ]),
+        h('label', { style: 'flex: 0 1 150px;' }, [
+          h('span', { style: labelStyle, text: 'Førpris (valgfri)' }),
+          h('input', { cls: 'input', type: 'number', step: '0.1', min: '0', 'data-focus-id': 'hist-pre', style: "min-height: 40px; width: 100%; text-align: right; font-feature-settings: 'tnum' 1;", value: state.histPre, onInput: function (e) { setState({ histPre: e.target.value }); } })
+        ]),
+        h('button', { type: 'button', cls: 'btn btn-primary', style: 'min-height: 40px;', disabled: state.histSubmitting ? 'disabled' : false, onClick: function () { addHistoryPoint(g, v); }, text: state.histSubmitting ? 'Lagrer …' : 'Legg til' })
+      ]),
+      state.histError ? h('p', { style: 'margin: 14px 0 0; font-size: 13px; color: var(--color-accent-800); font-weight: 600;', text: state.histError }) : null,
+      state.histMsg ? h('p', { style: 'margin: 14px 0 0; font-size: 13px; color: ' + MUTED78 + ';', text: state.histMsg }) : null,
+      h('p', { style: 'margin: 14px 0 0; font-size: 12px; color: ' + MUTED60 + ';', text: 'Førpris fyller du bare ut hvis prisen den uka var et tilbud.' })
+    ]));
+
     return h('section', { 'data-screen-label': 'Produktside' }, [head,
-      h('div', {}, [h('span', { style: KICKER, text: '01 · Prishistorikk' }), h('hr', { style: RULE }), chartBlock])
+      h('div', {}, [h('span', { style: KICKER, text: '01 · Prishistorikk' }), h('hr', { style: RULE }), chartBlock]),
+      h('div', { style: 'margin-top: 40px;' }, [h('span', { style: KICKER, text: '02 · Legg til en tidligere pris' }), h('hr', { style: RULE }), histForm])
     ]);
   }
 
