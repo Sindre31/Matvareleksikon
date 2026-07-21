@@ -56,6 +56,21 @@ select cron.schedule(
   $cmd$
 );
 
+-- Real Oda (oda.com) shelf prices via Oda's public search API (keyless),
+-- 30 min after the offers job. Oda is a single online store → 'oda'.
+select cron.schedule(
+  'ml-ingest-oda-weekly',
+  '30 4 * * 1',
+  $cmd$
+  select net.http_post(
+    url := 'https://jiaxeedguivvhixychcg.supabase.co/functions/v1/ml-ingest-oda',
+    headers := jsonb_build_object('Content-Type','application/json','Authorization','Bearer <SUPABASE_ANON_KEY>'),
+    body := '{}'::jsonb,
+    timeout_milliseconds := 170000
+  );
+  $cmd$
+);
+
 -- Inspect:   select jobid, jobname, schedule, active from cron.job;
 -- Run log:   select * from cron.job_run_details order by start_time desc limit 10;
 -- HTTP resp: select id, status_code, content from net._http_response order by id desc limit 5;

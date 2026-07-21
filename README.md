@@ -58,7 +58,7 @@ schema:
 
 | Object | Purpose |
 | --- | --- |
-| `ml_offers` | **The leksikon's data**: real prices — weekly offers from eTilbudsavis/Tjek (`source=etilbudsavis`, with validity), shelf prices from Kassalapp across the chains (`source=kassalapp`), and the authoritative Meny assortment from NorgesGruppen's ngdata API (`source=ngdata`) — store, product, price, before-price, image, and a `group_key` for cross-store grouping. The front end dedupes to the cheapest row per (group, store), so overlapping Meny sources collapse to one card. |
+| `ml_offers` | **The leksikon's data**: real prices — weekly offers from eTilbudsavis/Tjek (`source=etilbudsavis`, with validity), shelf prices from Kassalapp across the chains (`source=kassalapp`), and the authoritative Meny assortment from NorgesGruppen's ngdata API (`source=ngdata`), and Oda's online-store prices (`source=oda`) — store, product, price, before-price, image, and a `group_key` for cross-store grouping. The front end dedupes to the cheapest row per (group, store), so overlapping Meny sources collapse to one card. |
 | `ml_price_history` | One real price point per (`group_key`, store, day), appended weekly → the variant price-history chart |
 | `ml_stores` | Store metadata (name, chart colour/dash, locations) |
 | `ml_registrations` | Append-only community contributions from the scan flow |
@@ -150,9 +150,12 @@ group as the offers):
 - **`ml-ingest-ngdata`** — the authoritative Meny assortment (with product
   images) from NorgesGruppen's public **ngdata** API (keyless, browser
   `User-Agent`), the same source `billigkurv` uses for Meny/Spar.
+- **`ml-ingest-oda`** — [Oda](https://oda.com) (the online supermarket,
+  formerly Kolonial.no) via its public search API (keyless), with product
+  images. Oda is a single online store → the `oda` chain.
 
-Both run weekly via `pg_cron` (offers 04:00, Kassalapp 04:10, ngdata 04:20
-UTC every Monday = ~06:00–06:20 Oslo). See `supabase/cron.sql`.
+All run weekly via `pg_cron` (offers 04:00, Kassalapp 04:10, ngdata 04:20,
+Oda 04:30 UTC every Monday = ~06:00–06:30 Oslo). See `supabase/cron.sql`.
 
 ## Deployment
 
