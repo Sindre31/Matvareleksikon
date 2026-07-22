@@ -268,6 +268,11 @@
   function inList(k) { return !!state.list[k]; }
   function listCount() { return Object.keys(state.list).length; }
   function toggleList(k) { if (state.list[k]) delete state.list[k]; else state.list[k] = 1; saveList(); render(); }
+  // A shareable list URL encodes the group keys after the hash (keys are folded
+  // to [a-z0-9 ], so '~' is a safe separator) — no account, no server.
+  function listShareUrl() {
+    return location.href.replace(/#.*$/, '') + '#/liste?d=' + encodeURIComponent(Object.keys(state.list).join('~'));
+  }
 
   // ── State ────────────────────────────────────────────────────────────────
   var state = {
@@ -276,7 +281,7 @@
     scanPhase: 'idle', scanStep: '', scanItems: [], scanStore: 'Kiwi', scanDate: '',
     scanSubmitting: false, scanError: null, scanImageUrl: null, scanNote: null,
     doneCount: 0, doneMsgN: 0,
-    list: {}, copiedFor: null, lastUpdated: '',
+    list: {}, copiedFor: null, lastUpdated: '', sharedList: null, listShareCopied: false,
     history: {} // key -> 'loading' | [rows]
   };
   state.list = loadList();
@@ -420,7 +425,14 @@
       if (i > 0) return { view: 'vare', groupKey: decodeURIComponent(rest.slice(0, i)), storeId: decodeURIComponent(rest.slice(i + 1)) };
     }
     if (hn === '/skann') return { view: 'scan' };
-    if (hn === '/liste') return { view: 'liste' };
+    if (hn.indexOf('/liste') === 0) {
+      var shared = null, qi = hn.indexOf('?');
+      if (qi > -1) {
+        var mm = hn.slice(qi + 1).match(/(?:^|&)d=([^&]*)/);
+        if (mm) { try { shared = decodeURIComponent(mm[1]).split('~').map(function (s) { return s.trim(); }).filter(Boolean); } catch (e) { shared = null; } }
+      }
+      return { view: 'liste', shared: shared };
+    }
     return { view: 'home' };
   }
   function route() {
@@ -437,6 +449,7 @@
       state.view = 'scan';
     } else if (r.view === 'liste') {
       state.view = 'liste';
+      state.sharedList = (r.shared && r.shared.length) ? r.shared : null;
     } else {
       state.view = 'home';
     }
@@ -457,7 +470,7 @@
     // merge several of them, so fetch by the set of server keys it contains.
     var keys = (g.serverKeys && g.serverKeys.length) ? g.serverKeys : [key];
     var inList = keys.map(function (k) { return '"' + String(k).replace(/"/g, '') + '"'; }).join(',');
-    sb('/ml_price_history?select=store_id,price,pre_price,is_offer,observed_at&group_key=in.(' + encodeURIComponent(inList) + ')&order=observed_at.asc')
+    sb('/ml_price_history?select=store_id,price,pre_price,is_offer,observed_at,source&group_key=in.(' + encodeURIComponent(inList) + ')&order=observed_at.asc')
       .then(function (r) { return r.ok ? r.json() : []; })
       .then(function (rows) { state.history[key] = rows || []; if (state.view === 'vare' && state.groupKey === key) render(); })
       .catch(function () { state.history[key] = []; if (state.view === 'vare') render(); });
@@ -476,6 +489,19 @@
   function dateDM(d) {
     d = String(d || '');
     return d.length >= 10 ? d.slice(8, 10) + '.' + d.slice(5, 7) + '.' + d.slice(0, 4) : d;
+  }
+
+  // Where a price point came from: community receipt scan vs. an official
+  // chain/feed price. Scanned points get an accent tag so a stray bad scan is
+  // easy to spot on the chart's data table.
+  function sourceBadge(source) {
+    var scan = source === 'scan';
+    return h('span', {
+      cls: 'tag ' + (scan ? 'tag-accent' : 'tag-neutral'),
+      style: 'font-size: 10px; letter-spacing: 0.04em; text-transform: uppercase;' + (scan ? ' background: var(--color-accent-200); color: var(--color-accent-800);' : ''),
+      title: scan ? 'Registrert av fellesskapet fra en kvittering' : 'Hentet fra kjedenes prisdata',
+      text: scan ? 'Skannet' : 'Offisiell'
+    });
   }
 
   // Small star toggle overlaid on a product card (does not open the card).
@@ -812,7 +838,10 @@
       var dateTxt = d.length >= 10 ? d.slice(8, 10) + '.' + d.slice(5, 7) + '.' + d.slice(0, 4) : d;
       return h('div', { style: 'display: grid; grid-template-columns: 1fr auto auto; gap: 12px; align-items: center; padding: 12px 20px; border-bottom: 1px solid color-mix(in srgb, var(--color-text) 8%, transparent);' }, [
         h('span', { style: 'display: flex; align-items: center; gap: 12px;' }, [storeLine(color, dash, 18), h('span', { style: NAME_STYLE, text: STORE_NAME[r.store_id] || r.store_id })]),
-        h('span', { style: 'font-size: 13px; color: ' + MUTED60 + "; font-feature-settings: 'tnum' 1;", text: dateTxt }),
+        h('span', { style: 'display: flex; flex-direction: column; align-items: flex-start; gap: 4px;' }, [
+          h('span', { style: 'font-size: 13px; color: ' + MUTED60 + "; font-feature-settings: 'tnum' 1;", text: dateTxt }),
+          sourceBadge(r.source)
+        ]),
         h('span', { style: 'display: flex; align-items: baseline; gap: 8px; justify-content: flex-end;' }, [
           r.is_offer ? h('span', { cls: 'tag tag-outline', text: 'Tilbud' }) : null,
           h('span', { style: "font-family: var(--font-heading); font-weight: 600; font-size: 20px; font-feature-settings: 'tnum' 1; white-space: nowrap;", text: nf(Number(r.price)) })
@@ -822,7 +851,7 @@
     var regBlock = regRows.length
       ? h('div', {}, [
           h('div', { cls: 'blueprint', style: 'padding: 0;' }, corners().concat(regRows)),
-          h('p', { style: 'margin: 16px 0 0; font-size: 13px; color: ' + MUTED60 + ';', text: 'Hver registrering er en observert pris hos en butikk på en gitt dato.' })
+          h('p', { style: 'margin: 16px 0 0; font-size: 13px; color: ' + MUTED60 + ';', text: 'Hver registrering er en observert pris hos en butikk på en gitt dato. «Offisiell» er hentet fra kjedenes prisdata; «Skannet» er registrert av fellesskapet fra en kvittering og kan inneholde feil.' })
         ])
       : h('p', { style: 'font-size: 15px; color: ' + MUTED70 + ';', text: (hist === 'loading' || hist == null) ? 'Laster registreringer …' : 'Ingen registreringer ennå.' });
 
@@ -974,13 +1003,41 @@
   // ── Handleliste: saved products + per-store basket comparison ─────────────
   function renderList() {
     var keys = Object.keys(state.list);
+
+    // "Del liste": copy a URL that encodes the current list.
+    var shareBtn = keys.length ? h('button', { type: 'button', cls: 'btn btn-secondary', style: 'margin-top: 20px;', onClick: function () {
+      var url = listShareUrl();
+      var mark = function () { state.listShareCopied = true; render(); setTimeout(function () { state.listShareCopied = false; render(); }, 2000); };
+      try { if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(url).then(mark, mark); else mark(); } catch (e) { mark(); }
+    }, text: state.listShareCopied ? '✓ Delingslenke kopiert' : '↗ Del liste' }) : null;
+
     var head = h('div', { style: 'padding: 56px 0 24px;' }, [
       h('h1', { style: H1, text: 'Handlelisten din' }),
-      h('p', { style: 'margin: 16px 0 0; max-width: 60ch; font-size: 16px; line-height: 24px; color: ' + MUTED70 + ';', text: keys.length ? 'Varene du har stjernemerket, og hva hele lista koster i hver butikk. Lagret lokalt i nettleseren din.' : 'Stjernemerk varer i leksikonet, så samler de seg her — og du ser hvilken butikk som er billigst for hele lista.' })
+      h('p', { style: 'margin: 16px 0 0; max-width: 60ch; font-size: 16px; line-height: 24px; color: ' + MUTED70 + ';', text: keys.length ? 'Varene du har stjernemerket, og hva hele lista koster i hver butikk. Lagret lokalt i nettleseren din — del den med en lenke.' : 'Stjernemerk varer i leksikonet, så samler de seg her — og du ser hvilken butikk som er billigst for hele lista.' }),
+      shareBtn
     ]);
 
+    // A shared list opened via #/liste?d=… : preview + import (never clobbers
+    // the visitor's own list silently).
+    var sharedBanner = null;
+    if (state.sharedList && state.sharedList.length) {
+      var skeys = state.sharedList;
+      var sNames = skeys.map(function (k) { var g = GROUP_BY_KEY[k]; return g ? g.name : null; }).filter(Boolean);
+      var newCount = skeys.filter(function (k) { return !state.list[k]; }).length;
+      var importShared = function () { skeys.forEach(function (k) { state.list[k] = 1; }); saveList(); state.sharedList = null; go('#/liste'); window.scrollTo(0, 0); };
+      var dismissShared = function () { state.sharedList = null; go('#/liste'); };
+      sharedBanner = h('div', { cls: 'blueprint', style: 'padding: 20px 22px; margin-bottom: 32px; display: flex; flex-direction: column; gap: 12px; background: color-mix(in srgb, var(--color-accent) 5%, transparent);' }, corners().concat([
+        h('span', { style: KICKER + ' margin-bottom: 0;', text: 'Delt handleliste' }),
+        h('p', { style: 'margin: 0; font-size: 15px; line-height: 22px;', text: 'Noen har delt en handleliste med ' + skeys.length + (skeys.length === 1 ? ' vare' : ' varer') + (sNames.length ? ': ' + sNames.slice(0, 10).join(', ') + (sNames.length > 10 ? ' m.fl.' : '') + '.' : '.') }),
+        h('div', { style: 'display: flex; gap: 10px; flex-wrap: wrap;' }, [
+          h('button', { type: 'button', cls: 'btn btn-primary', onClick: importShared, text: newCount ? 'Legg til i handlelisten (' + newCount + ' nye)' : 'Alt ligger allerede i lista di' }),
+          h('button', { type: 'button', cls: 'btn btn-ghost', onClick: dismissShared, text: 'Lukk' })
+        ])
+      ]));
+    }
+
     if (!keys.length) {
-      return h('section', { 'data-screen-label': 'Handleliste' }, [head,
+      return h('section', { 'data-screen-label': 'Handleliste' }, [head, sharedBanner,
         h('div', { style: 'margin-top: 8px;' }, [
           h('a', { href: '#/', onClick: nav('home'), cls: 'btn btn-primary', text: 'Til leksikonet' })
         ])
@@ -1049,7 +1106,7 @@
       h('p', { style: 'margin: 16px 0 0; font-size: 13px; color: ' + MUTED60 + ';', text: 'Summen gjelder bare varene hver butikk faktisk fører (se «har N av ' + items.length + '»), så en lav sum kan bety at butikken mangler varer. Handler du hver vare der den er billigst, lander lista på ' + nf(cheapestTotal) + '.' })
     ]);
 
-    return h('section', { 'data-screen-label': 'Handleliste' }, [head, listBlock, compBlock]);
+    return h('section', { 'data-screen-label': 'Handleliste' }, [head, sharedBanner, listBlock, compBlock]);
   }
 
   // ── Shells ───────────────────────────────────────────────────────────────

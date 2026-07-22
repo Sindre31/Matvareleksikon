@@ -46,3 +46,22 @@ where source = 'kassalapp' and pre_price is not null and pre_price > price * 2;
 -- (ml_reg_filter) drops such lines from ml_registrations, ml_reg_propagate skips
 -- them too, and existing rows were deleted from ml_offers/ml_price_history/
 -- ml_registrations. The receipt-scan prompt also excludes them explicitly.
+
+-- Price-point provenance: label each ml_price_history row so the front end can
+-- distinguish community receipt scans (which one bad scan could skew) from the
+-- official chain/feed prices. Existing rows default to 'official'; the ones a
+-- scan produced are backfilled to 'scan' (best-effort match on the
+-- registration's computed group_key / store / observed date). Going forward
+-- ml_reg_propagate stamps its history point 'scan' and keeps that label only
+-- while the scanned price is the one being kept (least()).
+alter table ml_price_history add column if not exists source text;
+update ml_price_history set source = 'official' where source is null;
+update ml_price_history h set source = 'scan'
+  from ml_registrations r
+  where ml_group_key(r.item_name) = h.group_key
+    and r.store_id = h.store_id
+    and coalesce(r.observed_at, r.created_at::date) = h.observed_at;
+-- ml_reg_propagate() now inserts ...ml_price_history(..., source) values (..., 'scan')
+-- on conflict do update set price = least(...),
+--   source = case when excluded.price <= existing.price then 'scan' else existing.source end;
+-- (Official ingest rows leave source null → shown as "Offisiell" client-side.)

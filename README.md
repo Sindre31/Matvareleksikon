@@ -55,7 +55,10 @@ python3 -m http.server 8000
   `localStorage` (no account). Lists each item's cheapest price and, below,
   **what the whole list costs in each store** — the per-store total plus a
   coverage badge ("har N av M"), ranked by coverage then price, with the
-  "handle alt billigst" total spelled out. Purely client-side.
+  "handle alt billigst" total spelled out. Purely client-side. **"Del liste"**
+  copies a URL that encodes the list keys after the hash (`#/liste?d=…`); opening
+  it shows a preview + import banner, so a list travels between phone and PC
+  without an account (it never silently overwrites the visitor's own list).
 - **Produktgruppe** `#/gruppe/:key` — a generic product and **where it's sold**:
   the store variants ("REMA 1000 Tacosaus Medium", "Coop Extra Tacosaus" …) with
   prices, before-prices and validity, **ranked by price per litre/kilo** (a
@@ -75,7 +78,11 @@ python3 -m http.server 8000
   sorted by price per litre/kilo, cheapest-per-unit highlighted); a **price
   history** chart with each chain in its **brand colour** (Rema blue, Kiwi green,
   Extra red, Meny bordeaux, Oda purple — from `ml_stores`); and a
-  **"Registreringer"** list of every recorded price point (store, price, date). When a product is on offer, the ingest functions automatically
+  **"Registreringer"** list of every recorded price point (store, price, date),
+  each tagged with its **source** — **"Offisiell"** (chain/feed price) vs.
+  **"Skannet"** (community-contributed from a receipt, and so more likely to
+  carry a stray error) — so a single bad scan is easy to spot on the chart.
+  When a product is on offer, the ingest functions automatically
   record its before-price as *last week's* price point, so the chart shows the
   markdown from the first time the offer is seen.
 - **Skann kvittering** `#/skann` — upload a photo, use the phone camera, or
@@ -97,7 +104,7 @@ schema:
 | Object | Purpose |
 | --- | --- |
 | `ml_offers` | **The leksikon's data**: real prices — weekly offers from eTilbudsavis/Tjek (`source=etilbudsavis`, with validity), shelf prices from Kassalapp across the chains (`source=kassalapp`), and the authoritative Meny assortment from NorgesGruppen's ngdata API (`source=ngdata`), and Oda's online-store prices (`source=oda`) — store, product, price, before-price, image, and a `group_key` for cross-store grouping. The front end dedupes to the cheapest row per (group, store), so overlapping Meny sources collapse to one card. |
-| `ml_price_history` | One real price point per (`group_key`, store, day), appended weekly by the ingest functions. When an offer carries a before-price, that before-price is also back-filled as the previous week's point (non-offer, insert-if-absent) → the variant price-history chart |
+| `ml_price_history` | One real price point per (`group_key`, store, day), appended weekly by the ingest functions. Carries a **`source`** (`official` vs `scan`) so the variant's Registreringer table can flag community-scanned points. When an offer carries a before-price, that before-price is also back-filled as the previous week's point (non-offer, insert-if-absent) → the variant price-history chart |
 | `ml_stores` | Store metadata (name, chart colour/dash, locations) |
 | `ml_registrations` | Append-only community contributions from the scan flow (item, price, store, **receipt date**, and structured unit/quantity for weight items). A trigger propagates each into `ml_offers` and `ml_price_history` |
 | `ml_scan_allow()` | RPC: per-IP rate limit for the receipt-scan function |
