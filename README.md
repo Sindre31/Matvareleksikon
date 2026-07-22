@@ -41,7 +41,12 @@ python3 -m http.server 8000
 ## Screens (deep-linkable)
 
 - **Leksikon (home)** `#/` — hero + live search, **"Ukas beste tilbud"** (the
-  biggest real markdowns this week), and the product grid. Each card leads with
+  biggest real markdowns this week), and the product grid. Search is
+  **relevance-ranked** (`searchRank`): the closest product floats to the top —
+  a name that *is* the query or a compound *ending* in it ("helmelk", "lettmelk"
+  for "melk") outranks one that starts with it ("melkesjokolade") or only
+  mentions it as an ingredient ("havregrøt **med** melk"), shortest name first.
+  Each card leads with
   the **cheapest price per litre/kilo/piece** (the pack price shown beneath),
   so items compare on unit price by default. Products are grouped generically
   (`group_key`) so store-specific items compare; cards are marked **"På tilbud"**.

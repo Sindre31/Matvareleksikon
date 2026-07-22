@@ -549,6 +549,33 @@
     ]);
   }
 
+  // How well a group's *name* matches the search query, so the closest product
+  // floats to the top. A word that IS the query or is a compound ENDING in it
+  // ("helmelk", "lettmelk" for "melk") is the searched thing / a kind of it and
+  // scores highest; merely starting with it ("melkesjokolade") or containing it
+  // scores less. Norwegian names lead with the product and trail the brand, so
+  // an earlier match is a better head-noun match; a query sitting after a
+  // preposition ("havregrøt MED melk") is an ingredient, not the product, and is
+  // demoted. Shorter names win within a tier (closer to the bare word); a match
+  // only in a variant's raw name (not the shown name) ranks last.
+  function searchRank(g, q) {
+    var name = String(g.name || '').toLowerCase();
+    if (name === q) return 1e9;
+    var ws = name.split(/[^0-9a-zæøå]+/).filter(Boolean), best = -Infinity;
+    for (var i = 0; i < ws.length; i++) {
+      var w = ws[i], base = 0;
+      if (w === q || (w.length > q.length && w.slice(-q.length) === q)) base = 3; // is q / a kind of q
+      else if (w.indexOf(q) === 0) base = 1;                                      // starts with q
+      else if (w.indexOf(q) > -1) base = 0.5;                                     // contains q
+      if (!base) continue;
+      var s = base * 100 - i * 15;                                               // earlier = better head noun
+      if (i > 0 && /^(med|m|uten|u|i|til)$/.test(ws[i - 1])) s -= 70;            // "… med melk" = ingredient
+      if (s > best) best = s;
+    }
+    if (best === -Infinity) best = name.indexOf(q) > -1 ? 120 : 5;               // phrase, or variant-text-only
+    return best * 100 - Math.min(name.length, 80) + (g.onOffer ? 0.5 : 0);
+  }
+
   // ── Home ─────────────────────────────────────────────────────────────────
   function renderHome() {
     var q = state.query.trim().toLowerCase();
@@ -566,6 +593,7 @@
     if (state.sort === 'billigst') filtered.sort(function (a, b) { return (sortVal(a) - sortVal(b)) || byName(a, b); });
     else if (state.sort === 'dyrest') filtered.sort(function (a, b) { return (sortVal(b) - sortVal(a)) || byName(a, b); });
     else if (state.sort === 'navn') filtered.sort(byName);
+    else if (q) filtered.sort(function (a, b) { return (searchRank(b, q) - searchRank(a, q)) || byName(a, b); }); // relevance while searching
     else filtered.sort(function (a, b) { return (b.onOffer - a.onOffer) || byName(a, b); });
     var CAP = 150;
     var shown = filtered.slice(0, CAP);
@@ -625,7 +653,7 @@
         return h('button', { type: 'button', 'aria-pressed': on ? 'true' : 'false', onClick: function () { setState({ priceMode: o[0] }); }, style: 'min-height: 34px; padding: 4px 12px; font-size: 12px; letter-spacing: 0.06em; text-transform: uppercase; font-weight: 600; cursor: pointer; border: 0;' + (idx > 0 ? ' border-left: 1px solid var(--color-divider);' : '') + (on ? ' background: var(--color-accent); color: var(--color-bg);' : ' background: transparent; color: var(--color-text);'), text: o[1] });
       }))
     ]);
-    var SORTS = [['relevans', 'Tilbud først'], ['billigst', 'Billigst'], ['dyrest', 'Dyrest'], ['navn', 'Navn A–Å']];
+    var SORTS = [['relevans', q ? 'Beste treff' : 'Tilbud først'], ['billigst', 'Billigst'], ['dyrest', 'Dyrest'], ['navn', 'Navn A–Å']];
     var sortControl = h('label', { style: 'display: flex; align-items: center; gap: 8px; font-size: 12px; letter-spacing: 0.08em; text-transform: uppercase; font-weight: 600; color: ' + MUTED70 + '; white-space: nowrap;' }, [
       'Sorter',
       h('select', { cls: 'input', 'aria-label': 'Sorter varene', style: 'min-height: 34px; width: auto;', value: state.sort, onChange: function (e) { setState({ sort: e.target.value }); } },
