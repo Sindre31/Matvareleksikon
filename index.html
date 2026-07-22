@@ -7,7 +7,14 @@
   <meta name="description" content="Matvareleksikon med fellesskapsregistrerte priser fra Rema 1000, Kiwi, Extra og Meny — og hvor prisen er på vei.">
   <meta name="theme-color" content="#5980a6">
   <link rel="icon" href="favicon.svg" type="image/svg+xml">
+  <link rel="apple-touch-icon" href="/icon-192.png">
   <link rel="canonical" href="https://matvareleksikon.vercel.app/">
+
+  <!-- Installable PWA -->
+  <link rel="manifest" href="/manifest.webmanifest">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-title" content="Prisboka">
+  <meta name="mobile-web-app-capable" content="yes">
 
   <!-- Social / Open Graph -->
   <meta property="og:type" content="website">
@@ -22,6 +29,31 @@
   <meta name="twitter:title" content="Prisboka — Matvareleksikon med pristrender">
   <meta name="twitter:description" content="Fellesskapsregistrerte matvarepriser fra Rema 1000, Kiwi, Extra og Meny — og hvor prisen er på vei.">
   <meta name="twitter:image" content="https://matvareleksikon.vercel.app/og.png">
+
+  <!-- Structured data -->
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@graph": [
+      {
+        "@type": "WebSite",
+        "@id": "https://matvareleksikon.vercel.app/#website",
+        "url": "https://matvareleksikon.vercel.app/",
+        "name": "Prisboka",
+        "alternateName": "Matvareleksikon",
+        "inLanguage": "nb-NO",
+        "description": "Matvareleksikon med fellesskapsregistrerte priser fra Rema 1000, Kiwi, Extra og Meny — og hvor prisen er på vei."
+      },
+      {
+        "@type": "Organization",
+        "@id": "https://matvareleksikon.vercel.app/#org",
+        "name": "Prisboka",
+        "url": "https://matvareleksikon.vercel.app/",
+        "logo": "https://matvareleksikon.vercel.app/icon-512.png"
+      }
+    ]
+  }
+  </script>
 
   <link rel="stylesheet" href="styles.css">
   <style>
@@ -48,5 +80,13 @@
 <body>
   <div id="app"></div>
   <script src="app.js"></script>
+  <script>
+    // Register the offline service worker (progressive enhancement).
+    if ('serviceWorker' in navigator) {
+      window.addEventListener('load', function () {
+        navigator.serviceWorker.register('/sw.js').catch(function () { /* offline support is optional */ });
+      });
+    }
+  </script>
 </body>
 </html>

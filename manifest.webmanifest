@@ -1,0 +1,20 @@
+{
+  "name": "Prisboka — Matvareleksikon med pristrender",
+  "short_name": "Prisboka",
+  "description": "Matvareleksikon med fellesskapsregistrerte priser fra Rema 1000, Kiwi, Extra og Meny — og hvor prisen er på vei.",
+  "lang": "nb-NO",
+  "dir": "ltr",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "orientation": "portrait-primary",
+  "background_color": "#f2f2f3",
+  "theme_color": "#5980a6",
+  "categories": ["shopping", "food", "utilities"],
+  "icons": [
+    { "src": "/favicon.svg", "sizes": "any", "type": "image/svg+xml" },
+    { "src": "/icon-192.png", "sizes": "192x192", "type": "image/png" },
+    { "src": "/icon-512.png", "sizes": "512x512", "type": "image/png" },
+    { "src": "/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" }
+  ]
+}

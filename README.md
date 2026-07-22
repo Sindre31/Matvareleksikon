@@ -27,11 +27,15 @@ python3 -m http.server 8000
 
 | File | Role |
 | --- | --- |
-| `index.html` | App shell — design system, social/OG meta, favicon |
+| `index.html` | App shell — design system, social/OG meta, canonical, JSON-LD, PWA manifest, favicon |
 | `styles.css` | The **Industry** design system (tokens + components). Source of truth for the look. |
 | `app.js` | The application: data loading from Supabase, price/trend math, routing, and the three screens, rendered dependency-free |
+| `sw.js` | Service worker — caches the app shell for offline use (Supabase requests stay network-only) |
+| `manifest.webmanifest` | PWA manifest (installable; standalone display, icons, theme) |
 | `favicon.svg` | Blueprint-mark favicon |
+| `icon-192.png`, `icon-512.png` | PWA/app icons (rasterised from the favicon) |
 | `og.png` | 1200×630 social preview card |
+| `robots.txt`, `sitemap.xml` | Crawler hints (single canonical URL — the app is hash-routed) |
 | `design/` | The imported Claude Design source, kept for provenance |
 
 ## Screens (deep-linkable)
@@ -144,6 +148,14 @@ guard keeps pizzas, sauces, ready meals and veg imitations that merely mention
 brand *is* the product (Santa Maria vs. Old El Paso tacosaus), while the chains'
 own-brand tacosaus collapses together — national brand words are kept, house
 brands stripped. Recognised categories get a friendly title via `canonLabel`.
+
+**SEO & PWA.** `index.html` carries a canonical link and JSON-LD (`WebSite` +
+`Organization`); `robots.txt` points crawlers at `sitemap.xml`. Because the app
+is hash-routed there is a single crawlable URL, so the sitemap lists only the
+root. The site is an installable PWA: `manifest.webmanifest` + a service worker
+(`sw.js`) that caches the app shell for offline use with a stale-while-revalidate
+strategy (a deploy is picked up on the next load), while every cross-origin
+Supabase request stays network-only so prices are never served stale.
 
 **CI.** `.github/workflows/ci.yml` runs on every push: `node --check` on the
 front end, `node --test` for the unit tests, and `deno check` on each Supabase

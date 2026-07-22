@@ -11,9 +11,10 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Syntax-check the front end (app.js, build.mjs)
+      - name: Syntax-check the front end (app.js, sw.js, build.mjs)
         run: |
           node --check app.js
+          if [ -f sw.js ]; then node --check sw.js; fi
           if [ -f build.mjs ]; then node --check build.mjs; fi
 
       - name: Unit-test the price/grouping helpers
@@ -21,7 +22,7 @@ jobs:
 
       - name: Validate JSON config
         run: |
-          for f in vercel.json; do
+          for f in vercel.json manifest.webmanifest; do
             [ -f "$f" ] && node -e "JSON.parse(require('fs').readFileSync('$f','utf8'))" && echo "ok: $f"
           done
 
