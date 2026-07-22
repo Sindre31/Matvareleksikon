@@ -430,6 +430,7 @@
       if (i > 0) return { view: 'vare', groupKey: decodeURIComponent(rest.slice(0, i)), storeId: decodeURIComponent(rest.slice(i + 1)) };
     }
     if (hn === '/skann') return { view: 'scan' };
+    if (hn === '/om') return { view: 'om' };
     if (hn.indexOf('/liste') === 0) {
       var shared = null, qi = hn.indexOf('?');
       if (qi > -1) {
@@ -455,12 +456,14 @@
     } else if (r.view === 'liste') {
       state.view = 'liste';
       state.sharedList = (r.shared && r.shared.length) ? r.shared : null;
+    } else if (r.view === 'om') {
+      state.view = 'om';
     } else {
       state.view = 'home';
     }
     render();
   }
-  var HASH_FOR = { home: '#/', scan: '#/skann', liste: '#/liste' };
+  var HASH_FOR = { home: '#/', scan: '#/skann', liste: '#/liste', om: '#/om' };
   function go(hash) { if (location.hash === hash || (hash === '#/' && !location.hash)) route(); else location.hash = hash; }
   function nav(view) { return function (e) { if (e && e.preventDefault) e.preventDefault(); go(HASH_FOR[view] || '#/'); window.scrollTo(0, 0); }; }
   function openGroup(key) { return function () { go('#/gruppe/' + encodeURIComponent(key)); window.scrollTo(0, 0); }; }
@@ -548,6 +551,7 @@
       h('a', { href: '#/', onClick: nav('home'), text: 'Leksikon' }),
       h('a', { href: '#/liste', onClick: nav('liste'), text: 'Handleliste' + (listCount() ? ' (' + listCount() + ')' : '') }),
       h('a', { href: '#/skann', onClick: nav('scan'), text: 'Bidra med priser' }),
+      h('a', { href: '#/om', onClick: nav('om'), text: 'Om' }),
       h('span', { style: 'flex: 1;' }),
       h('span', { style: 'font-size: 13px; letter-spacing: 0.06em; text-transform: uppercase; color: ' + MUTED70 + "; font-feature-settings: 'tnum' 1;", text: VALID_COUNT + ' ekte priser · ' + (state.lastUpdated ? 'sist oppdatert ' + dateDM(state.lastUpdated) : 'oppdatert ukentlig') }),
       h('button', { type: 'button', cls: 'btn btn-primary', onClick: nav('scan'), text: 'Skann kvittering' })
@@ -1142,6 +1146,77 @@
     return h('section', { 'data-screen-label': 'Handleliste' }, [head, sharedBanner, listBlock, compBlock]);
   }
 
+  // ── Om / kilder / personvern ─────────────────────────────────────────────
+  function aboutSection(kicker, num, children) {
+    return h('div', { style: 'margin-top: 40px;' }, [
+      h('span', { style: KICKER, text: num + ' · ' + kicker }), h('hr', { style: RULE })
+    ].concat(children));
+  }
+  function bullet(strongTxt, rest) {
+    // `rest` may be a string or an array of nodes/strings — flatten it so h()
+    // never receives a nested array as a single child (appendChild needs a Node).
+    var kids = [strongTxt ? h('strong', { text: strongTxt + ' ' }) : null];
+    kids = kids.concat(Array.isArray(rest) ? rest : [rest]);
+    return h('li', { style: 'margin: 0 0 10px; font-size: 15px; line-height: 23px;' }, kids);
+  }
+  function extLink(href, txt) { return h('a', { href: href, target: '_blank', rel: 'noopener', text: txt }); }
+
+  function renderAbout() {
+    var P = 'margin: 0 0 12px; font-size: 15px; line-height: 23px; max-width: 68ch;';
+    var UL = 'margin: 0; padding-left: 20px; max-width: 68ch;';
+    var head = h('div', { style: 'padding: 56px 0 8px;' }, [
+      h('h1', { style: H1, text: 'Om Prisboka' }),
+      h('p', { style: 'margin: 16px 0 0; max-width: 68ch; font-size: 16px; line-height: 24px; color: ' + MUTED70 + ';', text: 'Et matvareleksikon med ekte priser fra norske dagligvarekjeder — og hvor prisen er på vei. Gratis, uten konto.' })
+    ]);
+
+    var what = aboutSection('Hva er dette', '01', [
+      h('p', { style: P }, ['Prisboka samler priser på matvarer fra ', h('strong', { text: 'Rema 1000, Kiwi, Extra og Meny' }), ' (og Oda) på ett sted, så du kan sammenligne før du handler. Søk opp en vare, se hva den koster i hver butikk, hvilken pakning som er billigst per kilo/liter, og hvordan prisen har beveget seg.']),
+      h('p', { style: P + ' color: ' + MUTED70 + ';', text: 'Prisboka er et uavhengig hobbyprosjekt og er ikke tilknyttet, eid av eller godkjent av noen av kjedene.' })
+    ]);
+
+    var sources = aboutSection('Kilder', '02', [
+      h('p', { style: P, text: 'Prisene hentes automatisk hver uke fra offentlige kilder, og suppleres med priser fellesskapet bidrar med:' }),
+      h('ul', { style: UL }, [
+        bullet('Kassalapp', ['— hylle­priser på tvers av kjedene (', extLink('https://kassal.app', 'kassal.app'), ').']),
+        bullet('eTilbudsavis / Tjek', '— ukens tilbud fra kjedenes tilbudsaviser.'),
+        bullet('NorgesGruppen (ngdata)', '— Meny-sortimentet med produktbilder.'),
+        bullet('Oda', ['— nettbutikkens priser (', extLink('https://oda.com', 'oda.com'), ').']),
+        bullet('Fellesskapet', '— priser skannet fra kvitteringer, merket «Skannet» i prishistorikken.')
+      ]),
+      h('p', { style: 'margin: 14px 0 0; font-size: 14px; line-height: 22px; color: ' + MUTED60 + '; max-width: 68ch;', text: 'Prisene kan være unøyaktige eller utdaterte, og kan variere mellom butikker i samme kjede. Sjekk alltid prisen i butikken før du handler.' })
+    ]);
+
+    var privacy = aboutSection('Personvern', '03', [
+      h('ul', { style: UL }, [
+        bullet('Ingen konto og ingen sporing.', 'Vi bruker ikke informasjonskapsler for annonser eller analyse, og selger ikke data.'),
+        bullet('Handlelisten din', 'lagres bare lokalt i nettleseren din (localStorage) — den sendes aldri til oss. En delt liste ligger kun i lenken du selv deler.'),
+        bullet('Kvitteringsskanning:', 'bildet sendes til Google Gemini for tekstgjenkjenning og lagres ikke hos oss. IP-adressen din lagres midlertidig for å hindre misbruk (rate-limiting).'),
+        bullet('Priser du bidrar med', 'blir en del av det offentlige leksikonet. Ikke skann kvitteringer med personlig informasjon du ikke vil dele — ta bare med varelinjene.')
+      ])
+    ]);
+
+    var contact = aboutSection('Kildekode', '04', [
+      h('p', { style: P }, ['Prisboka er åpen kildekode. Koden ligger på ', extLink('https://github.com/sindre31/matvareleksikon', 'GitHub'), '.'])
+    ]);
+
+    return h('section', { 'data-screen-label': 'Om' }, [head, what, sources, privacy, contact]);
+  }
+
+  // Site footer — attribution + links, on every screen.
+  function renderFooter() {
+    var sep = function () { return h('span', { style: 'color: ' + MUTED60 + ';', text: ' · ' }); };
+    return h('footer', { style: 'border-top: 1px solid var(--color-divider); margin-top: 24px;' }, [
+      h('div', { style: 'max-width: 1160px; margin: 0 auto; padding: 28px 24px 48px; display: flex; flex-wrap: wrap; gap: 8px 16px; align-items: baseline; justify-content: space-between; font-size: 13px; color: ' + MUTED70 + ';' }, [
+        h('span', { style: 'display: flex; flex-wrap: wrap; gap: 4px; align-items: baseline;' }, [
+          h('a', { href: '#/om', onClick: nav('om'), text: 'Om' }), sep(),
+          h('a', { href: '#/om', onClick: nav('om'), text: 'Kilder' }), sep(),
+          h('a', { href: '#/om', onClick: nav('om'), text: 'Personvern' })
+        ]),
+        h('span', { style: 'color: ' + MUTED60 + '; max-width: 62ch;', text: 'Ekte priser fra Rema 1000, Kiwi, Extra, Meny og Oda. Uavhengig prosjekt — ikke tilknyttet kjedene. Sjekk prisen i butikk.' })
+      ])
+    ]);
+  }
+
   // ── Shells ───────────────────────────────────────────────────────────────
   function centeredCard(children) {
     return h('div', { style: 'max-width: 1160px; margin: 0 auto; padding: 96px 24px;' }, [
@@ -1197,8 +1272,10 @@
     else if (state.view === 'vare') container.appendChild(renderVariant());
     else if (state.view === 'scan') container.appendChild(renderScan());
     else if (state.view === 'liste') container.appendChild(renderList());
+    else if (state.view === 'om') container.appendChild(renderAbout());
     else container.appendChild(renderHome());
     frag.appendChild(container);
+    frag.appendChild(renderFooter());
     root.appendChild(frag);
     restoreFocus(focus);
   }

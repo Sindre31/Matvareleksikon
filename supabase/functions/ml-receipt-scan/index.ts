@@ -21,6 +21,8 @@ const GEMINI_MODEL = Deno.env.get("GEMINI_MODEL") || "gemini-flash-latest";
 const API_BASE = "https://generativelanguage.googleapis.com/v1beta/models";
 const RATE_LIMIT = 30;        // scans …
 const RATE_WINDOW_SECS = 3600; // … per hour per IP
+const DAILY_CAP = 500;         // global scans/day — a hard ceiling on Gemini
+const DAY_SECS = 86400;        //   cost so a shared link can't run up a bill
 
 // Map whatever chain Gemini recognises onto Prisboka's four stores.
 const CHAIN_TO_STORE: Record<string, string> = {
@@ -133,13 +135,15 @@ function parseImage(image: string, fallbackMime?: string): { data: string; mimeT
 const json = (body: unknown, status = 200) =>
   new Response(JSON.stringify(body), { status, headers: { ...CORS, "Content-Type": "application/json" } });
 
-async function rateLimitAllows(ip: string): Promise<boolean> {
+// Sliding-window counter via the ml_scan_allow RPC. `bucket` is the counter
+// key — the client IP for the per-IP limit, or a fixed key for the global cap.
+async function scanAllow(bucket: string, limit: number, windowSecs: number): Promise<boolean> {
   const url = Deno.env.get("SUPABASE_URL"), key = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY");
   if (!url || !key) return true; // fail open if service role isn't available
   const res = await fetch(`${url}/rest/v1/rpc/ml_scan_allow`, {
     method: "POST",
     headers: { "Content-Type": "application/json", apikey: key, Authorization: `Bearer ${key}` },
-    body: JSON.stringify({ p_ip: ip, p_limit: RATE_LIMIT, p_window_secs: RATE_WINDOW_SECS }),
+    body: JSON.stringify({ p_ip: bucket, p_limit: limit, p_window_secs: windowSecs }),
   });
   if (!res.ok) return true;
   return (await res.json()) === true;
@@ -198,7 +202,7 @@ Deno.serve(async (req: Request) => {
 
   const ip = (req.headers.get("x-forwarded-for") || "").split(",")[0].trim() || "unknown";
   try {
-    if (!(await rateLimitAllows(ip))) {
+    if (!(await scanAllow(ip, RATE_LIMIT, RATE_WINDOW_SECS))) {
       return json({ error: "For mange skanninger på kort tid. Vent litt og prøv igjen." }, 429);
     }
   } catch (_) { /* fail open */ }
@@ -213,6 +217,15 @@ Deno.serve(async (req: Request) => {
   if (!["image/jpeg", "image/png", "image/webp", "image/heic", "image/heif"].includes(mimeType)) {
     return json({ error: "Ugyldig bildeformat. Bruk JPG, PNG eller WEBP." }, 400);
   }
+
+  // Global daily ceiling — checked only once the request is valid and about to
+  // hit Gemini, so bad/oversized images don't burn the budget. Fails open if the
+  // limiter is unavailable (availability over a hard cost stop).
+  try {
+    if (!(await scanAllow("scan:GLOBAL", DAILY_CAP, DAY_SECS))) {
+      return json({ error: "Skanning er midlertidig utilgjengelig (daglig grense nådd). Prøv igjen i morgen, eller skriv inn varelinjene manuelt." }, 429);
+    }
+  } catch (_) { /* fail open */ }
 
   let raw: string;
   try {

@@ -100,6 +100,11 @@ python3 -m http.server 8000
   the catalogue and on the product's chart — weight items keep their kr/kg. The
   confirmation screen links each contributed line back to the matching product
   in the leksikon.
+- **Om** `#/om` — what Prisboka is, **source attribution** (Kassalapp,
+  eTilbudsavis/Tjek, ngdata, Oda, community scans), an independence disclaimer,
+  and a **privacy** note (no accounts/tracking; the shopping list is local-only;
+  receipt images go to Google Gemini and aren't stored; only the IP is kept
+  briefly for rate limiting). A site footer links to it from every screen.
 
 ## Backend (Supabase)
 
@@ -245,7 +250,9 @@ properties:
   lines are excluded — handled by the prompt + a `normalizeItem` step.
 - The store is mapped onto Prisboka's four chains and pre-selected.
 - The endpoint is public but self-protecting: **per-IP rate limiting**
-  (`ml_scan_allow` RPC, 30/hour) plus size and MIME checks.
+  (`ml_scan_allow` RPC, 30/hour) **and a global daily cap** (500 scans/day,
+  checked only for a valid request about to hit Gemini) so a shared link can't
+  run up the vision-API bill, plus size and MIME checks.
 - If Gemini is unavailable or finds nothing, the flow degrades to manual entry.
 
 **Required secret.** Set a Gemini API key ([aistudio.google.com/apikey](https://aistudio.google.com/apikey))
