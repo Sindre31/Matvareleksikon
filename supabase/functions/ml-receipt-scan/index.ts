@@ -77,8 +77,12 @@ Regler:
   "lineTotal" = prisen, "unitPrice" = null, "quantity" = null.
 - Mange kvitteringer har en mva-kode ("15%"/"25%") mellom varenavn og pris — den
   er IKKE en del av navnet og IKKE prisen.
-- IKKE ta med: totalsum ("Sum", "SUM"), mva-linjer, pant, rabatt/«du sparte»,
-  betalingslinjer (BANK/kort), bonus/Trumf, byttelapp. Kun faktiske varer.
+- IKKE ta med (dette er ikke varer): totalsum ("Sum"/"SUM"), mva-/moms-linjer,
+  PANT- og pantelinjer («Tast pant», «Pant», «Flaskepant», «Utgående salg av
+  emballasje/emb»), pose-/emballasjeavgift som egen linje, rabatt/«du sparte»,
+  betalingslinjer (BANK/kort/kontant), bonus/Trumf/medlem, byttelapp. (Men en
+  faktisk vare som tilfeldigvis heter «... Pants» (bleier) eller «... +Pant»
+  (pant inkludert) ER en vare.) Ta KUN med faktiske varer man kan kjøpe.
 - Rens varenavn til lesbar form og behold mengde/størrelse (f.eks.
   "LETTMELK 1L" -> "Lettmelk 1L").
 - "category" er en grov kategori (meieri, kjøtt, frukt og grønt, ...) hvis mulig, ellers null.

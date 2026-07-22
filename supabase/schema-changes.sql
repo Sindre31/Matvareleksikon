@@ -38,3 +38,11 @@ alter table ml_offers add column if not exists offer_days text;
 -- one-time cleanup (the function now caps markdown at 50% going forward):
 update ml_offers set pre_price = null, offer_text = null
 where source = 'kassalapp' and pre_price is not null and pre_price > price * 2;
+
+-- Filter receipt accounting/deposit lines (pant, "tast pant", "utgående salg av
+-- emb") out of the community data. ml_is_nonproduct(text) recognises them
+-- precisely without catching real products (Libero/Pampers "Pants" = diapers,
+-- juice "+Pant", "Pantesekk", "...emballasje" in a name). A BEFORE INSERT trigger
+-- (ml_reg_filter) drops such lines from ml_registrations, ml_reg_propagate skips
+-- them too, and existing rows were deleted from ml_offers/ml_price_history/
+-- ml_registrations. The receipt-scan prompt also excludes them explicitly.
