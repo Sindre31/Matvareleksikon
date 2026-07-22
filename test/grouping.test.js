@@ -38,6 +38,12 @@ test('parseAmount — largest single size token wins, dim preserved', () => {
   assert.equal(lib.parseAmount('Tacosaus medium'), null);
 });
 
+test('parseAmount — fraction sizes ("1/4 l" = 0.25 l), not the "4l" token', () => {
+  assert.deepEqual(lib.parseAmount('Lettmelk 0,5% 1/4l Tine'), { value: 0.25, dim: 'l' });
+  assert.deepEqual(lib.parseAmount('Fløte 1/2 l'), { value: 0.5, dim: 'l' });
+  assert.deepEqual(lib.parseAmount('Rømme 3/4 kg'), { value: 0.75, dim: 'kg' });
+});
+
 test('parseAmount — multipacks multiply out to the total amount', () => {
   assert.deepEqual(lib.parseAmount('Cola 6 x 33 cl'), { value: 1.98, dim: 'l' });
   assert.deepEqual(lib.parseAmount('Vann 4 x 1.5l'), { value: 6, dim: 'l' });

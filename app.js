@@ -52,6 +52,10 @@
     // multipack: "4 x 1.5l", "6x33cl"
     var mp = s.match(/(\d+(?:\.\d+)?)\s*[x×]\s*(\d+(?:\.\d+)?)\s*(kg|hg|g|dl|cl|ml|l)(?![a-zæøå])/);
     if (mp) { var b = baseAmount(mp[2], mp[3]); if (b) return { value: b.value * parseFloat(mp[1]), dim: b.dim }; }
+    // fraction size: "1/4 l" = 0.25 l, "1/2l", "3/4 kg" — must run before the
+    // single-token match, which would otherwise read the "4l" in "1/4l" as 4 l.
+    var fr = s.match(/(\d+)\s*\/\s*(\d+)\s*(kg|hg|g|dl|cl|ml|l)(?![a-zæøå])/);
+    if (fr) { var fd = parseFloat(fr[2]); if (fd > 0) { var bf = baseAmount(parseFloat(fr[1]) / fd, fr[3]); if (bf) return bf; } }
     // largest single weight/volume token
     var re = /(\d+(?:\.\d+)?)\s*(kg|hg|g|dl|cl|ml|l)(?![a-zæøå])/g, m, best = null;
     while ((m = re.exec(s))) { var b2 = baseAmount(m[1], m[2]); if (b2 && (!best || b2.value > best.value)) best = b2; }
