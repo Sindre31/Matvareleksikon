@@ -255,6 +255,7 @@
       };
     });
     GROUP_BY_KEY = {}; GROUPS.forEach(function (g) { GROUP_BY_KEY[g.key] = g; });
+    return GROUPS;
   }
 
   // ── Handleliste (shopping list) — persisted in localStorage ──────────────
@@ -285,7 +286,7 @@
     scanPhase: 'idle', scanStep: '', scanItems: [], scanStore: 'Kiwi', scanDate: '',
     scanSubmitting: false, scanError: null, scanImageUrl: null, scanNote: null,
     doneCount: 0, doneMsgN: 0,
-    list: {}, copiedFor: null, lastUpdated: '', sharedList: null, listShareCopied: false,
+    list: {}, copiedFor: null, lastUpdated: '', fromCache: false, sharedList: null, listShareCopied: false,
     history: {} // key -> 'loading' | [rows]
   };
   state.list = loadList();
@@ -1216,22 +1217,84 @@
       })(0);
     });
   }
+
+  // ── Offline / cold-start cache ───────────────────────────────────────────
+  // The catalogue (stores + offers) is persisted in localStorage so a return
+  // visit paints instantly from the last snapshot and still works offline —
+  // then it revalidates against Supabase in the background (stale-while-
+  // revalidate). The big blob is only rewritten on a successful full fetch;
+  // the tiny "sist oppdatert" stamp lives in its own key so it can refresh
+  // without re-serialising the whole catalogue.
+  var CATALOG_KEY = 'prisboka_catalog_v1';
+  var CATALOG_META_KEY = 'prisboka_catalog_meta';
+  function readCatalogCache() {
+    try {
+      var raw = localStorage.getItem(CATALOG_KEY);
+      if (!raw) return null;
+      var c = JSON.parse(raw);
+      if (!c || !Array.isArray(c.stores) || !Array.isArray(c.offers) || !c.offers.length) return null;
+      return c;
+    } catch (e) { return null; }
+  }
+  function writeCatalogCache(stores, offers) {
+    try {
+      var payload = JSON.stringify({ v: 1, ts: Date.now(), stores: stores || [], offers: offers || [] });
+      // localStorage caps around 5 MB — skip caching an oversized catalogue
+      // rather than throw (the app still works, just without a warm start).
+      if (payload.length > 4500000) { try { localStorage.removeItem(CATALOG_KEY); } catch (e2) { /* noop */ } return; }
+      localStorage.setItem(CATALOG_KEY, payload);
+    } catch (e) { /* private mode / quota — caching is best-effort */ }
+  }
+  function readCatalogMeta() { try { return localStorage.getItem(CATALOG_META_KEY) || ''; } catch (e) { return ''; } }
+  function writeCatalogMeta(v) { try { localStorage.setItem(CATALOG_META_KEY, v || ''); } catch (e) { /* best-effort */ } }
+
+  function applyCatalog(stores, offers) {
+    buildStores(stores);
+    buildGroups(offers);
+    state.phase = 'ready';
+  }
+  function loadFreshnessStamp() {
+    // Latest recorded price point for the top bar. Loaded separately so it
+    // never blocks or fails the catalogue boot.
+    sb('/ml_price_history?select=observed_at&order=observed_at.desc&limit=1')
+      .then(function (r) { return r.ok ? r.json() : []; })
+      .then(function (rows) {
+        if (rows && rows[0] && rows[0].observed_at) {
+          state.lastUpdated = rows[0].observed_at;
+          writeCatalogMeta(state.lastUpdated);
+          if (state.phase === 'ready') render();
+        }
+      })
+      .catch(function () { /* keep the "ukentlig" fallback */ });
+  }
   function boot() {
+    // 1) Instant paint from the last cached catalogue, if any — this also makes
+    //    the app usable offline (the service worker serves the shell; the cache
+    //    serves the data).
+    var cached = readCatalogCache();
+    if (cached) {
+      applyCatalog(cached.stores, cached.offers);
+      state.fromCache = true;
+      state.lastUpdated = readCatalogMeta();
+      route();
+    }
+    // 2) Always revalidate against the network in the background.
     Promise.all([
       sb('/ml_stores?select=*&order=sort_order').then(function (r) { if (!r.ok) throw new Error('stores ' + r.status); return r.json(); }),
       fetchAllOffers()
     ]).then(function (out) {
-      buildStores(out[0]);
-      buildGroups(out[1]);
-      state.phase = 'ready';
+      var stores = out[0], offers = out[1];
+      // A transient empty result must not blank out a good cached catalogue.
+      if ((!offers || !offers.length) && state.phase === 'ready') return;
+      applyCatalog(stores, offers);
+      state.fromCache = false;
+      writeCatalogCache(stores, offers);
       route();
-      // Freshness stamp for the top bar — latest recorded price point. Loaded
-      // separately so it never blocks or fails the catalogue boot.
-      sb('/ml_price_history?select=observed_at&order=observed_at.desc&limit=1')
-        .then(function (r) { return r.ok ? r.json() : []; })
-        .then(function (rows) { if (rows && rows[0] && rows[0].observed_at) { state.lastUpdated = rows[0].observed_at; if (state.phase === 'ready') render(); } })
-        .catch(function () { /* keep the "ukentlig" fallback */ });
+      loadFreshnessStamp();
     }).catch(function (e) {
+      // Network failed. If we already painted from cache, keep it (offline);
+      // otherwise there is nothing to show, so surface the error.
+      if (state.phase === 'ready') { loadFreshnessStamp(); return; }
       state.phase = 'error'; state.errMsg = (e && e.message) || String(e);
       render();
     });
@@ -1263,7 +1326,8 @@
     module.exports = {
       cleanName: cleanName, pctOff: pctOff, baseAmount: baseAmount,
       parseAmount: parseAmount, normUnit: normUnit, foldName: foldName,
-      minceKey: minceKey, ckey: ckey, canonLabel: canonLabel
+      minceKey: minceKey, ckey: ckey, canonLabel: canonLabel,
+      buildStores: buildStores, buildGroups: buildGroups, searchRank: searchRank
     };
   }
 })();

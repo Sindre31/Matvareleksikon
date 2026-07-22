@@ -169,6 +169,17 @@ root. The site is an installable PWA: `manifest.webmanifest` + a service worker
 strategy (a deploy is picked up on the next load), while every cross-origin
 Supabase request stays network-only so prices are never served stale.
 
+**Cold-start & offline data.** The catalogue (stores + offers) is also snapshotted
+to `localStorage` (`prisboka_catalog_v1`), so a return visit paints instantly from
+the last snapshot — no loading screen — and the app stays usable offline (the
+service worker serves the shell, the snapshot serves the data). Boot is
+stale-while-revalidate: cached data is shown immediately, then Supabase is
+re-fetched in the background and the snapshot refreshed. A transient empty or
+failed fetch never blanks out a good cache, and an oversized catalogue is skipped
+rather than throwing on the `localStorage` quota. The "sist oppdatert" stamp lives
+in its own key (`prisboka_catalog_meta`) so it refreshes without re-serialising the
+whole catalogue.
+
 **CI.** `.github/workflows/ci.yml` runs on every push: `node --check` on the
 front end, `node --test` for the unit tests, and `deno check` on each Supabase
 Edge Function.
@@ -177,8 +188,13 @@ Edge Function.
 hardest, most regression-prone logic: `parseAmount`/`baseAmount` (comparable
 per-litre/kilo/piece amounts, incl. multipacks), `ckey` (word-order- and
 house-brand-independent cross-store grouping), `minceKey`/`canonLabel`
-(category-aware mince keying), and `pctOff`/`normUnit`/`cleanName`. They use
-Node's built-in test runner — no dependencies, no build step:
+(category-aware mince keying), and `pctOff`/`normUnit`/`cleanName`. It also
+covers the two aggregations the leksikon is actually built on: `buildGroups`
+(cross-store folding, cheapest-per-unit store representative, the withheld
+"billigst per X" claim when a store lacks a size, offer flags, and expired-offer
+filtering) and `searchRank` (exact-match wins, compound-ending beats prefix,
+`med`-ingredient demotion, shorter-name tie-break). They use Node's built-in
+test runner — no dependencies, no build step:
 
 ```bash
 node --test

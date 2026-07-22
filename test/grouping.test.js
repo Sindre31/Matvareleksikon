@@ -112,3 +112,107 @@ test('cleanName — strips size tokens and title-cases', () => {
   assert.equal(lib.cleanName('MELK 1,5 L'), 'Melk');
   assert.equal(lib.cleanName('tomater'), 'Tomater');
 });
+
+// ── buildGroups — the cross-store aggregation the leksikon is built on ──────
+// buildGroups reads the store lookup that buildStores populates, so seed a
+// couple of stores first. Offer rows mimic the shape returned by PostgREST.
+const STORES = [
+  { id: 'kiwi', name: 'Kiwi', color: '#0a0', dash: '', sort_order: 1 },
+  { id: 'rema', name: 'Rema 1000', color: '#c00', dash: '4 3', sort_order: 2 }
+];
+function offer(store_id, product_name, price, extra) {
+  return Object.assign({ store_id, product_name, price }, extra || {});
+}
+function byKey(groups, key) { return groups.find((g) => g.key === key); }
+
+test('buildGroups — the same product across stores folds into one group', () => {
+  lib.buildStores(STORES);
+  const groups = lib.buildGroups([
+    offer('kiwi', 'Lettmelk 1 l', 18.9),
+    offer('rema', 'Lettmelk 1L', 17.9),
+    offer('kiwi', 'Helmelk 1 l', 19.9)
+  ]);
+  const melk = byKey(groups, 'lettmelk');
+  assert.ok(melk, 'lettmelk group exists');
+  assert.equal(melk.storeCount, 2, 'both stores in one group');
+  assert.equal(melk.minPrice, 17.9);
+  // helmelk stays a separate group
+  assert.ok(byKey(groups, 'helmelk'));
+});
+
+test('buildGroups — per store the representative is cheapest per unit, not per pack', () => {
+  lib.buildStores(STORES);
+  const groups = lib.buildGroups([
+    // Same store, two sizes: the big carton is dearer per pack but cheaper per litre.
+    offer('kiwi', 'Lettmelk 0,5 l', 12),   // 24,00/l
+    offer('kiwi', 'Lettmelk 1,5 l', 27)    // 18,00/l  ← best value
+  ]);
+  const melk = byKey(groups, 'lettmelk');
+  assert.equal(melk.storeCount, 1);
+  assert.equal(melk.variants[0].price, 27, 'the better per-litre pack represents the store');
+  assert.equal(melk.unitPrice, 18);
+  assert.equal(melk.unitDim, 'l');
+});
+
+test('buildGroups — "billigst per X" is only claimed when every store is unit-comparable', () => {
+  lib.buildStores(STORES);
+  const comparable = lib.buildGroups([
+    offer('kiwi', 'Lettmelk 1 l', 18.9),
+    offer('rema', 'Lettmelk 1 l', 17.9)
+  ]);
+  const g1 = byKey(comparable, 'lettmelk');
+  assert.equal(g1.compDim, 'l', 'both stated in litres → comparable');
+  assert.equal(g1.minUnit, 17.9);
+
+  // One store has no parseable size → the per-unit claim must be withheld.
+  const mixed = lib.buildGroups([
+    offer('kiwi', 'Lettmelk 1 l', 18.9),
+    offer('rema', 'Lettmelk', 17.9)
+  ]);
+  const g2 = byKey(mixed, 'lettmelk');
+  assert.equal(g2.compDim, null, 'a store without a size blocks the per-unit claim');
+  assert.equal(g2.minUnit, null);
+});
+
+test('buildGroups — offer flags come from a before-price above the price', () => {
+  lib.buildStores(STORES);
+  const groups = lib.buildGroups([
+    offer('kiwi', 'Lettmelk 1 l', 15, { pre_price: 20 }),   // 25 % off
+    offer('rema', 'Lettmelk 1 l', 18)
+  ]);
+  const melk = byKey(groups, 'lettmelk');
+  assert.equal(melk.onOffer, true);
+  assert.equal(melk.bestOff, 25);
+});
+
+test('buildGroups — expired offers are dropped while any live offer remains', () => {
+  lib.buildStores(STORES);
+  const groups = lib.buildGroups([
+    offer('kiwi', 'Lettmelk 1 l', 18, { valid_until: '2020-01-01' }),  // long expired
+    offer('rema', 'Lettmelk 1 l', 17, { valid_until: '2999-01-01' })   // live
+  ]);
+  const melk = byKey(groups, 'lettmelk');
+  assert.equal(melk.storeCount, 1, 'only the live offer survives');
+  assert.equal(melk.minPrice, 17);
+});
+
+// ── searchRank — relevance ordering of the leksikon search ──────────────────
+// searchRank only reads g.name (and g.onOffer), so plain objects suffice.
+const g = (name, onOffer) => ({ name, onOffer: !!onOffer });
+
+test('searchRank — an exact name match outranks everything', () => {
+  assert.ok(lib.searchRank(g('Melk'), 'melk') > lib.searchRank(g('Lettmelk'), 'melk'));
+});
+
+test('searchRank — a compound ending in the query beats one merely starting with it', () => {
+  // "lettmelk" is a kind of "melk"; "melkesjokolade" only starts with it.
+  assert.ok(lib.searchRank(g('Lettmelk'), 'melk') > lib.searchRank(g('Melkesjokolade'), 'melk'));
+});
+
+test('searchRank — a query after "med" is an ingredient and is demoted', () => {
+  assert.ok(lib.searchRank(g('Lettmelk'), 'melk') > lib.searchRank(g('Havregrøt med melk'), 'melk'));
+});
+
+test('searchRank — within a tier the shorter (closer) name wins', () => {
+  assert.ok(lib.searchRank(g('Melkesjokolade'), 'melk') > lib.searchRank(g('Melkesjokolade med nøtter ekstra'), 'melk'));
+});
