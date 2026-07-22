@@ -41,10 +41,12 @@ python3 -m http.server 8000
   the **cheapest price per litre/kilo/piece** (the pack price shown beneath),
   so items compare on unit price by default. Products are grouped generically
   (`group_key`) so store-specific items compare; cards are marked **"På tilbud"**.
-  Filter by store and **sort** (tilbud først / billigst / dyrest / navn). Every
-  card carries a **star** to add the item to the shopping list. The top bar
-  shows how fresh the data is ("sist oppdatert" = the latest recorded price
-  point).
+  Filter by store, **sort** (tilbud først / billigst / dyrest / navn), and
+  choose the price to lead with: **per kg/l** (jamførpris) or **enhetspris**
+  (the pack price) — the toggle drives both the card display and the
+  billigst/dyrest sort. Every card carries a **star** to add the item to the
+  shopping list. The top bar shows how fresh the data is ("sist oppdatert" =
+  the latest recorded price point).
 - **Handleliste** `#/liste` — the products you've starred, kept in
   `localStorage` (no account). Lists each item's cheapest price and, below,
   **what the whole list costs in each store** — the per-store total plus a
@@ -125,11 +127,23 @@ vs. an empty store filter vs. an empty catalogue, a "fant ikke varen" view for a
 dead product deep link, and a boot-failure screen with a retry button.
 
 **Cross-store grouping.** Products are grouped by a key computed **client-side**
-from the name (fold Norwegian letters, strip sizes/units/%/house-brands, then
-**sort the remaining words** so word order doesn't matter — "knuste tomater" ==
-"tomater knuste"). This merges ~50 % more products across stores than the raw
-server key, without re-ingesting. Each offer keeps its own server `group_key`, so
-a merged group loads its price history by the **set** of server keys it contains.
+from the name (fold Norwegian letters, strip sizes/units/%/house-brands and
+single-letter house tokens, then **sort the remaining words** so word order
+doesn't matter — "knuste tomater" == "tomater knuste"). This merges ~50 % more
+products across stores than the raw server key, without re-ingesting. Each offer
+keeps its own server `group_key`, so a merged group loads its price history by
+the **set** of server keys it contains.
+
+**Category-aware grouping.** Some products must group by *variety*, not brand.
+Raw mince (`kjøttdeig` / `karbonadedeig`) is keyed by **meat type** — svin,
+storfe (the default when unstated), kylling, kalkun, lam, laks, or *blandet* for
+a mix — so pork, beef and karbonade land in **distinct** groups while brand,
+fat %, salt/water wording and pack size are ignored (`minceKey` in `app.js`). A
+guard keeps pizzas, sauces, ready meals and veg imitations that merely mention
+"kjøttdeig" out of those groups. Branded products stay split by brand where the
+brand *is* the product (Santa Maria vs. Old El Paso tacosaus), while the chains'
+own-brand tacosaus collapses together — national brand words are kept, house
+brands stripped. Recognised categories get a friendly title via `canonLabel`.
 
 **CI.** `.github/workflows/ci.yml` runs on every push: `node --check` on the
 front end and `deno check` on each Supabase Edge Function.

@@ -80,19 +80,69 @@
     rema: 1, kiwi: 1, coop: 1, extra: 1, meny: 1, spar: 1, first: 1, price: 1, xtra: 1,
     eldorado: 1, prima: 1, folkets: 1, anglamark: 1, q: 1, tine: 1, gilde: 1, synnove: 1,
     nordfjord: 1, prior: 1, stange: 1, jacobs: 1, den: 1, stolte: 1, hane: 1, mills: 1,
-    og: 1, med: 1, i: 1, av: 1, til: 1, pk: 1, stk: 1, pack: 1, ca: 1
+    og: 1, med: 1, i: 1, av: 1, til: 1, pk: 1, stk: 1, pack: 1, ca: 1,
+    // budget / house lines that shouldn't drive grouping
+    var: 1, laveste: 1, pris: 1, glide: 1
   };
-  function ckey(name) {
-    var s = String(name || '').toLowerCase()
+  function foldName(name) {
+    return String(name || '').toLowerCase()
       .replace(/ø/g, 'o').replace(/æ/g, 'ae').replace(/å/g, 'a')
       .replace(/\d+([.,]\d+)?\s*(kg|hg|g|ml|cl|dl|l|stk|pk|pakk|pack|kop)\b/g, ' ')
       .replace(/\d+([.,]\d+)?\s*%/g, ' ')
       .replace(/[^a-z0-9 ]/g, ' ')
       .replace(/\s+/g, ' ').trim();
-    var words = s.split(' ').filter(function (w) { return w && !GK_STOP[w]; });
-    if (!words.length) words = s.split(' ').filter(Boolean);
+  }
+
+  // Category grouping: some products must group by a *variety* (raw mince by
+  // meat type), not by brand. Others (branded sauces) keep their brand. The
+  // mince rule below keys "kjøttdeig"/"karbonadedeig" by meat type — svin,
+  // storfe (the default), kylling, kalkun, lam, laks, or blandet for a mix —
+  // so pork, beef and karbonade land in distinct groups while brand, fat %,
+  // salt/water wording and pack size are ignored.
+  var MEAT_TYPES = ['storfe', 'svin', 'kylling', 'kalkun', 'lam', 'laks', 'elg', 'vilt', 'hjort', 'rein', 'kalv'];
+  var TYPE_ALIASES = { storfe: ['storfe'], svin: ['svin', 'gris'], kylling: ['kylling'], kalkun: ['kalkun'], lam: ['lam'], laks: ['laks'], elg: ['elg'], vilt: ['vilt'], hjort: ['hjort'], rein: ['rein'], kalv: ['kalv'] };
+  // A "kjøttdeig"/"karbonadedeig" name that also carries one of these is really
+  // a pizza, sauce, ready meal or veg imitation — keep it out of the mince
+  // groups (substring on the folded name; no 'ris' — it hides inside "pris").
+  var MINCE_DISQUALIFY = /a la|pizza|grandiosa|bowl|gronnsak|saus|wok|gryte|lasagne|taco|suppe|potetmos|vegetar|veggie|plante|soya|surdeig|medister/;
+  var TYPE_LABEL = { storfe: 'av storfe', svin: 'av svin', kylling: 'kylling', kalkun: 'kalkun', lam: 'av lam', laks: 'av laks', elg: 'elg', vilt: 'vilt', hjort: 'hjort', rein: 'rein', kalv: 'kalv', blandet: 'blandet' };
+
+  function typePresent(folded, t) {
+    var al = TYPE_ALIASES[t] || [t];
+    for (var i = 0; i < al.length; i++) if (folded.indexOf(al[i]) > -1) return true;
+    return false;
+  }
+  function minceKey(folded) {
+    if (MINCE_DISQUALIFY.test(folded)) return null;
+    var toks = folded.split(' '), base = null;
+    for (var i = 0; i < toks.length; i++) if (/karbonadedeig$/.test(toks[i])) { base = 'karbonadedeig'; break; }
+    if (!base) for (var j = 0; j < toks.length; j++) if (/kjottdeig$/.test(toks[j])) { base = 'kjottdeig'; break; }
+    if (!base) return null;
+    var present = [];
+    MEAT_TYPES.forEach(function (t) { if (typePresent(folded, t) && present.indexOf(t) < 0) present.push(t); });
+    var type = present.length >= 2 ? 'blandet' : (present.length === 1 ? present[0] : 'storfe');
+    if (base === 'karbonadedeig') return type === 'storfe' ? 'karbonadedeig' : ('karbonadedeig ' + type);
+    return 'kjottdeig ' + type;
+  }
+  function ckey(name) {
+    var folded = foldName(name);
+    var mk = minceKey(folded);
+    if (mk) return mk;
+    folded = folded.replace(/\btaco saus\b/g, 'tacosaus'); // "taco saus" == "tacosaus"
+    var words = folded.split(' ').filter(function (w) { return w.length > 1 && !GK_STOP[w]; });
+    if (!words.length) words = folded.split(' ').filter(Boolean);
     words.sort();
     return words.join(' ') || (name || '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
+  }
+  // A friendly title for the canonical mince keys (else null → use the product
+  // name of the group's first variant, as before).
+  function canonLabel(key) {
+    var m = key.match(/^kjottdeig (\w+)$/);
+    if (m) return 'Kjøttdeig ' + (TYPE_LABEL[m[1]] || m[1]);
+    if (key === 'karbonadedeig') return 'Karbonadedeig';
+    var c = key.match(/^karbonadedeig (\w+)$/);
+    if (c) return 'Karbonadedeig ' + (TYPE_LABEL[c[1]] || c[1]);
+    return null;
   }
 
   // Make a non-native clickable element keyboard-operable (Enter/Space) and
@@ -188,7 +238,7 @@
       var cheapUnit = (variants[0] && variants[0].perUnit != null) ? variants[0].perUnit : null;
       var cheapUnitDim = cheapUnit != null ? variants[0].unitDim : null;
       return {
-        key: key, name: variants[0] ? variants[0].name : key, variants: variants, image: img,
+        key: key, name: canonLabel(key) || (variants[0] ? variants[0].name : key), variants: variants, image: img,
         allByStore: byStore, serverKeys: Object.keys(map[key].serverKeys),
         minPrice: variants.reduce(function (m, v) { return Math.min(m, v.price); }, Infinity),
         storeCount: variants.length,
@@ -222,7 +272,7 @@
   // ── State ────────────────────────────────────────────────────────────────
   var state = {
     phase: 'loading', errMsg: '',
-    view: 'home', groupKey: null, storeId: null, query: '', storeFilter: 'Alle', sort: 'relevans',
+    view: 'home', groupKey: null, storeId: null, query: '', storeFilter: 'Alle', sort: 'relevans', priceMode: 'kilo',
     scanPhase: 'idle', scanStep: '', scanItems: [], scanStore: 'Kiwi', scanDate: '',
     scanSubmitting: false, scanError: null, scanImageUrl: null, scanNote: null,
     doneCount: 0, doneMsgN: 0,
@@ -483,8 +533,12 @@
       return true;
     });
     var byName = function (a, b) { return a.name.localeCompare(b.name, 'nb'); };
-    if (state.sort === 'billigst') filtered.sort(function (a, b) { return (a.minPrice - b.minPrice) || byName(a, b); });
-    else if (state.sort === 'dyrest') filtered.sort(function (a, b) { return (b.minPrice - a.minPrice) || byName(a, b); });
+    // The sort price follows the chosen view: per kg/l (unit price, items
+    // without one sink to the bottom) or per pack (enhetspris).
+    var kilo = state.priceMode === 'kilo';
+    var sortVal = function (g) { return kilo ? (g.unitPrice != null ? g.unitPrice : Infinity) : g.minPrice; };
+    if (state.sort === 'billigst') filtered.sort(function (a, b) { return (sortVal(a) - sortVal(b)) || byName(a, b); });
+    else if (state.sort === 'dyrest') filtered.sort(function (a, b) { return (sortVal(b) - sortVal(a)) || byName(a, b); });
     else if (state.sort === 'navn') filtered.sort(byName);
     else filtered.sort(function (a, b) { return (b.onOffer - a.onOffer) || byName(a, b); });
     var CAP = 150;
@@ -536,20 +590,38 @@
     var chips = h('div', { role: 'group', 'aria-label': 'Filtrer på butikk', style: 'display: flex; flex-wrap: wrap; gap: 10px;' }, storeChips.map(function (c) {
       return h('button', { type: 'button', cls: 'btn ' + (c === sf ? 'btn-primary' : 'btn-ghost'), 'aria-pressed': c === sf ? 'true' : 'false', onClick: function () { setState({ storeFilter: c }); }, style: 'min-height: 34px; padding: 4px 14px; font-size: 13px; letter-spacing: 0.06em; text-transform: uppercase;', text: c });
     }));
+    // Vis-pris toggle: per kg/l (jamførpris) vs enhetspris (pack price).
+    var PMODES = [['kilo', 'Per kg/l'], ['enhet', 'Enhetspris']];
+    var priceModeControl = h('label', { style: 'display: flex; align-items: center; gap: 8px; font-size: 12px; letter-spacing: 0.08em; text-transform: uppercase; font-weight: 600; color: ' + MUTED70 + '; white-space: nowrap;' }, [
+      'Vis pris',
+      h('div', { role: 'group', 'aria-label': 'Vis pris per', style: 'display: inline-flex; border: 1px solid var(--color-divider);' }, PMODES.map(function (o, idx) {
+        var on = state.priceMode === o[0];
+        return h('button', { type: 'button', 'aria-pressed': on ? 'true' : 'false', onClick: function () { setState({ priceMode: o[0] }); }, style: 'min-height: 34px; padding: 4px 12px; font-size: 12px; letter-spacing: 0.06em; text-transform: uppercase; font-weight: 600; cursor: pointer; border: 0;' + (idx > 0 ? ' border-left: 1px solid var(--color-divider);' : '') + (on ? ' background: var(--color-accent); color: var(--color-bg);' : ' background: transparent; color: var(--color-text);'), text: o[1] });
+      }))
+    ]);
     var SORTS = [['relevans', 'Tilbud først'], ['billigst', 'Billigst'], ['dyrest', 'Dyrest'], ['navn', 'Navn A–Å']];
     var sortControl = h('label', { style: 'display: flex; align-items: center; gap: 8px; font-size: 12px; letter-spacing: 0.08em; text-transform: uppercase; font-weight: 600; color: ' + MUTED70 + '; white-space: nowrap;' }, [
       'Sorter',
       h('select', { cls: 'input', 'aria-label': 'Sorter varene', style: 'min-height: 34px; width: auto;', value: state.sort, onChange: function (e) { setState({ sort: e.target.value }); } },
         SORTS.map(function (o) { return h('option', { value: o[0], selected: state.sort === o[0] ? 'selected' : false, text: o[1] }); }))
     ]);
-    var controls = h('div', { style: 'display: flex; flex-wrap: wrap; gap: 16px 24px; align-items: center; justify-content: space-between; margin-bottom: 32px;' }, [chips, sortControl]);
+    var rightControls = h('div', { style: 'display: flex; flex-wrap: wrap; gap: 16px 24px; align-items: center;' }, [priceModeControl, sortControl]);
+    var controls = h('div', { style: 'display: flex; flex-wrap: wrap; gap: 16px 24px; align-items: center; justify-content: space-between; margin-bottom: 32px;' }, [chips, rightControls]);
 
     var grid = h('div', { style: 'display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: 32px;' }, shown.map(function (g) {
       var hasUnit = g.unitPrice != null;
       var pre = g.storeCount > 1 ? 'fra ' : '';
-      var priceTxt = hasUnit ? (pre + nfUnit(g.unitPrice, g.unitDim)) : (pre + nf(g.minPrice));
       var whereTxt = g.storeCount > 1 ? 'hos ' + g.storeCount + ' butikker' : g.variants[0].storeName;
-      var subTxt = hasUnit ? ('fra ' + nf(g.minPrice) + ' · ' + whereTxt) : (g.storeCount > 1 ? whereTxt : (g.onOffer ? whereTxt : ''));
+      var priceTxt, subTxt;
+      if (kilo && hasUnit) {
+        // Lead with the per kg/l/stk price; pack price beneath.
+        priceTxt = pre + nfUnit(g.unitPrice, g.unitDim);
+        subTxt = 'fra ' + nf(g.minPrice) + ' · ' + whereTxt;
+      } else {
+        // Enhetspris (pack price) leads; comparison price beneath when known.
+        priceTxt = pre + nf(g.minPrice);
+        subTxt = hasUnit ? (nfUnit(g.unitPrice, g.unitDim) + ' · ' + whereTxt) : (g.storeCount > 1 ? whereTxt : (g.onOffer ? whereTxt : ''));
+      }
       return h('div', Object.assign({ cls: 'blueprint card-hover', style: 'padding: 0; cursor: pointer; display: flex; flex-direction: column;' }, activate(openGroup(g.key), g.name + ', ' + priceTxt + ' ' + whereTxt)), corners().concat([
         cardStar(g.key),
         imgBox(g.image, g.name, '150px'),
