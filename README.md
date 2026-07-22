@@ -41,7 +41,15 @@ python3 -m http.server 8000
   the **cheapest price per litre/kilo/piece** (the pack price shown beneath),
   so items compare on unit price by default. Products are grouped generically
   (`group_key`) so store-specific items compare; cards are marked **"På tilbud"**.
-  Filter by store.
+  Filter by store and **sort** (tilbud først / billigst / dyrest / navn). Every
+  card carries a **star** to add the item to the shopping list. The top bar
+  shows how fresh the data is ("sist oppdatert" = the latest recorded price
+  point).
+- **Handleliste** `#/liste` — the products you've starred, kept in
+  `localStorage` (no account). Lists each item's cheapest price and, below,
+  **what the whole list costs in each store** — the per-store total plus a
+  coverage badge ("har N av M"), ranked by coverage then price, with the
+  "handle alt billigst" total spelled out. Purely client-side.
 - **Produktgruppe** `#/gruppe/:key` — a generic product and **where it's sold**:
   the store variants ("REMA 1000 Tacosaus Medium", "Coop Extra Tacosaus" …) with
   prices, before-prices and validity, **ranked by price per litre/kilo** (a
@@ -54,6 +62,8 @@ python3 -m http.server 8000
   (`gross_unit_price`), and offer catalogues (Tjek `quantity`). Each store's
   **representative** variant is its **cheapest per unit**, not its cheapest pack,
   so a small carton can't masquerade as the best deal.
+  The group and variant pages each carry a **"Kopier lenke"** button (the URLs
+  are already shareable) and the shopping-list star.
 - **Produktside (variant)** `#/vare/:key/:store` — one store's product with, when
   the store carries it in several sizes, a **"Størrelser"** list (every size,
   sorted by price per litre/kilo, cheapest-per-unit highlighted); a **price
@@ -69,7 +79,9 @@ python3 -m http.server 8000
   the prices to Supabase. A trigger then feeds each scanned line into the
   **leksikon** (`ml_offers`, `source=scan`) and the **price history**
   (`ml_price_history`, dated to the receipt), so contributed prices show up in
-  the catalogue and on the product's chart — weight items keep their kr/kg.
+  the catalogue and on the product's chart — weight items keep their kr/kg. The
+  confirmation screen links each contributed line back to the matching product
+  in the leksikon.
 
 ## Backend (Supabase)
 
