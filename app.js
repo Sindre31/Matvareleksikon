@@ -1205,7 +1205,9 @@
 
   // ── Boot ─────────────────────────────────────────────────────────────────
   // PostgREST caps a response at 1000 rows, so page through all offers.
-  var OFFER_COLS = 'store_id,product_name,group_key,price,pre_price,unit,unit_price,unit_price_unit,offer_days,image_url,valid_from,valid_until,source';
+  // Only the columns the client actually reads (valid_from and the offer-level
+  // source column were fetched but never used — dropped to trim the payload).
+  var OFFER_COLS = 'store_id,product_name,group_key,price,pre_price,unit,unit_price,unit_price_unit,offer_days,image_url,valid_until';
   function fetchAllOffers() {
     return new Promise(function (resolve, reject) {
       var all = [];
@@ -1218,35 +1220,45 @@
     });
   }
 
-  // ── Offline / cold-start cache ───────────────────────────────────────────
-  // The catalogue (stores + offers) is persisted in localStorage so a return
-  // visit paints instantly from the last snapshot and still works offline —
-  // then it revalidates against Supabase in the background (stale-while-
-  // revalidate). The big blob is only rewritten on a successful full fetch;
-  // the tiny "sist oppdatert" stamp lives in its own key so it can refresh
-  // without re-serialising the whole catalogue.
-  var CATALOG_KEY = 'prisboka_catalog_v1';
-  var CATALOG_META_KEY = 'prisboka_catalog_meta';
-  function readCatalogCache() {
-    try {
-      var raw = localStorage.getItem(CATALOG_KEY);
-      if (!raw) return null;
-      var c = JSON.parse(raw);
-      if (!c || !Array.isArray(c.stores) || !Array.isArray(c.offers) || !c.offers.length) return null;
-      return c;
-    } catch (e) { return null; }
+  // ── Cold-start cache (Cache API blob + localStorage meta) ────────────────
+  // The catalogue is ~6 MB, so re-downloading it on every visit is slow on
+  // mobile and burns Supabase egress. It's cached in the Cache Storage API
+  // (the big offers blob — no ~5 MB localStorage cap) with a small meta record
+  // in localStorage (timestamp, the tiny stores list, freshness stamp).
+  //   • Within CATALOG_TTL a return visit trusts the cache and makes ZERO
+  //     network calls — instant paint, no egress. (Data refreshes weekly, so a
+  //     few hours stale is fine.)
+  //   • An older cache still paints instantly, then revalidates in the
+  //     background (stale-while-revalidate).
+  //   • No Cache API (insecure context) → always revalidate, as before.
+  var CATALOG_TTL = 12 * 60 * 60 * 1000; // 12 h
+  var CAT_CACHE = 'prisboka-catalog-v1';
+  var CAT_OFFERS_URL = '/__prisboka-offers-cache'; // synthetic same-origin Cache key (never fetched)
+  var CAT_META_KEY = 'prisboka_catalog_meta_v2';
+  var hasCaches = (typeof caches !== 'undefined' && caches && typeof caches.open === 'function');
+
+  // Retire the old localStorage cache keys (superseded by the Cache API blob).
+  try { localStorage.removeItem('prisboka_catalog_v1'); localStorage.removeItem('prisboka_catalog_meta'); } catch (e) { /* noop */ }
+
+  function readCatMeta() { try { return JSON.parse(localStorage.getItem(CAT_META_KEY) || 'null'); } catch (e) { return null; } }
+  function writeCatMeta(o) { try { localStorage.setItem(CAT_META_KEY, JSON.stringify(o)); } catch (e) { /* best-effort */ } }
+  function readCachedOffers() {
+    return new Promise(function (resolve) {
+      if (!hasCaches) { resolve(null); return; }
+      caches.open(CAT_CACHE).then(function (c) { return c.match(CAT_OFFERS_URL); }).then(function (res) {
+        if (!res) { resolve(null); return; }
+        res.json().then(function (a) { resolve(Array.isArray(a) && a.length ? a : null); }, function () { resolve(null); });
+      }).catch(function () { resolve(null); });
+    });
   }
-  function writeCatalogCache(stores, offers) {
+  function writeCachedOffers(offers) {
+    if (!hasCaches) return;
     try {
-      var payload = JSON.stringify({ v: 1, ts: Date.now(), stores: stores || [], offers: offers || [] });
-      // localStorage caps around 5 MB — skip caching an oversized catalogue
-      // rather than throw (the app still works, just without a warm start).
-      if (payload.length > 4500000) { try { localStorage.removeItem(CATALOG_KEY); } catch (e2) { /* noop */ } return; }
-      localStorage.setItem(CATALOG_KEY, payload);
-    } catch (e) { /* private mode / quota — caching is best-effort */ }
+      caches.open(CAT_CACHE).then(function (c) {
+        c.put(CAT_OFFERS_URL, new Response(JSON.stringify(offers), { headers: { 'Content-Type': 'application/json' } }));
+      }).catch(function () { /* quota — best-effort */ });
+    } catch (e) { /* noop */ }
   }
-  function readCatalogMeta() { try { return localStorage.getItem(CATALOG_META_KEY) || ''; } catch (e) { return ''; } }
-  function writeCatalogMeta(v) { try { localStorage.setItem(CATALOG_META_KEY, v || ''); } catch (e) { /* best-effort */ } }
 
   function applyCatalog(stores, offers) {
     buildStores(stores);
@@ -1261,24 +1273,13 @@
       .then(function (rows) {
         if (rows && rows[0] && rows[0].observed_at) {
           state.lastUpdated = rows[0].observed_at;
-          writeCatalogMeta(state.lastUpdated);
+          var m = readCatMeta() || {}; m.lastUpdated = state.lastUpdated; writeCatMeta(m);
           if (state.phase === 'ready') render();
         }
       })
       .catch(function () { /* keep the "ukentlig" fallback */ });
   }
-  function boot() {
-    // 1) Instant paint from the last cached catalogue, if any — this also makes
-    //    the app usable offline (the service worker serves the shell; the cache
-    //    serves the data).
-    var cached = readCatalogCache();
-    if (cached) {
-      applyCatalog(cached.stores, cached.offers);
-      state.fromCache = true;
-      state.lastUpdated = readCatalogMeta();
-      route();
-    }
-    // 2) Always revalidate against the network in the background.
+  function revalidate() {
     Promise.all([
       sb('/ml_stores?select=*&order=sort_order').then(function (r) { if (!r.ok) throw new Error('stores ' + r.status); return r.json(); }),
       fetchAllOffers()
@@ -1288,7 +1289,8 @@
       if ((!offers || !offers.length) && state.phase === 'ready') return;
       applyCatalog(stores, offers);
       state.fromCache = false;
-      writeCatalogCache(stores, offers);
+      writeCachedOffers(offers);
+      writeCatMeta({ ts: Date.now(), stores: stores, lastUpdated: state.lastUpdated || (readCatMeta() || {}).lastUpdated || '' });
       route();
       loadFreshnessStamp();
     }).catch(function (e) {
@@ -1297,6 +1299,21 @@
       if (state.phase === 'ready') { loadFreshnessStamp(); return; }
       state.phase = 'error'; state.errMsg = (e && e.message) || String(e);
       render();
+    });
+  }
+  function boot() {
+    var meta = readCatMeta();
+    readCachedOffers().then(function (offers) {
+      if (offers && meta && Array.isArray(meta.stores) && meta.stores.length) {
+        // Instant paint from cache — also makes the app usable offline.
+        applyCatalog(meta.stores, offers);
+        state.fromCache = true;
+        state.lastUpdated = meta.lastUpdated || '';
+        route();
+        var age = Date.now() - (meta.ts || 0);
+        if (age >= 0 && age < CATALOG_TTL) return; // fresh — trust cache, skip the network (no egress)
+      }
+      revalidate();
     });
   }
 

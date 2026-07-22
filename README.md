@@ -133,6 +133,14 @@ catalogue and *insert* a registration (validated by CHECK constraints); no
 updates or deletes are exposed to the public key. Offer/history writes happen
 only via the ingest Edge Function's service-role key.
 
+**Insert rate limiting.** Because the anon key is public and `ml_registrations`
+allows anonymous insert, a `BEFORE INSERT` trigger (`ml_reg_ratelimit`) throttles
+direct/scripted floods so a shared link can't pollute the leksikon: a spoof-proof
+**global cap** (1500 rows/hour) plus a best-effort **per-IP cap** (200 rows/hour,
+skipped when the IP is unknown so it never over-blocks). It reuses the scan
+limiter (`ml_scan_allow` / `ml_scan_rate`) under a `reg:` key namespace, and fires
+after `ml_reg_filter` so dropped pant/emballasje lines don't count.
+
 ## Implementation notes
 
 **Accessibility & empty states.** Clickable cards and table rows are exposed as
@@ -169,16 +177,25 @@ root. The site is an installable PWA: `manifest.webmanifest` + a service worker
 strategy (a deploy is picked up on the next load), while every cross-origin
 Supabase request stays network-only so prices are never served stale.
 
-**Cold-start & offline data.** The catalogue (stores + offers) is also snapshotted
-to `localStorage` (`prisboka_catalog_v1`), so a return visit paints instantly from
-the last snapshot — no loading screen — and the app stays usable offline (the
-service worker serves the shell, the snapshot serves the data). Boot is
-stale-while-revalidate: cached data is shown immediately, then Supabase is
-re-fetched in the background and the snapshot refreshed. A transient empty or
-failed fetch never blanks out a good cache, and an oversized catalogue is skipped
-rather than throwing on the `localStorage` quota. The "sist oppdatert" stamp lives
-in its own key (`prisboka_catalog_meta`) so it refreshes without re-serialising the
-whole catalogue.
+**Cold-start, offline data & egress.** The catalogue is ~6 MB, so re-downloading
+it on every visit is slow on mobile and burns Supabase egress. It is snapshotted
+into the **Cache Storage API** (`prisboka-catalog-v1` — the big offers blob, which
+would blow the ~5 MB `localStorage` cap) with a small meta record in
+`localStorage` (`prisboka_catalog_meta_v2`: timestamp, the tiny stores list,
+freshness stamp). Boot:
+- **Within `CATALOG_TTL` (12 h)** a return visit trusts the snapshot and makes
+  **zero network calls** — instant paint, no egress. Data refreshes weekly, so a
+  few hours stale is fine.
+- **Older than the TTL** it still paints instantly, then revalidates in the
+  background (stale-while-revalidate) and rewrites the snapshot.
+- **No Cache API** (insecure context) → always revalidate, as before.
+
+A transient empty or failed fetch never blanks out a good snapshot, and offline
+the app stays fully usable (the service worker serves the shell, the snapshot the
+data). The service worker's cache cleanup preserves `prisboka-catalog-*` — it only
+prunes its own old shell caches — so it never wipes the freshly written snapshot.
+Only the columns the client reads are fetched (dropped the unused `valid_from` /
+offer-level `source`).
 
 **CI.** `.github/workflows/ci.yml` runs on every push: `node --check` on the
 front end, `node --test` for the unit tests, and `deno check` on each Supabase

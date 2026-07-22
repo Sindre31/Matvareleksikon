@@ -65,3 +65,14 @@ update ml_price_history h set source = 'scan'
 -- on conflict do update set price = least(...),
 --   source = case when excluded.price <= existing.price then 'scan' else existing.source end;
 -- (Official ingest rows leave source null → shown as "Offisiell" client-side.)
+
+-- Rate-limit anon inserts into ml_registrations, so a shared public link can't
+-- be scripted to flood the leksikon with fake prices via the REST endpoint
+-- (the receipt-scan Edge Function is per-IP limited, but a direct insert wasn't).
+-- ml_reg_ratelimit() (SECURITY DEFINER, BEFORE INSERT, fires after ml_reg_filter)
+-- reuses ml_scan_allow + ml_scan_rate under a 'reg:' key namespace:
+--   * global cap (spoof-proof): 1500 rows/hour ('reg:GLOBAL')
+--   * per-IP cap (best effort, skipped when the IP is unknown so it never
+--     over-blocks): 200 rows/hour ('reg:'||ip). IP from request.headers
+--     (cf-connecting-ip / x-real-ip / first x-forwarded-for). Verified the IP is
+--     captured on the anon PostgREST path.

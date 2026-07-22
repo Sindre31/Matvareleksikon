@@ -18,7 +18,13 @@ self.addEventListener('install', function (e) {
 self.addEventListener('activate', function (e) {
   e.waitUntil(
     caches.keys().then(function (keys) {
-      return Promise.all(keys.filter(function (k) { return k !== CACHE; }).map(function (k) { return caches.delete(k); }));
+      // Only drop our own OLD shell caches. Never touch the page's catalogue
+      // cache ('prisboka-catalog-*'), which the app manages for offline data —
+      // deleting it here would wipe the ~6 MB snapshot right after it's written.
+      return Promise.all(
+        keys.filter(function (k) { return k !== CACHE && k.indexOf('prisboka-catalog-') !== 0; })
+            .map(function (k) { return caches.delete(k); })
+      );
     }).then(function () { return self.clients.claim(); })
   );
 });
