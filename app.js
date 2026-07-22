@@ -1094,7 +1094,7 @@
     if (info.start != null) { try { el.setSelectionRange(info.start, info.end); } catch (e) { /* noop */ } }
   }
 
-  var root = document.getElementById('app');
+  var root = typeof document !== 'undefined' ? document.getElementById('app') : null;
   function render() {
     var focus = captureFocus();
     root.textContent = '';
@@ -1148,18 +1148,33 @@
     });
   }
 
-  window.addEventListener('hashchange', route);
-  document.addEventListener('paste', function (e) {
-    if (state.phase !== 'ready' || state.view !== 'scan' || state.scanPhase !== 'idle') return;
-    var items = (e.clipboardData && e.clipboardData.items) || [];
-    for (var i = 0; i < items.length; i++) {
-      if (items[i].type && items[i].type.indexOf('image') === 0) {
-        var f = items[i].getAsFile();
-        if (f) { e.preventDefault(); onScanFile(f); return; }
+  // Browser bootstrap — skipped under Node (unit tests import the pure helpers
+  // below without a DOM). Guarded on window/document so `require('./app.js')`
+  // never touches browser globals.
+  if (typeof window !== 'undefined' && typeof document !== 'undefined') {
+    window.addEventListener('hashchange', route);
+    document.addEventListener('paste', function (e) {
+      if (state.phase !== 'ready' || state.view !== 'scan' || state.scanPhase !== 'idle') return;
+      var items = (e.clipboardData && e.clipboardData.items) || [];
+      for (var i = 0; i < items.length; i++) {
+        if (items[i].type && items[i].type.indexOf('image') === 0) {
+          var f = items[i].getAsFile();
+          if (f) { e.preventDefault(); onScanFile(f); return; }
+        }
       }
-    }
-  });
+    });
 
-  render();
-  boot();
+    render();
+    boot();
+  }
+
+  // Node/CommonJS: expose the pure price/grouping helpers for unit tests. This
+  // is a no-op in the browser (no `module`), so it never affects the app.
+  if (typeof module !== 'undefined' && module.exports) {
+    module.exports = {
+      cleanName: cleanName, pctOff: pctOff, baseAmount: baseAmount,
+      parseAmount: parseAmount, normUnit: normUnit, foldName: foldName,
+      minceKey: minceKey, ckey: ckey, canonLabel: canonLabel
+    };
+  }
 })();

@@ -16,6 +16,9 @@ jobs:
           node --check app.js
           if [ -f build.mjs ]; then node --check build.mjs; fi
 
+      - name: Unit-test the price/grouping helpers
+        run: node --test
+
       - name: Validate JSON config
         run: |
           for f in vercel.json; do

@@ -10,7 +10,7 @@ prototype [`Matvareleksikon.dc.html`](https://claude.ai/design/p/d6005f67-13a3-4
 built on the **Industry** design system and backed by a live **Supabase**
 database.
 
-**Live:** https://prisboka-matvareleksikon.vercel.app
+**Live:** https://matvareleksikon.vercel.app
 
 ## Run it
 
@@ -146,7 +146,22 @@ own-brand tacosaus collapses together — national brand words are kept, house
 brands stripped. Recognised categories get a friendly title via `canonLabel`.
 
 **CI.** `.github/workflows/ci.yml` runs on every push: `node --check` on the
-front end and `deno check` on each Supabase Edge Function.
+front end, `node --test` for the unit tests, and `deno check` on each Supabase
+Edge Function.
+
+**Tests.** `test/grouping.test.js` covers the pure price/grouping helpers — the
+hardest, most regression-prone logic: `parseAmount`/`baseAmount` (comparable
+per-litre/kilo/piece amounts, incl. multipacks), `ckey` (word-order- and
+house-brand-independent cross-store grouping), `minceKey`/`canonLabel`
+(category-aware mince keying), and `pctOff`/`normUnit`/`cleanName`. They use
+Node's built-in test runner — no dependencies, no build step:
+
+```bash
+node --test
+```
+
+`app.js` only runs its browser bootstrap when `window`/`document` exist, so the
+tests `require('./app.js')` to reach the helpers it exports under Node.
 
 The prototype's React-based `DCLogic` component is ported to plain
 JavaScript. The rendering and the `chartFor()` / price-change / cheapest-per
