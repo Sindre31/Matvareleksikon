@@ -123,6 +123,7 @@
       rawName: o.product_name, name: cleanName(o.product_name), serverKey: o.group_key || ckey(o.product_name),
       price: price, prePrice: o.pre_price != null ? Number(o.pre_price) : null,
       unit: o.unit || null, image: o.image_url || null, validUntil: o.valid_until || null,
+      offerDays: o.offer_days || null,
       isOffer: o.pre_price != null && Number(o.pre_price) > price,
       unitDim: unitDim, perUnit: perUnit
     };
@@ -536,8 +537,9 @@
 
     var rows = g.variants.map(function (v) {
       var vu = v.validUntil ? 'Gyldig til ' + v.validUntil.slice(8, 10) + '.' + v.validUntil.slice(5, 7) : '';
+      var vd = v.offerDays ? 'Gjelder ' + v.offerDays : '';
       var nSizes = sizesFor(g, v.storeId).length;
-      var sub = v.rawName + (vu ? ' · ' + vu : '') + (nSizes > 1 ? ' · ' + nSizes + ' størrelser' : '');
+      var sub = v.rawName + (vd ? ' · ' + vd : '') + (vu ? ' · ' + vu : '') + (nSizes > 1 ? ' · ' + nSizes + ' størrelser' : '');
       return h('div', Object.assign({ cls: 'row-hover', style: 'display: grid; grid-template-columns: 1fr auto auto; gap: 12px; align-items: center; cursor: pointer; padding: 14px 20px; border-bottom: 1px solid color-mix(in srgb, var(--color-text) 8%, transparent);' }, activate(openVariant(g.key, v.storeId), v.storeName + ', ' + nf(v.price) + (nSizes > 1 ? ', ' + nSizes + ' størrelser' : '') + ', se prishistorikk')), [
         h('span', { style: 'display: flex; align-items: center; gap: 12px;' }, [
           storeLine(v.color, v.dash, 18),
@@ -604,7 +606,7 @@
           h('h1', { style: H1, text: v.storeName }),
           v.isOffer ? offerTag() : null
         ]),
-        h('p', { style: 'margin: 12px 0 0; font-size: 15px; color: ' + MUTED70 + ';', text: v.rawName + (v.validUntil ? ' · gyldig til ' + v.validUntil.slice(8, 10) + '.' + v.validUntil.slice(5, 7) : '') }),
+        h('p', { style: 'margin: 12px 0 0; font-size: 15px; color: ' + MUTED70 + ';', text: v.rawName + (v.offerDays ? ' · gjelder ' + v.offerDays : '') + (v.validUntil ? ' · gyldig til ' + v.validUntil.slice(8, 10) + '.' + v.validUntil.slice(5, 7) : '') }),
         h('div', { style: 'display: flex; align-items: baseline; gap: 12px; margin-top: 14px;' }, [
           h('span', { style: "font-family: var(--font-heading); font-weight: 600; font-size: 40px; font-feature-settings: 'tnum' 1;", text: nf(v.price) }),
           v.prePrice ? h('span', { style: "font-size: 16px; color: " + MUTED60 + "; text-decoration: line-through; font-feature-settings: 'tnum' 1;", text: nf(v.prePrice) }) : null,
@@ -862,7 +864,7 @@
 
   // ── Boot ─────────────────────────────────────────────────────────────────
   // PostgREST caps a response at 1000 rows, so page through all offers.
-  var OFFER_COLS = 'store_id,product_name,group_key,price,pre_price,unit,unit_price,unit_price_unit,image_url,valid_from,valid_until,source';
+  var OFFER_COLS = 'store_id,product_name,group_key,price,pre_price,unit,unit_price,unit_price_unit,offer_days,image_url,valid_from,valid_until,source';
   function fetchAllOffers() {
     return new Promise(function (resolve, reject) {
       var all = [];

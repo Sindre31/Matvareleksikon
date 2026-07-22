@@ -90,6 +90,14 @@ groups store-specific products by `group_key` for comparison. (The earlier
 synthetic `ml_products` / `ml_monthly_prices` / `ml_total_regs()` objects are
 retained but no longer used by the app.)
 
+Kassalapp derives a before-price from the product's `price_history`, which
+occasionally holds junk-high outliers (wrong unit/size) that would look like a
+90% markdown (e.g. Lutefisk 29,90 "fra" 299). The ingest caps the implied
+markdown at 50% — bigger "discounts" are treated as data noise, not offers.
+Offer weekday validity ("man–fre", "helg"), when a flyer states it in its
+description, is parsed into `offer_days` (Tjek has no structured field for it, so
+coverage is sparse — most offers only carry a full date range).
+
 **Row Level Security** is enabled on every table: anyone may *read* the
 catalogue and *insert* a registration (validated by CHECK constraints); no
 updates or deletes are exposed to the public key. Offer/history writes happen

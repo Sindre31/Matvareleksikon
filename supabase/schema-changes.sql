@@ -30,3 +30,11 @@ alter table ml_registrations add column if not exists line_total numeric;
 grant insert (unit, quantity, line_total) on ml_registrations to anon, authenticated;
 -- trigger: ml_reg_propagate_trg AFTER INSERT ON ml_registrations → upserts
 -- ml_offers(external_id='scan:'||store||':'||slug) and ml_price_history.
+
+-- Offer weekday validity ("man–fre", "helg") parsed from Tjek descriptions
+-- (rare, but real) by ml-ingest-offers; and a guard against fake Kassalapp
+-- "offers" whose implied markdown exceeds 50% (price_history outliers).
+alter table ml_offers add column if not exists offer_days text;
+-- one-time cleanup (the function now caps markdown at 50% going forward):
+update ml_offers set pre_price = null, offer_text = null
+where source = 'kassalapp' and pre_price is not null and pre_price > price * 2;

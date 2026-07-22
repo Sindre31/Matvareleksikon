@@ -87,6 +87,29 @@ function unitInfo(o: any, price: number): { up: number; unit: string } | null {
   return null;
 }
 
+// Some flyer offers are only valid certain weekdays ("Gjelder fre–lør",
+// "HELGETILBUD TORSDAG-LØRDAG"). Tjek has no structured field for this, so parse
+// it out of the free-text description when present (rare, but real).
+const DAY_RE = "(man(?:dag)?|tir(?:sdag)?|ons(?:dag)?|tor(?:sdag)?|fre(?:dag)?|l[øo]r(?:dag)?|s[øo]n(?:dag)?)";
+function normDay(w: string): string | null {
+  w = w.toLowerCase();
+  if (w.startsWith("man")) return "man";
+  if (w.startsWith("tir")) return "tir";
+  if (w.startsWith("ons")) return "ons";
+  if (w.startsWith("tor")) return "tor";
+  if (w.startsWith("fre")) return "fre";
+  if (w.startsWith("lør") || w.startsWith("lor")) return "lør";
+  if (w.startsWith("søn") || w.startsWith("son")) return "søn";
+  return null;
+}
+function offerDays(desc: string | undefined): string | null {
+  const t = String(desc || "").toLowerCase();
+  const m = t.match(new RegExp(DAY_RE + "\\s*(?:-|–|—|til)\\s*" + DAY_RE));
+  if (m) { const a = normDay(m[1]), b = normDay(m[2]); if (a && b) return a + "–" + b; }
+  if (/\bhelg(etilbud|en)?\b/.test(t)) return "helg";
+  return null;
+}
+
 const TJEK_HEADERS = {
   Accept: "application/json",
   "Accept-Language": "nb-NO,nb;q=0.9,en;q=0.8",
@@ -130,6 +153,7 @@ Deno.serve(async (_req: Request) => {
         unit: o?.quantity?.unit?.symbol ?? null,
         unit_price: ui ? Number(ui.up.toFixed(4)) : null,
         unit_price_unit: ui ? ui.unit : null,
+        offer_days: offerDays(o?.description),
         offer_text: typeof pre === "number" && pre > price ? `Tilbudsavis (før ${pre.toFixed(2)})` : "Tilbudsavis",
         image_url: o?.images?.view || o?.images?.zoom || o?.images?.thumb || null,
         valid_from: toDate(o?.run_from),

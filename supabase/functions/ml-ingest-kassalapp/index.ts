@@ -77,7 +77,10 @@ function rowFrom(p: any): any | null {
   if (price == null || price <= 0 || !slug || !p?.name) return null;
   const hist = (p?.price_history ?? []).map((h: any) => h?.price).filter((x: any) => typeof x === "number");
   const recentMax = hist.length ? Math.max(...hist) : price;
-  const isOffer = recentMax > price * 1.05;
+  // Real markdown, not a price_history outlier: between 5% and 50% off. Kassalapp's
+  // history occasionally holds junk-high values (wrong unit/size) that would look
+  // like a 90% "offer" (e.g. Lutefisk 29,90 "fra" 299), so cap the before-price.
+  const isOffer = recentMax > price * 1.05 && recentMax <= price * 2;
   return {
     external_id: "kassal:" + slug + ":" + nameSlug(p.name), store_id: slug, product_name: p.name,
     group_key: groupKey(p.name), price, pre_price: isOffer ? recentMax : null, unit: p?.weight_unit ?? null,
