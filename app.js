@@ -1187,12 +1187,8 @@
     var sources = aboutSection('Kilder', '02', [
       h('p', { style: P, text: 'Prisene hentes automatisk hver uke fra offentlige kilder, og suppleres med priser fellesskapet bidrar med:' }),
       h('ul', { style: UL }, [
-        bullet('Kassalapp', ['— hylle­priser på tvers av kjedene (', extLink('https://kassal.app', 'kassal.app'), ').']),
-        bullet('eTilbudsavis / Tjek', '— ukens tilbud fra kjedenes tilbudsaviser.'),
-        bullet('NorgesGruppen (ngdata)', '— Meny-sortimentet med produktbilder.'),
-        bullet('Oda', ['— nettbutikkens priser (', extLink('https://oda.com', 'oda.com'), ').']),
-        bullet('Rema 1000', ['— hyllepriser fra Rema 1000s egen prisdata (', extLink('https://rema1000.no', 'rema1000.no'), ').']),
-        bullet('Fellesskapet', '— priser skannet fra kvitteringer, merket «Skannet» i prishistorikken.')
+        bullet('Tilbudsaviser', '— ukens tilbud fra kjedenes tilbudsaviser.'),
+        bullet('Skannede kvitteringer', '— priser fellesskapet bidrar med ved å skanne kvitteringer, merket «Skannet» i prishistorikken.')
       ]),
       h('p', { style: 'margin: 14px 0 0; font-size: 14px; line-height: 22px; color: ' + MUTED60 + '; max-width: 68ch;', text: 'Prisene kan være unøyaktige eller utdaterte, og kan variere mellom butikker i samme kjede. Sjekk alltid prisen i butikken før du handler.' })
     ]);

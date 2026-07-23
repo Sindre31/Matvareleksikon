@@ -100,8 +100,8 @@ python3 -m http.server 8000
   the catalogue and on the product's chart — weight items keep their kr/kg. The
   confirmation screen links each contributed line back to the matching product
   in the leksikon.
-- **Om** `#/om` — what Prisboka is, **source attribution** (Kassalapp,
-  eTilbudsavis/Tjek, ngdata, Oda, community scans), an independence disclaimer,
+- **Om** `#/om` — what Prisboka is, **source attribution** (offer catalogues
+  and community receipt scans), an independence disclaimer,
   and a **privacy** note (no accounts/tracking; the shopping list is local-only;
   receipt images go to Google Gemini and aren't stored; only the IP is kept
   briefly for rate limiting). A site footer links to it from every screen.
@@ -113,7 +113,7 @@ schema:
 
 | Object | Purpose |
 | --- | --- |
-| `ml_offers` | **The leksikon's data**: real prices — weekly offers from eTilbudsavis/Tjek (`source=etilbudsavis`, with validity), shelf prices from Kassalapp across the chains (`source=kassalapp`), and the authoritative Meny assortment from NorgesGruppen's ngdata API (`source=ngdata`), Oda's online-store prices (`source=oda`), and Rema 1000's own catalogue prices (`source=rema`) — store, product, price, before-price, image, and a `group_key` for cross-store grouping. The front end dedupes to the cheapest row per (group, store), so overlapping Meny sources collapse to one card. |
+| `ml_offers` | **The leksikon's data**: real prices — weekly offers from eTilbudsavis/Tjek (`source=etilbudsavis`, with validity), shelf prices from Kassalapp across the chains (`source=kassalapp`), and the authoritative Meny assortment from NorgesGruppen's ngdata API (`source=ngdata`), and Oda's online-store prices (`source=oda`) — store, product, price, before-price, image, and a `group_key` for cross-store grouping. The front end dedupes to the cheapest row per (group, store), so overlapping Meny sources collapse to one card. |
 | `ml_price_history` | One real price point per (`group_key`, store, day), appended weekly by the ingest functions. Carries a **`source`** (`official` vs `scan`) so the variant's Registreringer table can flag community-scanned points. When an offer carries a before-price, that before-price is also back-filled as the previous week's point (non-offer, insert-if-absent) → the variant price-history chart |
 | `ml_stores` | Store metadata (name, chart colour/dash, locations) |
 | `ml_registrations` | Append-only community contributions from the scan flow (item, price, store, **receipt date**, and structured unit/quantity for weight items). A trigger propagates each into `ml_offers` and `ml_price_history` |
@@ -315,17 +315,9 @@ group as the offers):
 - **`ml-ingest-oda`** — [Oda](https://oda.com) (the online supermarket,
   formerly Kolonial.no) via its public search API (keyless), with product
   images. Oda is a single online store → the `oda` chain.
-- **`ml-ingest-rema`** — **Rema 1000** shelf prices straight from Rema's own
-  catalogue API (the keyless "Æ"/digital product API at
-  `api.digital.rema1000.no`, browser `User-Agent`), walking every department and
-  paging its products. Rema is a single chain → the `rema` store. This gives
-  Rema a first-party price source so it no longer depends solely on Kassalapp's
-  third-party index. Each run replaces the `rema` rows and appends a daily
-  `ml_price_history` point.
 
 All run weekly via `pg_cron` (offers 04:00, Kassalapp 04:10, ngdata 04:20,
-Oda 04:30, Rema 04:40 UTC every Monday = ~06:00–06:40 Oslo). See
-`supabase/cron.sql`.
+Oda 04:30 UTC every Monday = ~06:00–06:30 Oslo). See `supabase/cron.sql`.
 
 ## Deployment
 
