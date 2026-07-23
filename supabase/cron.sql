@@ -27,11 +27,13 @@ select cron.schedule(
 
 -- Real shelf prices via Kassalapp, 10 min after the offers job (needs the
 -- KASSALAPP_TOKEN secret; the function no-ops without it).
--- Rotates through the WHOLE catalogue every week: one net.http_post per page
--- range (40 pages each, pages 1..480), all in accumulate mode
--- (deleteFirst:false), so every product's price is refreshed weekly and nothing
--- is deleted. A single edge invocation only fits ~40 pages in its time budget,
--- so pg_net fires the batches in parallel via generate_series.
+-- Sweeps the WHOLE catalogue every week in accumulate mode (deleteFirst:false),
+-- so every product's price is refreshed weekly and nothing is deleted. Kassalapp
+-- caps requests at ~60/min per token, so the sweep must be SEQUENTIAL: one
+-- net.http_post starts the sweep at page 1, and the edge function self-chains to
+-- the next page range (~90 pages/invocation) until it hits the catalogue's
+-- last_page. This keeps exactly one invocation calling the API at a time (no 429s
+-- dropping pages) and needs no hard page cap — it follows the reported last_page.
 select cron.schedule(
   'ml-ingest-kassalapp-weekly',
   '10 4 * * 1',
@@ -39,10 +41,9 @@ select cron.schedule(
   select net.http_post(
     url := 'https://jiaxeedguivvhixychcg.supabase.co/functions/v1/ml-ingest-kassalapp',
     headers := jsonb_build_object('Content-Type','application/json','Authorization','Bearer <SUPABASE_ANON_KEY>'),
-    body := jsonb_build_object('bulk', true, 'startPage', p, 'pages', 40, 'deleteFirst', false),
+    body := jsonb_build_object('bulk', true, 'startPage', 1, 'pages', 90, 'deleteFirst', false, 'autochain', true),
     timeout_milliseconds := 170000
-  )
-  from generate_series(1, 441, 40) as p;
+  );
   $cmd$
 );
 
