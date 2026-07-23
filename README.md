@@ -297,11 +297,18 @@ group as the offers):
 
 - **`ml-ingest-kassalapp`** — cross-chain shelf prices from the
   [Kassalapp API](https://kassal.app) (requires the `KASSALAPP_TOKEN`
-  secret; no-ops without it). **Accumulate-by-default**: every run adds/updates
-  rows (upsert on `external_id`) and appends a daily `ml_price_history` point, so
-  historical prices and offers are preserved — it never deletes unless called
-  with `{deleteFirst:true}`. Supports a weekly search refresh (`{}`) and a
-  one-time bulk sweep of the whole catalogue (`{bulk:true,startPage,pages}`).
+  secret; no-ops without it) — the widest source for **Rema and Kiwi**, which
+  otherwise only appear via weekly flyers. **Accumulate-by-default**: every run
+  adds/updates rows (upsert on `external_id`) and appends a daily
+  `ml_price_history` point, so historical prices and offers are preserved — it
+  never deletes unless called with `{deleteFirst:true}`. Supports a weekly search
+  refresh (`{}`) and a **full-catalogue bulk sweep** (`{bulk:true}`). Kassalapp
+  rate-limits to ~60 req/min per token, so the bulk sweep runs **sequentially and
+  self-chains**: one invocation pages a range (~90 pages) at ~1.1 s/page, then
+  fires the next range itself (`autochain`, on by default) until it reaches the
+  catalogue's reported `last_page`. Only one invocation ever calls the API at a
+  time, so no 429s silently drop pages, and there's no hard page cap to keep in
+  sync as the catalogue grows.
 - **`ml-ingest-ngdata`** — the authoritative Meny assortment (with product
   images) from NorgesGruppen's public **ngdata** API (keyless, browser
   `User-Agent`), the same source `billigkurv` uses for Meny/Spar.

@@ -20,6 +20,15 @@ import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 const API = "https://kassal.app/api/v1";
 const PAGE_SIZE = 100;
 const TIME_BUDGET_MS = 115000;
+// Kassalapp allows ~60 requests/minute per token. One page fetch = one request,
+// so pace the bulk sweep at ~1.1 s between pages (~54/min) to stay under the
+// cap; going faster earns 429s that silently drop pages (and the Rema/Kiwi
+// products on them). Because the sweep self-chains sequentially (below), only
+// one invocation is ever calling the API at a time, so this budget is global.
+const BULK_SLEEP_MS = 1100;
+// Safety stop for the self-chaining bulk sweep, in case the catalogue's
+// last_page metadata is ever missing (prevents an unbounded chain).
+const MAX_BULK_PAGE = 5000;
 
 const DEFAULT_TERMS = [
   "melk", "lettmelk", "revet ost", "brunost", "smør", "margarin", "egg", "yoghurt",
@@ -60,15 +69,39 @@ function groupKey(name: string): string {
 function nameSlug(name: string): string { return (name || "").toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 80); }
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
-async function getPage(url: string, token: string): Promise<any[] | null> {
-  for (let attempt = 1; attempt <= 2; attempt++) {
+// Returns the page's rows plus the catalogue's last_page (Laravel pagination
+// metadata — under `meta` for resource collections, sometimes top-level), so the
+// bulk sweep knows when it has reached the end instead of guessing a page cap.
+// `data: null` signals a hard failure (after retrying 429s with backoff).
+async function getPage(url: string, token: string): Promise<{ data: any[] | null; lastPage: number | null }> {
+  for (let attempt = 1; attempt <= 3; attempt++) {
     const res = await fetch(url, { headers: { Authorization: `Bearer ${token}`, Accept: "application/json" } });
-    if (res.ok) { const j = await res.json(); return j?.data ?? []; }
-    if (res.status === 429 && attempt === 1) { await sleep(2000); continue; }
+    if (res.ok) {
+      const j = await res.json();
+      const lastPage = typeof j?.meta?.last_page === "number" ? j.meta.last_page
+        : (typeof j?.last_page === "number" ? j.last_page : null);
+      return { data: j?.data ?? [], lastPage };
+    }
+    if (res.status === 429 && attempt < 3) { await sleep(2000 * attempt); continue; }
     console.error("kassalapp", res.status, url);
-    return null;
+    return { data: null, lastPage: null };
   }
-  return null;
+  return { data: null, lastPage: null };
+}
+
+// Fire-and-forget the next page range so the bulk sweep continues past this
+// invocation's time budget — a sequential chain that walks the whole catalogue
+// without ever running two invocations at once (keeping us under the rate cap).
+// Uses the service-role key as the platform JWT; EdgeRuntime.waitUntil keeps the
+// dispatch alive after this handler responds.
+function dispatchNext(SB_URL: string, SB_KEY: string, startPage: number, pages: number) {
+  const req = fetch(`${SB_URL}/functions/v1/ml-ingest-kassalapp`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", apikey: SB_KEY, Authorization: `Bearer ${SB_KEY}` },
+    body: JSON.stringify({ bulk: true, startPage, pages, deleteFirst: false, autochain: true }),
+  }).then((r) => r.text()).catch((e) => console.error("chain dispatch failed", String(e)));
+  const ER = (globalThis as { EdgeRuntime?: { waitUntil?: (p: Promise<unknown>) => void } }).EdgeRuntime;
+  if (ER && typeof ER.waitUntil === "function") ER.waitUntil(req);
 }
 
 function rowFrom(p: any): any | null {
@@ -103,34 +136,39 @@ Deno.serve(async (req: Request) => {
   // offers are preserved.
   const deleteFirst = body.deleteFirst === true;
   const bulk = !!body.bulk;
-  const pages = Math.max(1, Number(body.pages) || (bulk ? 40 : 2));
+  // ~90 pages fits the ~115 s budget at the 1.1 s/page rate limit; the sweep
+  // then self-chains to the next range, so the whole catalogue is covered.
+  const pages = Math.max(1, Number(body.pages) || (bulk ? 90 : 2));
   const startPage = Math.max(1, Number(body.startPage) || 1);
+  const autochain = body.autochain !== false; // bulk self-continuation, on by default
   const terms: string[] = Array.isArray(body.terms) && body.terms.length ? body.terms : DEFAULT_TERMS;
 
   const start = Date.now();
   const byKey = new Map<string, any>();
   const add = (p: any) => { const r = rowFrom(p); if (!r) return; const prev = byKey.get(r.external_id); if (prev && Number(prev.price) <= r.price) return; byKey.set(r.external_id, r); };
 
-  let lastPage = startPage - 1, hitEnd = false;
+  let lastPage = startPage - 1, hitEnd = false, catalogLastPage: number | null = null;
   if (bulk) {
     for (let page = startPage; page < startPage + pages; page++) {
       if (Date.now() - start > TIME_BUDGET_MS) break;
-      const data = await getPage(`${API}/products?size=${PAGE_SIZE}&page=${page}`, token);
+      const { data, lastPage: metaLast } = await getPage(`${API}/products?size=${PAGE_SIZE}&page=${page}`, token);
       lastPage = page;
+      if (metaLast != null) catalogLastPage = metaLast;
       if (data == null) { hitEnd = true; break; }
       data.forEach(add);
-      if (data.length < PAGE_SIZE) { hitEnd = true; break; }
-      await sleep(100);
+      // End of catalogue: a short page, or we've reached the reported last_page.
+      if (data.length < PAGE_SIZE || (catalogLastPage != null && page >= catalogLastPage)) { hitEnd = true; break; }
+      await sleep(BULK_SLEEP_MS);
     }
   } else {
     for (const term of terms) {
       if (Date.now() - start > TIME_BUDGET_MS) break;
       for (let page = 1; page <= pages; page++) {
-        const data = await getPage(`${API}/products?search=${encodeURIComponent(term)}&size=${PAGE_SIZE}&page=${page}`, token);
+        const { data } = await getPage(`${API}/products?search=${encodeURIComponent(term)}&size=${PAGE_SIZE}&page=${page}`, token);
         if (data == null) break;
         data.forEach(add);
         if (data.length < PAGE_SIZE) break;
-        await sleep(100);
+        await sleep(BULK_SLEEP_MS);
       }
     }
   }
@@ -157,7 +195,18 @@ Deno.serve(async (req: Request) => {
 
   const backfillInserted = await backfillPreviousWeek(SB_URL, sbHeaders, historyRows, today);
 
-  return json({ mode: bulk ? "bulk" : "search", productsFound: rows.length, inserted, historyInserted, backfillInserted, lastPage, hitEnd, nextPage: bulk && !hitEnd ? lastPage + 1 : null, elapsedMs: Date.now() - start });
+  // Self-chain: if this was a bulk range that stopped on its time budget (not at
+  // the catalogue's end), kick off the next range so a single weekly trigger
+  // walks the whole catalogue, one invocation at a time.
+  const nextPage = lastPage + 1;
+  let chained = false;
+  if (bulk && autochain && !hitEnd && lastPage >= startPage && nextPage <= MAX_BULK_PAGE
+      && (catalogLastPage == null || nextPage <= catalogLastPage)) {
+    dispatchNext(SB_URL, SB_KEY, nextPage, pages);
+    chained = true;
+  }
+
+  return json({ mode: bulk ? "bulk" : "search", productsFound: rows.length, inserted, historyInserted, backfillInserted, lastPage, catalogLastPage, hitEnd, chained, nextPage: bulk && !hitEnd ? nextPage : null, elapsedMs: Date.now() - start });
 });
 
 function json(body: unknown, status = 200) {
