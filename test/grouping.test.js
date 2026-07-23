@@ -216,3 +216,62 @@ test('searchRank — a query after "med" is an ingredient and is demoted', () =>
 test('searchRank — within a tier the shorter (closer) name wins', () => {
   assert.ok(lib.searchRank(g('Melkesjokolade'), 'melk') > lib.searchRank(g('Melkesjokolade med nøtter ekstra'), 'melk'));
 });
+
+// ── Robustness — bad input must never throw (a shared, public site) ─────────
+// These guard the "white screen" failure mode: one malformed row or a null
+// argument used to be able to blow up a whole build/render.
+
+test('parseAmount — null/empty/garbage input returns null, never throws', () => {
+  assert.equal(lib.parseAmount(null), null);
+  assert.equal(lib.parseAmount(undefined), null);
+  assert.equal(lib.parseAmount(''), null);
+  assert.equal(lib.parseAmount(123), null);
+  assert.equal(lib.parseAmount('%%% ??? ---'), null);
+});
+
+test('ckey — degenerate names do not throw and yield a string', () => {
+  for (const n of [null, undefined, '', '   ', '%%%', 42]) {
+    assert.equal(typeof lib.ckey(n), 'string');
+  }
+});
+
+test('buildStores / buildGroups — non-array input is treated as empty', () => {
+  assert.doesNotThrow(() => lib.buildStores(null));
+  assert.doesNotThrow(() => lib.buildStores(undefined));
+  assert.deepEqual(lib.buildGroups(null), []);
+  assert.deepEqual(lib.buildGroups(undefined), []);
+  assert.deepEqual(lib.buildGroups('not an array'), []);
+});
+
+test('buildStores — malformed store rows are skipped, valid ones kept', () => {
+  assert.doesNotThrow(() => lib.buildStores([null, undefined, {}, { id: 'kiwi', name: 'Kiwi', color: '#0a0' }]));
+  // a store id without a name falls back to the id (no crash rendering it)
+  lib.buildStores([{ id: 'kiwi' }]);
+  const groups = lib.buildGroups([offer('kiwi', 'Lettmelk 1 l', 18.9)]);
+  assert.equal(byKey(groups, 'lettmelk').variants[0].storeName, 'kiwi');
+});
+
+test('buildGroups — malformed offer rows are skipped, not fatal', () => {
+  lib.buildStores(STORES);
+  let groups;
+  assert.doesNotThrow(() => {
+    groups = lib.buildGroups([
+      null,                                              // no row
+      undefined,
+      { store_id: 'rema' },                              // no name, no price
+      offer('kiwi', 'Brød', null),                       // null price
+      offer('rema', 'Ost', NaN),                         // NaN price
+      offer('kiwi', 'Kaffe 500g', -5),                   // non-positive price
+      { store_id: 'rema', product_name: 'Egg', price: 'abc' }, // non-numeric price
+      offer('kiwi', 'Lettmelk 1 l', 18.9),               // the one good row
+      { store_id: 'rema', product_name: 'Lettmelk 1 l', price: '17.9' } // numeric string is fine
+    ]);
+  });
+  const melk = byKey(groups, 'lettmelk');
+  assert.ok(melk, 'the valid rows still produce a group');
+  assert.equal(melk.storeCount, 2);
+  assert.equal(melk.minPrice, 17.9);
+  // none of the junk leaked in as its own group
+  assert.equal(byKey(groups, 'brod'), undefined);
+  assert.equal(byKey(groups, 'ost'), undefined);
+});

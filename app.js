@@ -159,7 +159,9 @@
   }
 
   function buildStores(rows) {
-    STORES = rows.map(function (s) { return { id: s.id, name: s.name, color: s.color, dash: s.dash || '', places: s.places || [] }; });
+    STORES = (Array.isArray(rows) ? rows : [])
+      .filter(function (s) { return s && s.id != null; })
+      .map(function (s) { return { id: s.id, name: s.name || String(s.id), color: s.color, dash: s.dash || '', places: s.places || [] }; });
     STORE_NAME = {}; STORE_STYLE = {};
     STORES.forEach(function (s) { STORE_NAME[s.id] = s.name; STORE_STYLE[s.id] = { color: s.color, dash: s.dash }; });
   }
@@ -201,21 +203,28 @@
   }
 
   function buildGroups(offers) {
-    OFFERS = offers || [];
+    OFFERS = Array.isArray(offers) ? offers : [];
     var today = new Date().toISOString().slice(0, 10);
-    var valid = OFFERS.filter(function (o) { return !o.valid_until || o.valid_until >= today; });
-    if (!valid.length) valid = OFFERS;
+    var valid = OFFERS.filter(function (o) { return o && (!o.valid_until || o.valid_until >= today); });
+    if (!valid.length) valid = OFFERS.filter(Boolean);
     VALID_COUNT = valid.length;
     var map = {};
     valid.forEach(function (o) {
-      var key = ckey(o.product_name);
-      if (!key) return;
-      var g = map[key] || (map[key] = { key: key, byStore: {}, serverKeys: {} });
-      var v = buildVariant(o);
-      g.serverKeys[v.serverKey] = 1;
-      (g.byStore[v.storeId] || (g.byStore[v.storeId] = [])).push(v);
+      // Skip a malformed row rather than let it throw and blank the catalogue.
+      try {
+        if (!o) return;
+        var price = Number(o.price);
+        if (!isFinite(price) || price <= 0) return;
+        var key = ckey(o.product_name);
+        if (!key) return;
+        var g = map[key] || (map[key] = { key: key, byStore: {}, serverKeys: {} });
+        var v = buildVariant(o);
+        g.serverKeys[v.serverKey] = 1;
+        (g.byStore[v.storeId] || (g.byStore[v.storeId] = [])).push(v);
+      } catch (e) { /* one bad offer row shouldn't take down the whole build */ }
     });
     GROUPS = Object.keys(map).map(function (key) {
+      try {
       var byStore = map[key].byStore;
       // Per store the representative is the cheapest PER UNIT (best value) when a
       // unit price is known — so a small carton can't beat a big one — otherwise
@@ -253,7 +262,8 @@
         bestOff: variants.reduce(function (m, v) { return Math.max(m, pctOff(v)); }, 0),
         searchText: (variants.map(function (v) { return v.rawName; }).join(' ') + ' ' + key).toLowerCase()
       };
-    });
+      } catch (e) { return null; } // drop a bad group rather than blank the catalogue
+    }).filter(Boolean);
     GROUP_BY_KEY = {}; GROUPS.forEach(function (g) { GROUP_BY_KEY[g.key] = g; });
     return GROUPS;
   }
@@ -1260,11 +1270,27 @@
   }
 
   var root = typeof document !== 'undefined' ? document.getElementById('app') : null;
-  function render() {
-    var focus = captureFocus();
-    root.textContent = '';
-    if (state.phase === 'loading') { root.appendChild(loadingScreen()); return; }
-    if (state.phase === 'error') { root.appendChild(errorScreen()); return; }
+
+  // Last-resort crash screen, built with raw DOM (no hyperscript / app helpers,
+  // since one of those may be what threw) so it can't fail the same way.
+  function renderCrash() {
+    var wrap = document.createElement('div');
+    wrap.setAttribute('style', 'max-width: 560px; margin: 0 auto; padding: 96px 24px; font-family: sans-serif;');
+    var hd = document.createElement('h1');
+    hd.textContent = 'Noe gikk galt';
+    hd.setAttribute('style', 'font-size: 28px; margin: 0 0 12px; text-transform: uppercase;');
+    var p = document.createElement('p');
+    p.textContent = 'Vi klarte ikke å vise denne siden akkurat nå. Last siden på nytt — kommer feilen tilbake, prøv igjen om litt.';
+    p.setAttribute('style', 'margin: 0 0 20px; line-height: 1.5; font-size: 15px;');
+    var btn = document.createElement('button');
+    btn.textContent = 'Last på nytt';
+    btn.setAttribute('style', 'cursor: pointer; font: inherit; font-size: 14px; padding: 8px 16px; border: 1px solid #416180; background: #5980a6; color: #f2f2f3;');
+    btn.addEventListener('click', function () { try { location.reload(); } catch (e) { /* noop */ } });
+    wrap.appendChild(hd); wrap.appendChild(p); wrap.appendChild(btn);
+    return wrap;
+  }
+
+  function renderInner() {
     var frag = document.createDocumentFragment();
     frag.appendChild(renderNav());
     var container = h('div', { style: 'max-width: 1160px; margin: 0 auto; padding: 0 24px 96px;' });
@@ -1276,8 +1302,24 @@
     else container.appendChild(renderHome());
     frag.appendChild(container);
     frag.appendChild(renderFooter());
-    root.appendChild(frag);
-    restoreFocus(focus);
+    return frag;
+  }
+
+  // Any exception while building a screen used to blank the whole app (render
+  // clears #app first, then threw), leaving a white page. Guard it: on failure
+  // show a recoverable crash screen instead of nothing.
+  function render() {
+    var focus = captureFocus();
+    try {
+      root.textContent = '';
+      if (state.phase === 'loading') { root.appendChild(loadingScreen()); return; }
+      if (state.phase === 'error') { root.appendChild(errorScreen()); return; }
+      root.appendChild(renderInner());
+      restoreFocus(focus);
+    } catch (e) {
+      if (typeof console !== 'undefined' && console.error) console.error('render failed:', e);
+      try { root.textContent = ''; root.appendChild(renderCrash()); } catch (e2) { /* leave the DOM as-is */ }
+    }
   }
 
   // ── Boot ─────────────────────────────────────────────────────────────────
