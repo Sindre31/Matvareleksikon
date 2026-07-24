@@ -614,7 +614,7 @@
     else if (state.sort === 'navn') filtered.sort(byName);
     else if (q) filtered.sort(function (a, b) { return (searchRank(b, q) - searchRank(a, q)) || byName(a, b); }); // relevance while searching
     else filtered.sort(function (a, b) { return (b.onOffer - a.onOffer) || byName(a, b); });
-    var CAP = 150;
+    var CAP = 50;
     var shown = filtered.slice(0, CAP);
 
     var hero = h('div', { style: 'padding: 64px 0 40px;' }, [
@@ -1333,7 +1333,16 @@
       (function page(offset) {
         sb('/ml_offers?select=' + OFFER_COLS + '&order=external_id&limit=1000&offset=' + offset)
           .then(function (r) { if (!r.ok) throw new Error('offers ' + r.status); return r.json(); })
-          .then(function (rows) { all = all.concat(rows || []); if (!rows || rows.length < 1000 || offset >= 40000) resolve(all); else page(offset + 1000); })
+          .then(function (rows) {
+            rows = rows || [];
+            all = all.concat(rows);
+          
+            if (rows.length < 1000) {
+              resolve(all);
+            } else {
+              page(offset + 1000);
+            }
+          })
           .catch(reject);
       })(0);
     });
@@ -1351,9 +1360,9 @@
   //     background (stale-while-revalidate).
   //   • No Cache API (insecure context) → always revalidate, as before.
   var CATALOG_TTL = 12 * 60 * 60 * 1000; // 12 h
-  var CAT_CACHE = 'prisboka-catalog-v1';
-  var CAT_OFFERS_URL = '/__prisboka-offers-cache'; // synthetic same-origin Cache key (never fetched)
-  var CAT_META_KEY = 'prisboka_catalog_meta_v2';
+  var CAT_CACHE = 'prisboka-catalog-v2';
+  var CAT_OFFERS_URL = '/__prisboka-offers-cache-v2'; // synthetic same-origin Cache key (never fetched)
+  var CAT_META_KEY = 'prisboka_catalog_meta_v3';
   var hasCaches = (typeof caches !== 'undefined' && caches && typeof caches.open === 'function');
 
   // Retire the old localStorage cache keys (superseded by the Cache API blob).
