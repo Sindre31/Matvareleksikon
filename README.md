@@ -1,7 +1,7 @@
 # Prisboka — Matvareleksikon med pristrender
 
 A community-sourced grocery-price encyclopedia for the Norwegian chains
-Rema 1000, Kiwi, Extra and Meny. Search a product, see what it costs per
+Rema 1000, Kiwi and Meny. Search a product, see what it costs per
 store, where the price is heading, and contribute new prices by "scanning"
 a receipt.
 
@@ -65,7 +65,7 @@ python3 -m http.server 8000
   it shows a preview + import banner, so a list travels between phone and PC
   without an account (it never silently overwrites the visitor's own list).
 - **Produktgruppe** `#/gruppe/:key` — a generic product and **where it's sold**:
-  the store variants ("REMA 1000 Tacosaus Medium", "Coop Extra Tacosaus" …) with
+  the store variants ("REMA 1000 Tacosaus Medium", "Meny Tacosaus Medium" …) with
   prices, before-prices and validity, **ranked by price per litre/kilo** (a
   store showing its cheapest-per-unit size; "N størrelser" hints there are more,
   listed on the product page). Each row shows the **price per litre/kilo/piece**,
@@ -82,7 +82,7 @@ python3 -m http.server 8000
   the store carries it in several sizes, a **"Størrelser"** list (every size,
   sorted by price per litre/kilo, cheapest-per-unit highlighted); a **price
   history** chart with each chain in its **brand colour** (Rema blue, Kiwi green,
-  Extra red, Meny bordeaux, Oda purple — from `ml_stores`); and a
+  Meny bordeaux, Oda purple, Extra red — from `ml_stores`); and a
   **"Registreringer"** list of every recorded price point (store, price, date),
   each tagged with its **source** — **"Offisiell"** (chain/feed price) vs.
   **"Skannet"** (community-contributed from a receipt, and so more likely to
@@ -154,6 +154,41 @@ descriptive `aria-label`s; the store filter is an `aria-pressed` button group.
 Every screen has a real empty/error state: a distinct message for no-search-hits
 vs. an empty store filter vs. an empty catalogue, a "fant ikke varen" view for a
 dead product deep link, and a boot-failure screen with a retry button.
+
+**Store coverage threshold — which chains the leksikon shows.** A chain only
+belongs in a price comparison once it carries enough of the catalogue to be
+compared: a store on a fraction of the products is worse than no store, because
+its filter chip empties the grid and "hva koster lista i hver butikk" quotes a
+total based on a couple of items. `coveredStores()` counts each store's usable
+prices (expired offers and junk rows excluded) and `applyCatalog` hides every
+chain under **`MIN_STORE_PRICES` (1500)** — from the grid, the filter chips, the
+group/variant pages, the list totals, the history chart and Registreringer:
+
+| Store | Valid prices | Shown |
+| --- | ---: | --- |
+| Meny | 40 551 | yes |
+| Kiwi | 5 785 | yes |
+| Rema 1000 | 1 869 | yes |
+| Oda | 1 237 | no — below the bar |
+| Coop Extra | 120 | no — and no route past it |
+
+For **Coop Extra** the cause is the source, not the ingest: **Coop publishes no
+shelf prices anywhere.** There is no Coop dagligvare-nettbutikk, coop.no and
+api.coop.no serve CMS content only (the kundeavis is published as images), and
+Kassalapp — which supplies the thousands of Rema/Kiwi/Meny shelf prices —
+carries Coop only as *store locations*, not products, because it reads the
+chains' web shops. Extra's one machine-readable source is the weekly kundeavis
+on Tjek/eTilbudsavis, and that is already fully harvested: Tjek holds **120
+unique Extra offers** this week and we ingest all 120. Coop's other chains are
+*not* a substitute: comparing this week's flyers, Coop Prix/Mega/Marked/Obs
+share only 2–19 lines with Extra's, mostly at different prices, so
+`ml-ingest-kassalapp` maps **only** Coop Extra to `extra`.
+
+Nothing is hardcoded to a chain and the ingest keeps collecting for the hidden
+stores, so one reappears by itself the week it clears the bar — including via
+receipt scans: the scan picker deliberately lists **every** chain, so a receipt
+from a hidden store is filed under that store and counts towards its coverage
+instead of being mis-attributed to a visible one.
 
 **Cross-store grouping.** Products are grouped by a key computed **client-side**
 from the name (fold Norwegian letters, strip sizes/units/%/house-brands and

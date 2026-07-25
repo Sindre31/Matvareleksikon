@@ -26,9 +26,15 @@ const TIME_BUDGET_MS = 115000;
 // products on them). Because the sweep self-chains sequentially (below), only
 // one invocation is ever calling the API at a time, so this budget is global.
 const BULK_SLEEP_MS = 1100;
-// Safety stop for the self-chaining bulk sweep, in case the catalogue's
-// last_page metadata is ever missing (prevents an unbounded chain).
+// Safety stop for the self-chaining bulk sweep. The catalogue does not report
+// `last_page` at all (measured: it is absent on every page), so end-of-
+// catalogue is detected from a short page and this is the only hard backstop.
+// The catalogue currently runs to ~2450 pages (~245 000 products), so 5000
+// leaves plenty of head-room.
 const MAX_BULK_PAGE = 5000;
+// A page that fails is not the end of the catalogue. Skip past a few bad pages
+// instead, and only give up the range when Kassalapp is clearly down.
+const MAX_CONSECUTIVE_PAGE_FAILURES = 3;
 
 const DEFAULT_TERMS = [
   "melk", "lettmelk", "revet ost", "brunost", "smør", "margarin", "egg", "yoghurt",
@@ -44,7 +50,11 @@ function storeSlug(name: string | undefined): string | null {
   const s = (name || "").toLowerCase();
   if (s.includes("rema")) return "rema";
   if (s.includes("kiwi")) return "kiwi";
-  if (s.includes("coop extra") || s.includes("coop mega") || s.includes("coop prix") || s.includes("coop obs") || s === "obs" || s === "extra" || s.includes(" extra")) return "extra";
+  // Coop Extra only. Coop's other chains (Mega, Prix, Marked, Obs) run their
+  // own campaigns at their own prices — comparing this week's flyers, they
+  // share only a handful of lines with Extra and rarely at the same price — so
+  // folding them into `extra` would report a price Extra never charged.
+  if (s.includes("coop extra") || s === "extra" || s.includes(" extra")) return "extra";
   if (s.includes("meny")) return "meny";
   return null;
 }
@@ -148,13 +158,29 @@ Deno.serve(async (req: Request) => {
   const add = (p: any) => { const r = rowFrom(p); if (!r) return; const prev = byKey.get(r.external_id); if (prev && Number(prev.price) <= r.price) return; byKey.set(r.external_id, r); };
 
   let lastPage = startPage - 1, hitEnd = false, catalogLastPage: number | null = null;
+  let skippedPages = 0, consecutiveFailures = 0;
   if (bulk) {
     for (let page = startPage; page < startPage + pages; page++) {
       if (Date.now() - start > TIME_BUDGET_MS) break;
       const { data, lastPage: metaLast } = await getPage(`${API}/products?size=${PAGE_SIZE}&page=${page}`, token);
       lastPage = page;
       if (metaLast != null) catalogLastPage = metaLast;
-      if (data == null) { hitEnd = true; break; }
+      // A failed page is NOT the end of the catalogue. It used to be treated as
+      // one, which silently truncated the sweep *and* stopped the self-chain:
+      // a single 500 on page 200 of ~2450 left three quarters of the shelf
+      // prices unread, and the run still reported success. Skip past the bad
+      // page and keep going; only give up the range when Kassalapp is clearly
+      // down, and even then chain onward so the rest is still swept.
+      if (data == null) {
+        skippedPages++;
+        if (++consecutiveFailures >= MAX_CONSECUTIVE_PAGE_FAILURES) {
+          console.error(`kassalapp: giving up range at page ${page} after ${consecutiveFailures} failures`);
+          break;
+        }
+        await sleep(BULK_SLEEP_MS * consecutiveFailures);
+        continue;
+      }
+      consecutiveFailures = 0;
       data.forEach(add);
       // End of catalogue: a short page, or we've reached the reported last_page.
       if (data.length < PAGE_SIZE || (catalogLastPage != null && page >= catalogLastPage)) { hitEnd = true; break; }
@@ -206,7 +232,7 @@ Deno.serve(async (req: Request) => {
     chained = true;
   }
 
-  return json({ mode: bulk ? "bulk" : "search", productsFound: rows.length, inserted, historyInserted, backfillInserted, lastPage, catalogLastPage, hitEnd, chained, nextPage: bulk && !hitEnd ? nextPage : null, elapsedMs: Date.now() - start });
+  return json({ mode: bulk ? "bulk" : "search", productsFound: rows.length, inserted, historyInserted, backfillInserted, lastPage, catalogLastPage, hitEnd, skippedPages, chained, nextPage: bulk && !hitEnd ? nextPage : null, elapsedMs: Date.now() - start });
 });
 
 function json(body: unknown, status = 200) {

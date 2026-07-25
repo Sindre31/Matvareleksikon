@@ -196,6 +196,65 @@ test('buildGroups — expired offers are dropped while any live offer remains', 
   assert.equal(melk.minPrice, 17);
 });
 
+// ── coveredStores — which chains carry enough prices to be compared ─────────
+// The leksikon is the chains with real shelf-price coverage. Oda (1 237) and
+// Coop Extra (120) fall under MIN_STORE_PRICES; Extra has no way past it, as
+// Coop publishes no shelf prices anywhere.
+
+test('coveredStores — counts usable prices per store, skipping expired and junk rows', () => {
+  const rows = [
+    offer('kiwi', 'Lettmelk 1 l', 18.9),
+    offer('kiwi', 'Helmelk 1 l', 19.9, { valid_until: '2999-01-01' }),
+    offer('kiwi', 'Kaffe', 59, { valid_until: '2020-01-01' }),   // expired → not counted
+    offer('kiwi', 'Ødelagt rad', 0),                             // no real price → not counted
+    offer('rema', 'Lettmelk 1 l', 17.9)
+  ];
+  assert.deepEqual(lib.coveredStores(rows, 1), { kiwi: 2, rema: 1 });
+});
+
+test('coveredStores — a store below the threshold is left out', () => {
+  const rows = [
+    offer('kiwi', 'Lettmelk 1 l', 18.9),
+    offer('kiwi', 'Helmelk 1 l', 19.9),
+    offer('extra', 'Lettmelk 1 l', 16.9)   // a lone kundeavis-offer
+  ];
+  const covered = lib.coveredStores(rows, 2);
+  assert.deepEqual(Object.keys(covered), ['kiwi']);
+  assert.equal(covered.extra, undefined, 'a chain with one price is not comparable');
+});
+
+test('coveredStores — no offers, or nothing above the bar, yields an empty map (caller fails open)', () => {
+  assert.deepEqual(lib.coveredStores([], 1500), {});
+  assert.deepEqual(lib.coveredStores(null, 1), {});
+  assert.deepEqual(lib.coveredStores([offer('kiwi', 'Lettmelk 1 l', 18.9)], 1500), {});
+});
+
+test('coveredStores — the live catalogue: the three chains with shelf prices clear the bar', () => {
+  // Row counts as of the change (ml_offers, valid rows per store).
+  const live = { meny: 40551, kiwi: 5785, rema: 1869, oda: 1237, extra: 120 };
+  const rows = [];
+  Object.keys(live).forEach((store) => {
+    for (let i = 0; i < live[store]; i++) rows.push(offer(store, 'Vare ' + i + ' 1 l', 10));
+  });
+  assert.deepEqual(Object.keys(lib.coveredStores(rows)).sort(), ['kiwi', 'meny', 'rema']);
+});
+
+test('buildStores — `covered` narrows the leksikon while ALL_STORES keeps every chain', () => {
+  const withExtra = STORES.concat([{ id: 'extra', name: 'Extra', color: '#e00', dash: '' }]);
+  lib.buildStores(withExtra, { kiwi: 900, rema: 700 });
+  // The hidden chain's rows must not reach the leksikon either.
+  const groups = lib.buildGroups([
+    offer('kiwi', 'Lettmelk 1 l', 18.9),
+    offer('rema', 'Lettmelk 1 l', 17.9)
+  ]);
+  const melk = byKey(groups, 'lettmelk');
+  assert.equal(melk.storeCount, 2);
+  assert.ok(melk.variants.every((v) => v.storeName !== 'Extra'));
+  // Without `covered` every chain is shown (the fail-open path, and the state
+  // the other tests here rely on).
+  lib.buildStores(withExtra);
+});
+
 // ── searchRank — relevance ordering of the leksikon search ──────────────────
 // searchRank only reads g.name (and g.onOffer), so plain objects suffice.
 const g = (name, onOffer) => ({ name, onOffer: !!onOffer });
