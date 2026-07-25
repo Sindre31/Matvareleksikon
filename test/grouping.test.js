@@ -197,8 +197,9 @@ test('buildGroups — expired offers are dropped while any live offer remains', 
 });
 
 // ── coveredStores — which chains carry enough prices to be compared ─────────
-// Extra only ever had the ~120 offers in Coop's weekly kundeavis (Coop
-// publishes no shelf prices), which is why a chain has to earn its place.
+// The leksikon is the chains with real shelf-price coverage. Oda (1 237) and
+// Coop Extra (120) fall under MIN_STORE_PRICES; Extra has no way past it, as
+// Coop publishes no shelf prices anywhere.
 
 test('coveredStores — counts usable prices per store, skipping expired and junk rows', () => {
   const rows = [
@@ -223,9 +224,19 @@ test('coveredStores — a store below the threshold is left out', () => {
 });
 
 test('coveredStores — no offers, or nothing above the bar, yields an empty map (caller fails open)', () => {
-  assert.deepEqual(lib.coveredStores([], 500), {});
+  assert.deepEqual(lib.coveredStores([], 1500), {});
   assert.deepEqual(lib.coveredStores(null, 1), {});
-  assert.deepEqual(lib.coveredStores([offer('kiwi', 'Lettmelk 1 l', 18.9)], 500), {});
+  assert.deepEqual(lib.coveredStores([offer('kiwi', 'Lettmelk 1 l', 18.9)], 1500), {});
+});
+
+test('coveredStores — the live catalogue: the three chains with shelf prices clear the bar', () => {
+  // Row counts as of the change (ml_offers, valid rows per store).
+  const live = { meny: 40551, kiwi: 5785, rema: 1869, oda: 1237, extra: 120 };
+  const rows = [];
+  Object.keys(live).forEach((store) => {
+    for (let i = 0; i < live[store]; i++) rows.push(offer(store, 'Vare ' + i + ' 1 l', 10));
+  });
+  assert.deepEqual(Object.keys(lib.coveredStores(rows)).sort(), ['kiwi', 'meny', 'rema']);
 });
 
 test('buildStores — `covered` narrows the leksikon while ALL_STORES keeps every chain', () => {

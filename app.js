@@ -30,16 +30,22 @@
   var VALID_COUNT = 0;
 
   // A chain only belongs in a price comparison when it carries enough of the
-  // catalogue to actually be compared. Coop publishes no shelf prices anywhere
-  // — no dagligvare-nettbutikk, and Kassalapp carries Coop only as store
-  // locations, not products — so Extra never got past the ~120 offers in the
-  // weekly kundeavis, against ~45 000 rows from the other chains. A store on
-  // 0,3 % of the products is worse than no store: its filter chip empties the
-  // grid, and "hva koster lista i hver butikk" reports a total off two items.
-  // So hide a chain until it has real coverage. Nothing is hardcoded to a
-  // chain and the ingest keeps collecting: the week a source starts
-  // delivering, the store reappears on its own.
-  var MIN_STORE_PRICES = 500;
+  // catalogue to actually be compared. A store on a fraction of the products
+  // is worse than no store: its filter chip empties the grid, and "hva koster
+  // lista i hver butikk" quotes a total based on a couple of items.
+  //
+  // At 1500 the leksikon is the three chains with real shelf-price coverage —
+  // Meny (40 551), Kiwi (5 785) and Rema 1000 (1 869). Below the bar: Oda
+  // (1 237, its own search API) and Coop Extra (120). Extra has no route past
+  // it today — Coop publishes no shelf prices anywhere (no dagligvare-
+  // nettbutikk; coop.no serves CMS content and the kundeavis as images; and
+  // Kassalapp, the source of the Rema/Kiwi/Meny shelf prices, carries Coop
+  // only as store locations), so its one machine-readable source is the weekly
+  // kundeavis on Tjek — ~120 offers, all of which we already ingest.
+  //
+  // Nothing is hardcoded to a chain and the ingest keeps collecting, so a
+  // store reappears on its own the week it clears the bar.
+  var MIN_STORE_PRICES = 1500;
 
   function cleanName(raw) {
     var s = (raw || '').replace(/\b\d+([.,]\d+)?\s*(kg|hg|g|ml|cl|dl|l|stk|pk|pakk|pack)\b/gi, ' ')
@@ -1249,7 +1255,7 @@
         bullet('Oda', ['— nettbutikkens priser (', extLink('https://oda.com', 'oda.com'), ').']),
         bullet('Fellesskapet', '— priser skannet fra kvitteringer, merket «Skannet» i prishistorikken.')
       ]),
-      h('p', { style: 'margin: 14px 0 0; font-size: 14px; line-height: 22px; color: ' + MUTED60 + '; max-width: 68ch;', text: 'Coop-kjedene (Extra, Prix, Mega, Obs) mangler fordi Coop ikke publiserer hyllepriser noe sted — de finnes bare i ukens kundeavis. Skanner du en Coop-kvittering, blir prisene lagret, og kjeden dukker opp i leksikonet når den har nok priser til å kunne sammenlignes.' }),
+      h('p', { style: 'margin: 14px 0 0; font-size: 14px; line-height: 22px; color: ' + MUTED60 + '; max-width: 68ch;', text: 'En butikk vises først når den har nok priser til at en sammenligning betyr noe. Oda samles fortsatt inn, men ligger foreløpig under grensen. Coop-kjedene (Extra, Prix, Mega, Obs) mangler helt fordi Coop ikke publiserer hyllepriser noe sted — de finnes bare i ukens kundeavis. Skanner du en kvittering derfra, blir prisene lagret og teller mot grensen, så kjeden dukker opp av seg selv når den er stor nok.' }),
       h('p', { style: 'margin: 14px 0 0; font-size: 14px; line-height: 22px; color: ' + MUTED60 + '; max-width: 68ch;', text: 'Prisene kan være unøyaktige eller utdaterte, og kan variere mellom butikker i samme kjede. Sjekk alltid prisen i butikken før du handler.' })
     ]);
 
