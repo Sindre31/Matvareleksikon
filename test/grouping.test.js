@@ -255,6 +255,27 @@ test('buildStores — `covered` narrows the leksikon while ALL_STORES keeps ever
   lib.buildStores(withExtra);
 });
 
+// ── staleDaysFor — the "kan være utdatert" signal in the top bar ────────────
+// The ingest runs weekly; a newest price point older than 10 days means a run
+// was missed, and the site must say so rather than serve old prices silently.
+
+test('staleDaysFor — silent inside the weekly cadence, reports the age past it', () => {
+  const now = Date.parse('2026-07-25T09:00:00Z');
+  assert.equal(lib.staleDaysFor('2026-07-23', now), 0, '2 days old — a normal week');
+  assert.equal(lib.staleDaysFor('2026-07-16', now), 0, '9 days — still inside the grace period');
+  assert.equal(lib.staleDaysFor('2026-07-15', now), 10, '10 days — a missed run, flag it');
+  assert.equal(lib.staleDaysFor('2026-06-01', now), 54);
+});
+
+test('staleDaysFor — a missing or malformed stamp never flags (and never throws)', () => {
+  const now = Date.parse('2026-07-25T09:00:00Z');
+  assert.equal(lib.staleDaysFor('', now), 0);
+  assert.equal(lib.staleDaysFor(null, now), 0);
+  assert.equal(lib.staleDaysFor(undefined, now), 0);
+  assert.equal(lib.staleDaysFor('ikke en dato', now), 0);
+  assert.equal(lib.staleDaysFor('2026-07-26', now), 0, 'a future stamp is not stale');
+});
+
 // ── searchRank — relevance ordering of the leksikon search ──────────────────
 // searchRank only reads g.name (and g.onOffer), so plain objects suffice.
 const g = (name, onOffer) => ({ name, onOffer: !!onOffer });

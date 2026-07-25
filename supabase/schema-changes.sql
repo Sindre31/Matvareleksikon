@@ -76,3 +76,22 @@ update ml_price_history h set source = 'scan'
 --     over-blocks): 200 rows/hour ('reg:'||ip). IP from request.headers
 --     (cf-connecting-ip / x-real-ip / first x-forwarded-for). Verified the IP is
 --     captured on the anon PostgREST path.
+
+-- Production hardening ahead of going public (Supabase database linter):
+--   * 0011 function_search_path_mutable — pin search_path on the remaining
+--     ml_ functions, so a role-local search_path can't redirect an unqualified
+--     reference inside them.
+--   * 0028/0029 anon|authenticated_security_definer_function_executable — the
+--     trigger functions were also reachable as REST RPC endpoints for the
+--     public anon key. Firing a trigger does not check EXECUTE, so revoking it
+--     closes /rest/v1/rpc/... (verified: now 404) while an anon insert into
+--     ml_registrations still propagates into ml_offers + ml_price_history.
+-- ml_scan_rate keeps RLS on with no policies on purpose: it is the rate
+-- limiter's own table, reachable only through the SECURITY DEFINER functions,
+-- so deny-all to anon/authenticated is the intended state (linter 0008, INFO).
+alter function public.ml_group_key(text)     set search_path = public, pg_temp;
+alter function public.ml_is_nonproduct(text) set search_path = public, pg_temp;
+alter function public.ml_reg_filter()        set search_path = public, pg_temp;
+revoke execute on function public.ml_reg_filter()    from anon, authenticated, public;
+revoke execute on function public.ml_reg_propagate() from anon, authenticated, public;
+revoke execute on function public.ml_reg_ratelimit() from anon, authenticated, public;

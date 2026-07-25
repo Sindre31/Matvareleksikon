@@ -361,3 +361,55 @@ Oda 04:30 UTC every Monday = ~06:00–06:30 Oslo). See `supabase/cron.sql`.
 The Vercel project's build fetches the committed files from the public
 GitHub repo into its output directory, so the deployment is self-contained.
 Connect the repo to Vercel (Settings → Git) for automatic deploys on push.
+
+**Response headers** are set in `vercel.json` for every path:
+
+| Header | Value / why |
+| --- | --- |
+| `Content-Security-Policy` | `script-src 'self'` (no inline script — the service worker is registered from `app.js`, not from a `<script>` block in the HTML), `connect-src` limited to this project's Supabase host, `img-src https:` because product photos are hotlinked from the chains' CDNs, `style-src 'unsafe-inline'` because the UI is built with style attributes, `frame-ancestors 'none'`, `base-uri 'none'`, `object-src 'none'` |
+| `X-Content-Type-Options` | `nosniff` |
+| `X-Frame-Options` | `DENY` (older browsers; `frame-ancestors` covers the rest) |
+| `Referrer-Policy` | `strict-origin-when-cross-origin` — third-party image CDNs see the origin, not the path |
+| `Permissions-Policy` | everything off except `camera=(self)`, which the receipt-scan `<input capture>` needs |
+| `Cross-Origin-Opener-Policy` | `same-origin` |
+
+The CSP was verified in a headless Chromium against the real app (front page,
+liste, skann, om, and a group page) with the header applied as Vercel serves
+it: zero violations, service worker registered, JSON-LD intact, fonts and
+stylesheet applied. Note that a strict `script-src` also blocks Vercel's
+preview-comment toolbar on preview deployments; production is unaffected.
+
+**Stale-data signal.** The ingest runs weekly, so a newest price point older
+than `STALE_AFTER_DAYS` (10) means a run was missed — an expired token, a
+source that changed shape, a stopped cron. The top bar then reads "… · kan
+være utdatert" in the accent colour, with the age in the tooltip. Serving last
+month's prices as if they were today's is the one failure a price comparison
+must not hide.
+
+**Database hardening.** `supabase/schema-changes.sql` records the linter fixes
+applied before going public: `search_path` pinned on every `ml_` function, and
+`EXECUTE` revoked from `anon`/`authenticated` on the three trigger functions
+that were also reachable as REST RPC endpoints (verified: `/rest/v1/rpc/…` now
+404s, while an anonymous insert into `ml_registrations` still propagates into
+`ml_offers` and `ml_price_history`). `ml_scan_rate` deliberately keeps RLS on
+with no policies — it is the rate limiter's own table, reached only through
+`SECURITY DEFINER` functions.
+
+**Operating caveats.**
+
+- **Kassalapp's free tier is non-commercial** ("Ingen kommersiell bruk"; the
+  commercial tier is kr 750/month). Prisboka is a free hobby project with no
+  ads, which is what that tier allows — adding advertising or any paid feature
+  would require the commercial plan. Their rate limit is 60 calls/minute, which
+  the sweep respects (1,1 s/page).
+- **Product images are hotlinked** from the chains' CDNs. Kassalapp states it
+  does not own the rights to them ("Bilder kan være beskyttet av opphavsrett"),
+  so treat a takedown request as expected maintenance rather than a surprise.
+- **Egress.** A cold visit downloads the whole catalogue (~6 MB uncompressed,
+  far less over the wire), which is why the 12 h snapshot cache exists. Watch
+  Supabase egress if traffic grows; the lever is the TTL and the column list in
+  `OFFER_COLS`.
+- **The cron jobs are scheduled and active** (`select jobname, schedule, active
+  from cron.job`), and the `pg_net` → Edge Function path is proven by the 200s
+  in `net._http_response`. `cron.job_run_details` is empty only because the
+  jobs were scheduled after the most recent Monday.

@@ -79,14 +79,9 @@
 </head>
 <body>
   <div id="app"></div>
+  <!-- app.js also registers the offline service worker. Keeping that inline
+       would force 'unsafe-inline' (or a hash to re-generate on every edit)
+       into the Content-Security-Policy in vercel.json. -->
   <script src="app.js"></script>
-  <script>
-    // Register the offline service worker (progressive enhancement).
-    if ('serviceWorker' in navigator) {
-      window.addEventListener('load', function () {
-        navigator.serviceWorker.register('/sw.js').catch(function () { /* offline support is optional */ });
-      });
-    }
-  </script>
 </body>
 </html>

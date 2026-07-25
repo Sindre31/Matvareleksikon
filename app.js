@@ -617,6 +617,21 @@
     }, text: done ? '✓ Lenke kopiert' : 'Kopier lenke' });
   }
 
+  // The ingest runs weekly, so a newest price point older than STALE_AFTER_DAYS
+  // means a run was missed — a broken token, a source that changed shape, a
+  // cron that stopped. Without a visible signal the site just keeps serving
+  // last month's prices as if they were today's, which is the one failure a
+  // price comparison must not hide. Returns the age in whole days, else 0.
+  var STALE_AFTER_DAYS = 10;
+  function staleDaysFor(lastUpdated, nowMs) {
+    if (!lastUpdated) return 0;
+    var t = Date.parse(String(lastUpdated).slice(0, 10) + 'T00:00:00Z');
+    if (!isFinite(t)) return 0;
+    var days = Math.floor((nowMs - t) / 864e5);
+    return days >= STALE_AFTER_DAYS ? days : 0;
+  }
+  function staleDays() { return staleDaysFor(state.lastUpdated, Date.now()); }
+
   function renderNav() {
     return h('nav', { cls: 'nav', 'data-screen-label': 'Topplinje', style: 'padding-inline: max(24px, calc((100% - 1160px) / 2 + 24px));' }, [
       h('span', Object.assign({ cls: 'nav-brand', style: 'cursor: pointer;', text: 'Prisboka' }, activate(nav('home'), 'Prisboka — til forsiden'))),
@@ -625,7 +640,14 @@
       h('a', { href: '#/skann', onClick: nav('scan'), text: 'Bidra med priser' }),
       h('a', { href: '#/om', onClick: nav('om'), text: 'Om' }),
       h('span', { style: 'flex: 1;' }),
-      h('span', { style: 'font-size: 13px; letter-spacing: 0.06em; text-transform: uppercase; color: ' + MUTED70 + "; font-feature-settings: 'tnum' 1;", text: VALID_COUNT + ' ekte priser · ' + (state.lastUpdated ? 'sist oppdatert ' + dateDM(state.lastUpdated) : 'oppdatert ukentlig') }),
+      h('span', {
+        style: 'font-size: 13px; letter-spacing: 0.06em; text-transform: uppercase; '
+          + "font-feature-settings: 'tnum' 1; color: " + (staleDays() ? 'var(--color-accent-700)' : MUTED70) + ';',
+        title: staleDays() ? 'Prisene oppdateres ukentlig, men siste registrering er ' + staleDays() + ' dager gammel.' : false,
+        text: VALID_COUNT + ' ekte priser · '
+          + (state.lastUpdated ? 'sist oppdatert ' + dateDM(state.lastUpdated) : 'oppdatert ukentlig')
+          + (staleDays() ? ' · kan være utdatert' : '')
+      }),
       h('button', { type: 'button', cls: 'btn btn-primary', onClick: nav('scan'), text: 'Skann kvittering' })
     ]);
   }
@@ -1520,6 +1542,15 @@
       }
     });
 
+    // Offline service worker (progressive enhancement). Registered here rather
+    // than inline in index.html so the Content-Security-Policy can keep
+    // script-src at 'self' — no 'unsafe-inline', no per-edit hash to maintain.
+    if ('serviceWorker' in navigator) {
+      window.addEventListener('load', function () {
+        navigator.serviceWorker.register('/sw.js').catch(function () { /* offline support is optional */ });
+      });
+    }
+
     render();
     boot();
   }
@@ -1532,7 +1563,7 @@
       parseAmount: parseAmount, normUnit: normUnit, foldName: foldName,
       minceKey: minceKey, ckey: ckey, canonLabel: canonLabel,
       buildStores: buildStores, buildGroups: buildGroups, searchRank: searchRank,
-      coveredStores: coveredStores
+      coveredStores: coveredStores, staleDaysFor: staleDaysFor
     };
   }
 })();
