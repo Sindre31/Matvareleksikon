@@ -22,11 +22,24 @@
   }
 
   // ── Data (populated at boot) ─────────────────────────────────────────────
-  var STORES = [];                 // [{id,name,color,dash,places[]}]
+  var STORES = [];                 // [{id,name,color,dash,places[]}] — shown in the leksikon
+  var ALL_STORES = [];             // every chain in ml_stores, incl. the ones below MIN_STORE_PRICES
   var STORE_NAME = {}, STORE_STYLE = {};
   var OFFERS = [];
   var GROUPS = [], GROUP_BY_KEY = {};
   var VALID_COUNT = 0;
+
+  // A chain only belongs in a price comparison when it carries enough of the
+  // catalogue to actually be compared. Coop publishes no shelf prices anywhere
+  // — no dagligvare-nettbutikk, and Kassalapp carries Coop only as store
+  // locations, not products — so Extra never got past the ~120 offers in the
+  // weekly kundeavis, against ~45 000 rows from the other chains. A store on
+  // 0,3 % of the products is worse than no store: its filter chip empties the
+  // grid, and "hva koster lista i hver butikk" reports a total off two items.
+  // So hide a chain until it has real coverage. Nothing is hardcoded to a
+  // chain and the ingest keeps collecting: the week a source starts
+  // delivering, the store reappears on its own.
+  var MIN_STORE_PRICES = 500;
 
   function cleanName(raw) {
     var s = (raw || '').replace(/\b\d+([.,]\d+)?\s*(kg|hg|g|ml|cl|dl|l|stk|pk|pakk|pack)\b/gi, ' ')
@@ -158,10 +171,34 @@
     };
   }
 
-  function buildStores(rows) {
-    STORES = (Array.isArray(rows) ? rows : [])
+  // How many usable prices each store contributes right now (expired offers and
+  // junk rows don't count — they aren't in the leksikon either), and which
+  // stores clear MIN_STORE_PRICES. Returns a { storeId: count } map of the
+  // stores worth showing.
+  function coveredStores(offers, min) {
+    var today = new Date().toISOString().slice(0, 10);
+    var limit = min == null ? MIN_STORE_PRICES : min;
+    var n = {};
+    (Array.isArray(offers) ? offers : []).forEach(function (o) {
+      if (!o || o.store_id == null) return;
+      if (o.valid_until && o.valid_until < today) return;
+      var p = Number(o.price);
+      if (!isFinite(p) || p <= 0) return;
+      n[o.store_id] = (n[o.store_id] || 0) + 1;
+    });
+    var out = {};
+    Object.keys(n).forEach(function (k) { if (n[k] >= limit) out[k] = n[k]; });
+    return out;
+  }
+
+  // `covered` (optional) narrows the leksikon to the stores with real coverage.
+  // ALL_STORES keeps every chain regardless, so the scan flow can still file a
+  // receipt under a hidden chain rather than mis-attributing it to a shown one.
+  function buildStores(rows, covered) {
+    ALL_STORES = (Array.isArray(rows) ? rows : [])
       .filter(function (s) { return s && s.id != null; })
       .map(function (s) { return { id: s.id, name: s.name || String(s.id), color: s.color, dash: s.dash || '', places: s.places || [] }; });
+    STORES = covered ? ALL_STORES.filter(function (s) { return covered[s.id]; }) : ALL_STORES.slice();
     STORE_NAME = {}; STORE_STYLE = {};
     STORES.forEach(function (s) { STORE_NAME[s.id] = s.name; STORE_STYLE[s.id] = { color: s.color, dash: s.dash }; });
   }
@@ -377,7 +414,11 @@
   }
   function submitScan() {
     if (state.scanSubmitting || !state.scanItems.length) return;
-    var storeObj = STORES.filter(function (x) { return x.name === state.scanStore; })[0];
+    // ALL_STORES, not STORES: a receipt from a chain the leksikon currently
+    // hides is still recorded under that chain (and counts towards its
+    // coverage) instead of being filed under whichever store the picker
+    // happened to default to.
+    var storeObj = ALL_STORES.filter(function (x) { return x.name === state.scanStore; })[0];
     var obs = /^\d{4}-\d{2}-\d{2}$/.test(state.scanDate || '') ? state.scanDate : new Date().toISOString().slice(0, 10);
     var payload = state.scanItems.map(function (it) {
       var raw = String(it.price == null ? '' : it.price).replace(',', '.').trim();
@@ -473,6 +514,16 @@
     }
     render();
   }
+  // "Rema 1000, Kiwi, Meny og Oda" — the chains actually in the leksikon, so
+  // the copy on Om/i bunnteksten follows the coverage threshold instead of
+  // naming a chain the visitor can't find anywhere on the site.
+  function storeListText() {
+    var names = STORES.map(function (s) { return s.name; });
+    if (!names.length) return 'norske dagligvarekjeder';
+    if (names.length === 1) return names[0];
+    return names.slice(0, -1).join(', ') + ' og ' + names[names.length - 1];
+  }
+
   var HASH_FOR = { home: '#/', scan: '#/skann', liste: '#/liste', om: '#/om' };
   function go(hash) { if (location.hash === hash || (hash === '#/' && !location.hash)) route(); else location.hash = hash; }
   function nav(view) { return function (e) { if (e && e.preventDefault) e.preventDefault(); go(HASH_FOR[view] || '#/'); window.scrollTo(0, 0); }; }
@@ -490,7 +541,12 @@
     var inList = keys.map(function (k) { return '"' + String(k).replace(/"/g, '') + '"'; }).join(',');
     sb('/ml_price_history?select=store_id,price,pre_price,is_offer,observed_at,source&group_key=in.(' + encodeURIComponent(inList) + ')&order=observed_at.asc')
       .then(function (r) { return r.ok ? r.json() : []; })
-      .then(function (rows) { state.history[key] = rows || []; if (state.view === 'vare' && state.groupKey === key) render(); })
+      // Drop points from stores the leksikon doesn't show, so a hidden chain
+      // can't draw a line on the chart or a row in "Registreringer".
+      .then(function (rows) {
+        state.history[key] = (rows || []).filter(function (r) { return r && STORE_NAME[r.store_id]; });
+        if (state.view === 'vare' && state.groupKey === key) render();
+      })
       .catch(function () { state.history[key] = []; if (state.view === 'vare') render(); });
   }
 
@@ -987,7 +1043,7 @@
           'Butikk',
           h('select', { cls: 'input', 'data-focus-id': 'scan-store', style: 'min-height: 38px; min-width: 180px;', value: state.scanStore, onChange: function (e) {
             setState({ scanStore: e.target.value });
-          } }, STORES.map(function (s) { return h('option', { value: s.name, selected: s.name === state.scanStore ? 'selected' : false, text: s.name }); }))
+          } }, ALL_STORES.map(function (s) { return h('option', { value: s.name, selected: s.name === state.scanStore ? 'selected' : false, text: s.name }); }))
         ]),
         h('label', { style: 'display: flex; flex-direction: column; gap: 6px; font-size: 12px; letter-spacing: 0.08em; text-transform: uppercase; font-weight: 600;' }, [
           'Dato',
@@ -1180,7 +1236,7 @@
     ]);
 
     var what = aboutSection('Hva er dette', '01', [
-      h('p', { style: P }, ['Prisboka samler priser på matvarer fra ', h('strong', { text: 'Rema 1000, Kiwi, Extra og Meny' }), ' (og Oda) på ett sted, så du kan sammenligne før du handler. Søk opp en vare, se hva den koster i hver butikk, hvilken pakning som er billigst per kilo/liter, og hvordan prisen har beveget seg.']),
+      h('p', { style: P }, ['Prisboka samler priser på matvarer fra ', h('strong', { text: storeListText() }), ' på ett sted, så du kan sammenligne før du handler. Søk opp en vare, se hva den koster i hver butikk, hvilken pakning som er billigst per kilo/liter, og hvordan prisen har beveget seg.']),
       h('p', { style: P + ' color: ' + MUTED70 + ';', text: 'Prisboka er et uavhengig hobbyprosjekt og er ikke tilknyttet, eid av eller godkjent av noen av kjedene.' })
     ]);
 
@@ -1193,6 +1249,7 @@
         bullet('Oda', ['— nettbutikkens priser (', extLink('https://oda.com', 'oda.com'), ').']),
         bullet('Fellesskapet', '— priser skannet fra kvitteringer, merket «Skannet» i prishistorikken.')
       ]),
+      h('p', { style: 'margin: 14px 0 0; font-size: 14px; line-height: 22px; color: ' + MUTED60 + '; max-width: 68ch;', text: 'Coop-kjedene (Extra, Prix, Mega, Obs) mangler fordi Coop ikke publiserer hyllepriser noe sted — de finnes bare i ukens kundeavis. Skanner du en Coop-kvittering, blir prisene lagret, og kjeden dukker opp i leksikonet når den har nok priser til å kunne sammenlignes.' }),
       h('p', { style: 'margin: 14px 0 0; font-size: 14px; line-height: 22px; color: ' + MUTED60 + '; max-width: 68ch;', text: 'Prisene kan være unøyaktige eller utdaterte, og kan variere mellom butikker i samme kjede. Sjekk alltid prisen i butikken før du handler.' })
     ]);
 
@@ -1222,7 +1279,7 @@
           h('a', { href: '#/om', onClick: nav('om'), text: 'Kilder' }), sep(),
           h('a', { href: '#/om', onClick: nav('om'), text: 'Personvern' })
         ]),
-        h('span', { style: 'color: ' + MUTED60 + '; max-width: 62ch;', text: 'Ekte priser fra Rema 1000, Kiwi, Extra, Meny og Oda. Uavhengig prosjekt — ikke tilknyttet kjedene. Sjekk prisen i butikk.' })
+        h('span', { style: 'color: ' + MUTED60 + '; max-width: 62ch;', text: 'Ekte priser fra ' + storeListText() + '. Uavhengig prosjekt — ikke tilknyttet kjedene. Sjekk prisen i butikk.' })
       ])
     ]);
   }
@@ -1389,8 +1446,12 @@
   }
 
   function applyCatalog(stores, offers) {
-    buildStores(stores);
-    buildGroups(offers);
+    var covered = coveredStores(offers);
+    // Fail open: if nothing clears the bar (a half-written catalogue, or a
+    // future where every chain is small), show everything rather than nothing.
+    var narrow = Object.keys(covered).length > 0;
+    buildStores(stores, narrow ? covered : null);
+    buildGroups(narrow ? (offers || []).filter(function (o) { return o && covered[o.store_id]; }) : offers);
     state.phase = 'ready';
   }
   function loadFreshnessStamp() {
@@ -1472,7 +1533,8 @@
       cleanName: cleanName, pctOff: pctOff, baseAmount: baseAmount,
       parseAmount: parseAmount, normUnit: normUnit, foldName: foldName,
       minceKey: minceKey, ckey: ckey, canonLabel: canonLabel,
-      buildStores: buildStores, buildGroups: buildGroups, searchRank: searchRank
+      buildStores: buildStores, buildGroups: buildGroups, searchRank: searchRank,
+      coveredStores: coveredStores
     };
   }
 })();

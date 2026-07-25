@@ -44,7 +44,11 @@ function storeSlug(name: string | undefined): string | null {
   const s = (name || "").toLowerCase();
   if (s.includes("rema")) return "rema";
   if (s.includes("kiwi")) return "kiwi";
-  if (s.includes("coop extra") || s.includes("coop mega") || s.includes("coop prix") || s.includes("coop obs") || s === "obs" || s === "extra" || s.includes(" extra")) return "extra";
+  // Coop Extra only. Coop's other chains (Mega, Prix, Marked, Obs) run their
+  // own campaigns at their own prices — comparing this week's flyers, they
+  // share only a handful of lines with Extra and rarely at the same price — so
+  // folding them into `extra` would report a price Extra never charged.
+  if (s.includes("coop extra") || s === "extra" || s.includes(" extra")) return "extra";
   if (s.includes("meny")) return "meny";
   return null;
 }

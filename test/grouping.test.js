@@ -196,6 +196,54 @@ test('buildGroups — expired offers are dropped while any live offer remains', 
   assert.equal(melk.minPrice, 17);
 });
 
+// ── coveredStores — which chains carry enough prices to be compared ─────────
+// Extra only ever had the ~120 offers in Coop's weekly kundeavis (Coop
+// publishes no shelf prices), which is why a chain has to earn its place.
+
+test('coveredStores — counts usable prices per store, skipping expired and junk rows', () => {
+  const rows = [
+    offer('kiwi', 'Lettmelk 1 l', 18.9),
+    offer('kiwi', 'Helmelk 1 l', 19.9, { valid_until: '2999-01-01' }),
+    offer('kiwi', 'Kaffe', 59, { valid_until: '2020-01-01' }),   // expired → not counted
+    offer('kiwi', 'Ødelagt rad', 0),                             // no real price → not counted
+    offer('rema', 'Lettmelk 1 l', 17.9)
+  ];
+  assert.deepEqual(lib.coveredStores(rows, 1), { kiwi: 2, rema: 1 });
+});
+
+test('coveredStores — a store below the threshold is left out', () => {
+  const rows = [
+    offer('kiwi', 'Lettmelk 1 l', 18.9),
+    offer('kiwi', 'Helmelk 1 l', 19.9),
+    offer('extra', 'Lettmelk 1 l', 16.9)   // a lone kundeavis-offer
+  ];
+  const covered = lib.coveredStores(rows, 2);
+  assert.deepEqual(Object.keys(covered), ['kiwi']);
+  assert.equal(covered.extra, undefined, 'a chain with one price is not comparable');
+});
+
+test('coveredStores — no offers, or nothing above the bar, yields an empty map (caller fails open)', () => {
+  assert.deepEqual(lib.coveredStores([], 500), {});
+  assert.deepEqual(lib.coveredStores(null, 1), {});
+  assert.deepEqual(lib.coveredStores([offer('kiwi', 'Lettmelk 1 l', 18.9)], 500), {});
+});
+
+test('buildStores — `covered` narrows the leksikon while ALL_STORES keeps every chain', () => {
+  const withExtra = STORES.concat([{ id: 'extra', name: 'Extra', color: '#e00', dash: '' }]);
+  lib.buildStores(withExtra, { kiwi: 900, rema: 700 });
+  // The hidden chain's rows must not reach the leksikon either.
+  const groups = lib.buildGroups([
+    offer('kiwi', 'Lettmelk 1 l', 18.9),
+    offer('rema', 'Lettmelk 1 l', 17.9)
+  ]);
+  const melk = byKey(groups, 'lettmelk');
+  assert.equal(melk.storeCount, 2);
+  assert.ok(melk.variants.every((v) => v.storeName !== 'Extra'));
+  // Without `covered` every chain is shown (the fail-open path, and the state
+  // the other tests here rely on).
+  lib.buildStores(withExtra);
+});
+
 // ── searchRank — relevance ordering of the leksikon search ──────────────────
 // searchRank only reads g.name (and g.onOffer), so plain objects suffice.
 const g = (name, onOffer) => ({ name, onOffer: !!onOffer });
