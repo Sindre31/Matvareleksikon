@@ -1231,7 +1231,6 @@
     kids = kids.concat(Array.isArray(rest) ? rest : [rest]);
     return h('li', { style: 'margin: 0 0 10px; font-size: 15px; line-height: 23px;' }, kids);
   }
-  function extLink(href, txt) { return h('a', { href: href, target: '_blank', rel: 'noopener', text: txt }); }
 
   function renderAbout() {
     var P = 'margin: 0 0 12px; font-size: 15px; line-height: 23px; max-width: 68ch;';
@@ -1247,15 +1246,12 @@
     ]);
 
     var sources = aboutSection('Kilder', '02', [
-      h('p', { style: P, text: 'Prisene hentes automatisk hver uke fra offentlige kilder, og suppleres med priser fellesskapet bidrar med:' }),
+      h('p', { style: P, text: 'Prisene hentes automatisk hver uke, og suppleres med priser fellesskapet bidrar med:' }),
       h('ul', { style: UL }, [
-        bullet('Kassalapp', ['— hylle­priser på tvers av kjedene (', extLink('https://kassal.app', 'kassal.app'), ').']),
-        bullet('eTilbudsavis / Tjek', '— ukens tilbud fra kjedenes tilbudsaviser.'),
-        bullet('NorgesGruppen (ngdata)', '— Meny-sortimentet med produktbilder.'),
-        bullet('Oda', ['— nettbutikkens priser (', extLink('https://oda.com', 'oda.com'), ').']),
-        bullet('Fellesskapet', '— priser skannet fra kvitteringer, merket «Skannet» i prishistorikken.')
+        bullet('Tilbudsaviser', '— ukens tilbud fra kjedenes egne tilbudsaviser.'),
+        bullet('Kvitteringsskann', '— priser fellesskapet bidrar med fra kvitteringene sine, merket «Skannet» i prishistorikken.')
       ]),
-      h('p', { style: 'margin: 14px 0 0; font-size: 14px; line-height: 22px; color: ' + MUTED60 + '; max-width: 68ch;', text: 'En butikk vises først når den har nok priser til at en sammenligning betyr noe. Oda samles fortsatt inn, men ligger foreløpig under grensen. Coop-kjedene (Extra, Prix, Mega, Obs) mangler helt fordi Coop ikke publiserer hyllepriser noe sted — de finnes bare i ukens kundeavis. Skanner du en kvittering derfra, blir prisene lagret og teller mot grensen, så kjeden dukker opp av seg selv når den er stor nok.' }),
+      h('p', { style: 'margin: 14px 0 0; font-size: 14px; line-height: 22px; color: ' + MUTED60 + '; max-width: 68ch;', text: 'En butikk vises først når den har nok priser til at en sammenligning betyr noe — noen kjeder samles inn, men ligger foreløpig under grensen. Coop-kjedene (Extra, Prix, Mega, Obs) mangler helt fordi Coop ikke publiserer hyllepriser noe sted — de finnes bare i ukens kundeavis. Skanner du en kvittering derfra, blir prisene lagret og teller mot grensen, så kjeden dukker opp av seg selv når den er stor nok.' }),
       h('p', { style: 'margin: 14px 0 0; font-size: 14px; line-height: 22px; color: ' + MUTED60 + '; max-width: 68ch;', text: 'Prisene kan være unøyaktige eller utdaterte, og kan variere mellom butikker i samme kjede. Sjekk alltid prisen i butikken før du handler.' })
     ]);
 
@@ -1268,11 +1264,7 @@
       ])
     ]);
 
-    var contact = aboutSection('Kildekode', '04', [
-      h('p', { style: P }, ['Prisboka er åpen kildekode. Koden ligger på ', extLink('https://github.com/sindre31/matvareleksikon', 'GitHub'), '.'])
-    ]);
-
-    return h('section', { 'data-screen-label': 'Om' }, [head, what, sources, privacy, contact]);
+    return h('section', { 'data-screen-label': 'Om' }, [head, what, sources, privacy]);
   }
 
   // Site footer — attribution + links, on every screen.

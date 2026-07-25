@@ -100,11 +100,13 @@ python3 -m http.server 8000
   the catalogue and on the product's chart — weight items keep their kr/kg. The
   confirmation screen links each contributed line back to the matching product
   in the leksikon.
-- **Om** `#/om` — what Prisboka is, **source attribution** (Kassalapp,
-  eTilbudsavis/Tjek, ngdata, Oda, community scans), an independence disclaimer,
+- **Om** `#/om` — what Prisboka is, **sources** (tilbudsaviser and receipt
+  scans) with a note on the coverage threshold, an independence disclaimer,
   and a **privacy** note (no accounts/tracking; the shopping list is local-only;
   receipt images go to Google Gemini and aren't stored; only the IP is kept
   briefly for rate limiting). A site footer links to it from every screen.
+  Note that the *ingest* still runs Kassalapp, ngdata and Oda — the Om copy
+  names the two the site presents itself by, not every feed behind it.
 
 ## Backend (Supabase)
 

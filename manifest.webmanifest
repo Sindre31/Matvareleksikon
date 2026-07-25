@@ -1,7 +1,7 @@
 {
   "name": "Prisboka — Matvareleksikon med pristrender",
   "short_name": "Prisboka",
-  "description": "Matvareleksikon med fellesskapsregistrerte priser fra Rema 1000, Kiwi og Meny — og hvor prisen er på vei.",
+  "description": "Matvareleksikon med ekte matvarepriser fra norske dagligvarekjeder — hentet fra tilbudsaviser og skannede kvitteringer, og hvor prisen er på vei.",
   "lang": "nb-NO",
   "dir": "ltr",
   "start_url": "/",
