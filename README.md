@@ -347,6 +347,24 @@ group as the offers):
   Only one invocation ever calls the API at a time, so no 429s silently drop
   pages, and there's no hard page cap to keep in sync as the catalogue grows.
 
+  The sweep is **checkpointed** (`ml_sweep_state`) and supervised by a second
+  cron. It has to be: `dispatchNext` is fire-and-forget, so an invocation killed
+  on the platform wall-clock before it fires the next range ends the whole run
+  silently — the chained calls don't even reach the function logs. Running it
+  end to end on 2026-07-28 proved the failure: the chain died at **77 %** of the
+  catalogue and reported success. Now each range writes its position *before*
+  dispatching the next link, `{restart:true}` starts a sweep, `{resume:true}`
+  continues one, and `ml-ingest-kassalapp-resume` fires the latter every 10
+  minutes. It no-ops while the chain is alive (checkpoint younger than 4 min, so
+  two invocations never page at once) and once the sweep is finished. A broken
+  link now costs 10 minutes instead of the rest of the catalogue.
+
+  **Verified end to end** (2026-07-28, after the fix): 2437 pages to page 2444
+  in 52 minutes, `finished_at` set, and **100,0 % coverage** — every one of the
+  42 578 Kassalapp product groups (Meny 35 475, Kiwi 5 379, Rema 1 724) got a
+  price point that day. The watchdog logged `chain still active` on every tick
+  during the run and `sweep already finished` after, without ever interfering.
+
   **Pacing** is the interval between request *starts*, not a sleep after each
   one. The two are not the same: the fetch itself takes ~1.6 s, so adding a flat
   1.1 s sleep on top paced the sweep at ~2.9 s/page — ~21 req/min, a third of
