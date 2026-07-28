@@ -57,18 +57,27 @@ python3 -m http.server 8000
   shopping list. The top bar shows how fresh the data is ("sist oppdatert" =
   the latest recorded price point).
 - **Handleliste** `#/liste` — the products you've starred, kept in
-  `localStorage` (no account). The list carries the same price controls as the
-  leksikon: **per kg/l** (jamførpris) or **enhetspris**, a **sort** (navn /
-  lavest / høyest — following the chosen price), and a **"bare med kg/l-pris"**
+  `localStorage` (no account). An entry is `<group key>@<size id>`: adding a
+  product **asks which pack size** you buy (a one-size product skips the
+  dialog), and every price below — the row, the per-store sum, the "billigst"
+  tag — is *that* size, so the comparison holds like for like. `@alle` means
+  "any size" and is what a list saved before sizes existed reads as.
+  Order is the shopper's own: **drag the ⠿ grip** (pointer events, so touch
+  works) or move a row with the arrow keys; the order is saved. Price view is
+  **per kg/l** (jamførpris) or **enhetspris**, plus a **"bare med kg/l-pris"**
   filter that hides items whose pack states no amount (they still count in the
-  per-store totals). Lists each item's cheapest price and, below,
+  per-store totals). Below that,
   **what the whole list costs in each store** — the per-store total plus a
   coverage badge ("har N av M"), ranked by coverage then price, with the
   "handle alt billigst" total spelled out. **Click a store** to expand the
-  products behind its sum: each listed item at that store's own price (in the
-  chosen price view and sort), tagged "billigst"/"tilbud" where it applies,
-  and a "fører ikke" line naming what the store is missing. Purely client-side. **"Del liste"**
-  copies a URL that encodes the list keys after the hash (`#/liste?d=…`); opening
+  products behind its sum: each listed item at that store's own price, tagged
+  "billigst"/"tilbud" where it applies, and a "fører ikke" line naming what the
+  store is missing. Last, **"Handleliste prishistorikk"** charts what the whole
+  basket would have cost at each measurement date (cheapest recorded price per
+  item, carried forward between observations; only dates where *every* item has
+  a price, since a partial sum reads as a price drop that never happened).
+  Purely client-side. **"Del liste"**
+  copies a URL that encodes the entries after the hash (`#/liste?d=…`); opening
   it shows a preview + import banner, so a list travels between phone and PC
   without an account (it never silently overwrites the visitor's own list).
 - **Produktgruppe** `#/gruppe/:key` — a generic product and **where it's sold**:
@@ -83,6 +92,13 @@ python3 -m http.server 8000
   (`gross_unit_price`), and offer catalogues (Tjek `quantity`). Each store's
   **representative** variant is its **cheapest per unit**, not its cheapest pack,
   so a small carton can't masquerade as the best deal.
+  The page carries **filters and a sort** — by chain, by pack **size**, and
+  billigst / størst pakning / butikk A–Å — and a **price-history chart right
+  here**, no click-through needed. The chain filter drives both: narrowing to
+  one chain narrows the chart too. The chart can be shown **per kg/l**, which
+  needs a pack size the history rows don't carry, so it converts with the size
+  that store sells today and **drops the stores with no stated size** rather
+  than inventing one (the caption says so).
   The group and variant pages each carry a **"Kopier lenke"** button (the URLs
   are already shareable) and the shopping-list star.
 - **Produktside (variant)** `#/vare/:key/:store` — one store's product with, when

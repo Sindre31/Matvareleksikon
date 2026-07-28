@@ -224,8 +224,67 @@
       unit: o.unit || null, image: o.image_url || null, validUntil: o.valid_until || null,
       offerDays: o.offer_days || null,
       isOffer: o.pre_price != null && Number(o.pre_price) > price,
-      unitDim: unitDim, perUnit: perUnit
+      unitDim: unitDim, perUnit: perUnit,
+      // The pack size itself (1.75 l, 0.4 kg, 12 stk), when the name stated one.
+      // Null when the unit price came from the source rather than the name.
+      amount: amt ? amt.value : null
     };
+  }
+
+  // ── Pack sizes ───────────────────────────────────────────────────────────
+  // A size id groups variants that hold the same amount across stores, so a
+  // shopper can compare (and shop) like for like. 'ukjent' covers the packs
+  // whose name states no amount; 'alle' means "any size" on a list entry.
+  function sizeIdOf(v) {
+    if (!v || v.amount == null || !v.unitDim) return 'ukjent';
+    return (Math.round(v.amount * 1000) / 1000) + v.unitDim;
+  }
+  function sizeLabel(id) {
+    if (!id || id === 'alle') return 'Alle størrelser';
+    if (id === 'ukjent') return 'Uoppgitt størrelse';
+    var m = String(id).match(/^([\d.]+)(kg|l|stk)$/);
+    if (!m) return String(id);
+    return String(m[1]).replace('.', ',') + (m[2] === 'stk' ? ' stk' : ' ' + m[2]);
+  }
+  // Every distinct size of a product across all stores, smallest first, with
+  // the cheapest price and the number of stores carrying it.
+  function sizeOptions(g) {
+    var by = {};
+    Object.keys((g && g.allByStore) || {}).forEach(function (st) {
+      (g.allByStore[st] || []).forEach(function (v) {
+        var id = sizeIdOf(v);
+        var o = by[id] || (by[id] = { id: id, label: sizeLabel(id), amount: v.amount, dim: v.unitDim, minPrice: Infinity, stores: {} });
+        o.stores[st] = 1;
+        if (v.price < o.minPrice) o.minPrice = v.price;
+      });
+    });
+    return Object.keys(by).map(function (k) { return by[k]; }).sort(function (a, b) {
+      if (a.id === 'ukjent') return 1;
+      if (b.id === 'ukjent') return -1;
+      return (a.amount || 0) - (b.amount || 0);
+    }).map(function (o) { o.storeCount = Object.keys(o.stores).length; return o; });
+  }
+  // The best variant per store, optionally narrowed to one size: cheapest per
+  // unit when a unit price is known, else the cheapest pack — the same rule
+  // buildGroups uses for the group representative.
+  function bestPerStore(g, sizeId) {
+    var out = [];
+    Object.keys((g && g.allByStore) || {}).forEach(function (st) {
+      var arr = (g.allByStore[st] || []).filter(function (v) {
+        return !sizeId || sizeId === 'alle' || sizeIdOf(v) === sizeId;
+      });
+      if (!arr.length) return;
+      var withU = arr.filter(function (x) { return x.perUnit != null; });
+      out.push(withU.length
+        ? withU.reduce(function (a, b) { return b.perUnit < a.perUnit ? b : a; })
+        : arr.reduce(function (a, b) { return b.price < a.price ? b : a; }));
+    });
+    return out.sort(function (a, b) {
+      if (a.perUnit != null && b.perUnit != null) return a.perUnit - b.perUnit;
+      if (a.perUnit != null) return -1;
+      if (b.perUnit != null) return 1;
+      return a.price - b.price;
+    });
   }
 
   // All distinct sizes a store carries of a product, cheapest-per-unit first
@@ -312,45 +371,148 @@
   }
 
   // ── Handleliste (shopping list) — persisted in localStorage ──────────────
-  // Stored as the client group keys (stable, derived from the product name),
-  // so a saved list survives reloads and re-ingested data.
+  // An entry is "<group key>@<size id>": the product (a stable client group
+  // key, derived from the name, so a saved list survives re-ingested data) and
+  // the pack size the shopper picked. Group keys are folded to [a-z0-9 ], so
+  // '@' can never appear in one and splitting is unambiguous. A bare key from
+  // an older saved list reads as '@alle' (any size).
+  // The list is an *ordered* array — the shopper drags it into shopping order,
+  // so order is data, not presentation.
   var LIST_KEY = 'prisboka_liste';
+  function entryId(key, size) { return key + '@' + (size || 'alle'); }
+  function parseEntry(e) {
+    var s = String(e || ''), i = s.lastIndexOf('@');
+    if (i < 0) return { id: entryId(s, 'alle'), key: s, size: 'alle' };
+    return { id: s, key: s.slice(0, i), size: s.slice(i + 1) || 'alle' };
+  }
   function loadList() {
     try {
       var a = JSON.parse(localStorage.getItem(LIST_KEY) || '[]');
-      var m = {}; if (Array.isArray(a)) a.forEach(function (k) { if (k) m[k] = 1; });
-      return m;
-    } catch (e) { return {}; }
+      if (!Array.isArray(a)) return [];
+      var seen = {}, out = [];
+      a.forEach(function (k) {
+        if (!k) return;
+        var id = parseEntry(k).id;
+        if (!seen[id]) { seen[id] = 1; out.push(id); }
+      });
+      return out;
+    } catch (e) { return []; }
   }
-  function saveList() { try { localStorage.setItem(LIST_KEY, JSON.stringify(Object.keys(state.list))); } catch (e) { /* private mode / quota */ } }
-  function inList(k) { return !!state.list[k]; }
-  function listCount() { return Object.keys(state.list).length; }
-  function toggleList(k) { if (state.list[k]) delete state.list[k]; else state.list[k] = 1; saveList(); render(); }
-  // Order the handleliste. `mode` decides which price the sort reads — 'kilo'
-  // the jamførpris (per kg/l/stk), 'enhet' the pack price. An item without a
-  // unit price has nothing to compare on, so in kilo mode it sinks to the
-  // bottom in both directions rather than sorting as if it were free.
-  // Names break ties, so the order is stable for equal prices.
-  function sortList(items, sort, mode) {
-    var arr = (Array.isArray(items) ? items : []).slice();
-    var byName = function (a, b) { return String(a.name || '').localeCompare(String(b.name || ''), 'nb'); };
-    if (sort === 'navn') return arr.sort(byName);
-    if (sort !== 'billigst' && sort !== 'dyrest') return arr;
-    var kilo = mode !== 'enhet';
-    var val = function (g) { return kilo ? (g.unitPrice != null ? g.unitPrice : null) : g.minPrice; };
-    return arr.sort(function (a, b) {
-      var va = val(a), vb = val(b);
-      if (va == null && vb == null) return byName(a, b);
-      if (va == null) return 1;
-      if (vb == null) return -1;
-      return (sort === 'billigst' ? va - vb : vb - va) || byName(a, b);
-    });
+  function saveList() { try { localStorage.setItem(LIST_KEY, JSON.stringify(state.list)); } catch (e) { /* private mode / quota */ } }
+  // A product is "in the list" at any size — the star reflects the product, so
+  // it can be un-starred without knowing which size was picked.
+  function listIndex(k) {
+    for (var i = 0; i < state.list.length; i++) if (parseEntry(state.list[i]).key === k) return i;
+    return -1;
+  }
+  function inList(k) { return listIndex(k) > -1; }
+  function listCount() { return state.list.length; }
+  function addToList(key, size) {
+    var id = entryId(key, size);
+    if (state.list.indexOf(id) < 0) state.list.push(id);
+    saveList();
+  }
+  function removeFromList(key) {
+    var i = listIndex(key);
+    if (i > -1) state.list.splice(i, 1);
+    saveList();
+  }
+  // Move a list entry to a new position, e.g. after a drag. Out-of-range
+  // indices are clamped, so a stray drop can't drop the entry.
+  function moveEntry(list, from, to) {
+    var arr = (Array.isArray(list) ? list : []).slice();
+    if (from < 0 || from >= arr.length) return arr;
+    to = Math.max(0, Math.min(arr.length - 1, to));
+    arr.splice(to, 0, arr.splice(from, 1)[0]);
+    return arr;
   }
 
-  // A shareable list URL encodes the group keys after the hash (keys are folded
-  // to [a-z0-9 ], so '~' is a safe separator) — no account, no server.
+  // ── Drag-to-reorder ──────────────────────────────────────────────────────
+  // Pointer events rather than HTML5 drag-and-drop, so a finger works as well
+  // as a mouse. The rows are re-ordered in the DOM live and the new order is
+  // committed once, on drop. `dragging` freezes render() meanwhile: a catalogue
+  // refresh landing mid-drag would otherwise rebuild the rows under the finger.
+  var dragging = false;
+  function startRowDrag(e, handleEl) {
+    var row = handleEl.closest ? handleEl.closest('[data-lid]') : null;
+    var box = row && row.parentNode;
+    if (!row || !box) return;
+    e.preventDefault();
+    dragging = true;
+    var prevStyle = row.getAttribute('style') || '';
+    row.setAttribute('style', prevStyle + ' opacity: 0.6; background: color-mix(in srgb, var(--color-accent) 10%, transparent);');
+    // The listeners go on the document, not the handle: re-inserting the row
+    // moves the handle with it, which releases any pointer capture we'd taken
+    // and would strand the drag with no pointerup to commit it.
+    var id = e.pointerId;
+    var rowsOf = function () {
+      return [].slice.call(box.children).filter(function (c) { return c !== row && c.getAttribute && c.getAttribute('data-lid'); });
+    };
+    var move = function (ev) {
+      if (ev.pointerId !== id) return;
+      ev.preventDefault();
+      var y = ev.clientY, sibs = rowsOf();
+      for (var i = 0; i < sibs.length; i++) {
+        var r = sibs[i].getBoundingClientRect();
+        if (y < r.top + r.height / 2) { if (sibs[i].previousSibling !== row) box.insertBefore(row, sibs[i]); return; }
+      }
+      if (sibs.length && box.lastChild !== row) box.appendChild(row);
+    };
+    var end = function (ev) {
+      if (ev && ev.pointerId != null && ev.pointerId !== id) return;
+      document.removeEventListener('pointermove', move);
+      document.removeEventListener('pointerup', end);
+      document.removeEventListener('pointercancel', end);
+      row.setAttribute('style', prevStyle);
+      dragging = false;
+      var order = [].slice.call(box.children)
+        .map(function (c) { return c.getAttribute && c.getAttribute('data-lid'); })
+        .filter(Boolean);
+      // Only trust a complete order — with a filter on, some entries aren't on
+      // screen, so splice the visible ones back into their slots instead.
+      if (order.length === state.list.length) state.list = order;
+      else {
+        var slots = [];
+        state.list.forEach(function (id, i) { if (order.indexOf(id) > -1) slots.push(i); });
+        var next = state.list.slice();
+        slots.forEach(function (slot, i) { next[slot] = order[i]; });
+        state.list = next;
+      }
+      saveList();
+      render();
+    };
+    document.addEventListener('pointermove', move);
+    document.addEventListener('pointerup', end);
+    document.addEventListener('pointercancel', end);
+  }
+  // The grip: drag with a pointer, or move with the arrow keys when focused.
+  function dragHandle(it, idx, total) {
+    var byKeyboard = function (dir) {
+      var from = state.list.indexOf(it.id);
+      state.list = moveEntry(state.list, from, from + dir);
+      saveList();
+      render();
+      var el = document.querySelector('[data-lid="' + it.id + '"] [data-drag]');
+      if (el) el.focus();
+    };
+    // `activate` first, so the arrow-key handler below replaces its Enter/Space
+    // one — the grip drags and moves, it never "clicks".
+    return h('span', Object.assign(activate(function () {}, 'Flytt ' + it.name + ', nr. ' + (idx + 1) + ' av ' + total + ' — bruk piltastene'), {
+      'data-drag': '1', 'data-focus-id': 'drag-' + it.id,
+      title: 'Dra for å flytte',
+      style: 'width: 26px; height: 34px; display: flex; align-items: center; justify-content: center; cursor: grab; touch-action: none; color: ' + MUTED60 + '; font-size: 15px; user-select: none;',
+      onPointerdown: function (e) { startRowDrag(e, e.currentTarget); },
+      onKeydown: function (e) {
+        if (e.key === 'ArrowUp' && idx > 0) { e.preventDefault(); byKeyboard(-1); }
+        else if (e.key === 'ArrowDown' && idx < total - 1) { e.preventDefault(); byKeyboard(1); }
+      }
+    }), '⠿');
+  }
+
+  // A shareable list URL encodes the entries after the hash (entries are
+  // [a-z0-9 @.] only, so '~' is a safe separator) — no account, no server.
   function listShareUrl() {
-    return location.href.replace(/#.*$/, '') + '#/liste?d=' + encodeURIComponent(Object.keys(state.list).join('~'));
+    return location.href.replace(/#.*$/, '') + '#/liste?d=' + encodeURIComponent(state.list.join('~'));
   }
 
   // ── State ────────────────────────────────────────────────────────────────
@@ -360,9 +522,11 @@
     scanPhase: 'idle', scanStep: '', scanItems: [], scanStore: 'Kiwi', scanDate: '',
     scanSubmitting: false, scanError: null, scanImageUrl: null, scanNote: null,
     doneCount: 0, doneMsgN: 0,
-    list: {}, copiedFor: null, lastUpdated: '', fromCache: false, sharedList: null, listShareCopied: false,
-    listSort: 'navn', listPriceMode: 'kilo', listOnlyUnit: false, listOpenStore: null,
-    history: {} // key -> 'loading' | [rows]
+    list: [], copiedFor: null, lastUpdated: '', fromCache: false, sharedList: null, listShareCopied: false,
+    listPriceMode: 'kilo', listOnlyUnit: false, listOpenStore: null, sizePicker: null,
+    groupStore: 'Alle', groupSize: 'alle', groupSort: 'billigst', histMode: 'enhet',
+    history: {},    // key -> 'loading' | [rows] — full rows, per product page
+    listHistory: {} // key -> 'loading' | [rows] — trimmed rows for the list chart
   };
   state.list = loadList();
   function setState(patch) { Object.assign(state, patch); render(); }
@@ -525,7 +689,12 @@
     var r = parseHash();
     if (r.view === 'gruppe') {
       if (!GROUP_BY_KEY[r.groupKey]) { location.hash = '#/'; return; }
+      // The history lives on this page now, so fetch it here too. Opening a
+      // different product resets the page's filters — they belong to the view,
+      // not to the shopper.
+      if (state.groupKey !== r.groupKey) { state.groupStore = 'Alle'; state.groupSize = 'alle'; }
       state.view = 'gruppe'; state.groupKey = r.groupKey;
+      loadHistory(GROUP_BY_KEY[r.groupKey]);
     } else if (r.view === 'vare') {
       if (!GROUP_BY_KEY[r.groupKey]) { location.hash = '#/'; return; }
       state.view = 'vare'; state.groupKey = r.groupKey; state.storeId = r.storeId;
@@ -535,6 +704,7 @@
     } else if (r.view === 'liste') {
       state.view = 'liste';
       state.sharedList = (r.shared && r.shared.length) ? r.shared : null;
+      loadListHistory();
     } else if (r.view === 'om') {
       state.view = 'om';
     } else {
@@ -573,9 +743,51 @@
       // can't draw a line on the chart or a row in "Registreringer".
       .then(function (rows) {
         state.history[key] = (rows || []).filter(function (r) { return r && STORE_NAME[r.store_id]; });
-        if (state.view === 'vare' && state.groupKey === key) render();
+        if (HISTORY_VIEWS[state.view]) render();
       })
-      .catch(function () { state.history[key] = []; if (state.view === 'vare') render(); });
+      .catch(function () { state.history[key] = []; if (HISTORY_VIEWS[state.view]) render(); });
+  }
+  // The screens that draw price history — a finished fetch repaints only these.
+  var HISTORY_VIEWS = { vare: 1, gruppe: 1, liste: 1 };
+
+  // The handleliste charts the whole basket, so it needs every listed
+  // product's history. One request for the lot (chunked to keep the URL sane)
+  // rather than one per item. It lands in its own cache: these rows carry only
+  // the columns the chart needs, so they must not stand in for the full rows
+  // the product page lists under "Registreringer".
+  function loadListHistory() {
+    var pending = [], byServerKey = {};
+    state.list.forEach(function (e) {
+      var g = GROUP_BY_KEY[parseEntry(e).key];
+      if (!g || state.listHistory[g.key]) return;
+      state.listHistory[g.key] = 'loading';
+      pending.push(g);
+      (g.serverKeys && g.serverKeys.length ? g.serverKeys : [g.key]).forEach(function (sk) { byServerKey[sk] = g.key; });
+    });
+    if (!pending.length) return;
+    var keys = Object.keys(byServerKey);
+    var CHUNK = 40, done = 0, chunks = Math.ceil(keys.length / CHUNK);
+    var landed = {};
+    pending.forEach(function (g) { landed[g.key] = []; });
+    var finish = function () {
+      if (++done < chunks) return;
+      pending.forEach(function (g) { state.listHistory[g.key] = landed[g.key]; });
+      if (HISTORY_VIEWS[state.view]) render();
+    };
+    for (var i = 0; i < keys.length; i += CHUNK) {
+      var part = keys.slice(i, i + CHUNK).map(function (k) { return '"' + String(k).replace(/"/g, '') + '"'; }).join(',');
+      sb('/ml_price_history?select=store_id,price,group_key,observed_at&group_key=in.(' + encodeURIComponent(part) + ')&order=observed_at.asc')
+        .then(function (r) { return r.ok ? r.json() : []; })
+        .then(function (rows) {
+          (rows || []).forEach(function (r) {
+            if (!r || !STORE_NAME[r.store_id]) return;
+            var ck = byServerKey[r.group_key];
+            if (ck && landed[ck]) landed[ck].push(r);
+          });
+          finish();
+        })
+        .catch(finish);
+    }
   }
 
   // ── Shared style bits ────────────────────────────────────────────────────
@@ -585,6 +797,8 @@
   var KICKER = 'display: block; font-size: 13px; line-height: 12px; letter-spacing: 0.08em; text-transform: uppercase; font-weight: 600; color: var(--color-accent-700); margin-bottom: 12px;';
   var RULE = 'height: 1px; border: 0; margin: 0 0 24px; background: var(--color-divider);';
   var NAME_STYLE = 'font-family: var(--font-heading); font-weight: 600; font-size: 18px; letter-spacing: 0.02em; text-transform: uppercase;';
+  // Same weight, but never upper-cased: "1,75 l" must not read as "1,75 L".
+  var SIZE_NAME_STYLE = 'font-family: var(--font-heading); font-weight: 600; font-size: 18px; letter-spacing: 0.02em;';
   var H1 = 'margin: -0.052em 0 0; font-size: clamp(36px, 5vw, 60px); line-height: 1.04; letter-spacing: 0.01em; text-transform: uppercase;';
   function offerTag() { return h('span', { cls: 'tag tag-accent', style: 'background: var(--color-accent-900); color: var(--color-bg);', text: 'På tilbud' }); }
 
@@ -606,6 +820,17 @@
     });
   }
 
+  // Adding is a two-step: pick the size you actually buy, so the per-store
+  // comparison holds like for like. Removing stays one click. A product with a
+  // single size skips the dialog — there's nothing to choose.
+  function toggleList(key) {
+    if (inList(key)) { removeFromList(key); render(); return; }
+    var g = GROUP_BY_KEY[key];
+    var opts = g ? sizeOptions(g) : [];
+    if (opts.length <= 1) { addToList(key, opts.length ? opts[0].id : 'alle'); render(); return; }
+    setState({ sizePicker: key });
+  }
+
   // Small star toggle overlaid on a product card (does not open the card).
   function cardStar(key) {
     var on = inList(key);
@@ -624,6 +849,55 @@
   function listToggleBtn(key) {
     var on = inList(key);
     return h('button', { type: 'button', cls: 'btn ' + (on ? 'btn-secondary' : 'btn-ghost'), 'aria-pressed': on ? 'true' : 'false', onClick: function () { toggleList(key); }, text: on ? '★ I handlelisten' : '☆ Legg i handlelisten' });
+  }
+
+  // The size dialog itself — one row per size, with what it costs and how many
+  // stores carry it, plus "alle størrelser" for a shopper who just wants the
+  // product at whatever size is cheapest.
+  function sizePickerOverlay() {
+    var key = state.sizePicker;
+    var g = key ? GROUP_BY_KEY[key] : null;
+    if (!g) return null;
+    var close = function () { setState({ sizePicker: null }); };
+    var pick = function (id) { return function () { addToList(key, id); setState({ sizePicker: null }); }; }
+    var opts = sizeOptions(g);
+    var rowStyle = 'display: grid; grid-template-columns: 1fr auto; gap: 12px; align-items: center; width: 100%; text-align: left; padding: 12px 16px; cursor: pointer; border: 0; background: transparent; color: inherit; font: inherit; border-bottom: 1px solid color-mix(in srgb, var(--color-text) 8%, transparent);';
+    var rows = opts.map(function (o) {
+      return h('button', { type: 'button', cls: 'row-hover', style: rowStyle, onClick: pick(o.id) }, [
+        h('span', {}, [
+          h('span', { style: SIZE_NAME_STYLE, text: o.label }),
+          h('span', { style: 'display: block; font-size: 13px; color: ' + MUTED60 + ';', text: o.storeCount + (o.storeCount === 1 ? ' butikk' : ' butikker') })
+        ]),
+        h('span', { style: "font-family: var(--font-heading); font-weight: 600; font-size: 18px; font-feature-settings: 'tnum' 1; white-space: nowrap;", text: 'fra ' + nf(o.minPrice) })
+      ]);
+    });
+    rows.push(h('button', { type: 'button', cls: 'row-hover', style: rowStyle, onClick: pick('alle') }, [
+      h('span', {}, [
+        h('span', { style: SIZE_NAME_STYLE, text: 'Alle størrelser' }),
+        h('span', { style: 'display: block; font-size: 13px; color: ' + MUTED60 + ';', text: 'sammenlign på billigst per kg/l uansett pakning' })
+      ]),
+      h('span', { style: "font-family: var(--font-heading); font-weight: 600; font-size: 18px; font-feature-settings: 'tnum' 1; white-space: nowrap;", text: 'fra ' + nf(g.minPrice) })
+    ]));
+    var card = h('div', {
+      cls: 'blueprint', role: 'dialog', 'aria-modal': 'true', 'aria-label': 'Velg størrelse for ' + g.name,
+      style: 'width: min(520px, 100%); max-height: 80vh; overflow: auto; background: var(--color-bg); padding: 0;',
+      onClick: function (e) { e.stopPropagation(); }
+    }, corners().concat([
+      h('div', { style: 'padding: 20px 16px 12px;' }, [
+        h('span', { style: KICKER + ' margin-bottom: 6px;', text: 'Velg størrelse' }),
+        h('span', { style: 'display: block; font-family: var(--font-heading); font-weight: 600; font-size: 22px; letter-spacing: 0.02em; text-transform: uppercase;', text: g.name }),
+        h('p', { style: 'margin: 8px 0 0; font-size: 14px; line-height: 20px; color: ' + MUTED70 + ';', text: 'Hvilken pakning skal i handlelisten? Butikksummene regnes ut fra den, så sammenligningen gjelder samme vare.' })
+      ]),
+      h('div', {}, rows),
+      h('div', { style: 'padding: 14px 16px;' }, [
+        h('button', { type: 'button', cls: 'btn btn-ghost', 'data-focus-id': 'size-cancel', onClick: close, text: 'Avbryt' })
+      ])
+    ]));
+    return h('div', {
+      style: 'position: fixed; inset: 0; z-index: 50; background: color-mix(in srgb, var(--color-text) 45%, transparent); display: flex; align-items: center; justify-content: center; padding: 20px;',
+      onClick: close,
+      onKeydown: function (e) { if (e.key === 'Escape') close(); }
+    }, [card]);
   }
 
   // "Copy link" button with transient confirmation, keyed on the current hash.
@@ -864,10 +1138,45 @@
       ])) : null
     ]);
 
-    var rows = g.variants.map(function (v) {
+    // Controls shared by both sections below: which stores to look at, which
+    // size, and how to order the store list.
+    var gStores = g.variants.map(function (v) { return v.storeName; });
+    var gsf = gStores.indexOf(state.groupStore) > -1 ? state.groupStore : 'Alle';
+    var gSizes = sizeOptions(g);
+    var gsize = gSizes.filter(function (o) { return o.id === state.groupSize; }).length ? state.groupSize : 'alle';
+    var shownVariants = bestPerStore(g, gsize).filter(function (v) { return gsf === 'Alle' || v.storeName === gsf; });
+    var GSORTS = [['billigst', 'Billigst per kg/l'], ['storrelse', 'Størst pakning'], ['butikk', 'Butikk A–Å']];
+    if (state.groupSort === 'storrelse') {
+      shownVariants.sort(function (a, b) { return (b.amount || 0) - (a.amount || 0) || a.price - b.price; });
+    } else if (state.groupSort === 'butikk') {
+      shownVariants.sort(function (a, b) { return String(a.storeName).localeCompare(String(b.storeName), 'nb'); });
+    }
+
+    // `caps: false` for the size chips — "1,75 l" must not shout "1,75 L".
+    var chipRow = function (label, values, current, onPick, caps) {
+      return h('div', { role: 'group', 'aria-label': label, style: 'display: flex; flex-wrap: wrap; gap: 8px;' }, values.map(function (o) {
+        var on = o.id === current;
+        return h('button', { type: 'button', cls: 'btn ' + (on ? 'btn-primary' : 'btn-ghost'), 'aria-pressed': on ? 'true' : 'false', style: 'min-height: 32px; padding: 3px 12px; font-size: 12px; letter-spacing: 0.06em;' + (caps === false ? '' : ' text-transform: uppercase;'), onClick: function () { onPick(o.id); }, text: o.label });
+      }));
+    };
+    var storeChoices = [{ id: 'Alle', label: 'Alle butikker' }].concat(g.variants.map(function (v) { return { id: v.storeName, label: v.storeName }; }));
+    var sizeChoices = [{ id: 'alle', label: 'Alle størrelser' }].concat(gSizes.map(function (o) { return { id: o.id, label: o.label }; }));
+    var groupControls = h('div', { style: 'display: flex; flex-wrap: wrap; gap: 14px 24px; align-items: center; justify-content: space-between; margin-bottom: 18px;' }, [
+      h('div', { style: 'display: flex; flex-wrap: wrap; gap: 10px 16px; align-items: center;' }, [
+        chipRow('Filtrer på butikk', storeChoices, gsf, function (id) { setState({ groupStore: id }); }),
+        gSizes.length > 1 ? chipRow('Filtrer på størrelse', sizeChoices, gsize, function (id) { setState({ groupSize: id }); }, false) : null
+      ]),
+      h('label', { style: 'display: flex; align-items: center; gap: 8px; font-size: 12px; letter-spacing: 0.08em; text-transform: uppercase; font-weight: 600; color: ' + MUTED70 + '; white-space: nowrap;' }, [
+        'Sorter',
+        h('select', { cls: 'input', 'aria-label': 'Sorter butikkene', style: 'min-height: 34px; width: auto;', value: state.groupSort, onChange: function (e) { setState({ groupSort: e.target.value }); } },
+          GSORTS.map(function (o) { return h('option', { value: o[0], selected: state.groupSort === o[0] ? 'selected' : false, text: o[1] }); }))
+      ])
+    ]);
+
+    var rows = shownVariants.map(function (v) {
       var vu = v.validUntil ? 'Gyldig til ' + v.validUntil.slice(8, 10) + '.' + v.validUntil.slice(5, 7) : '';
       var vd = v.offerDays ? 'Gjelder ' + v.offerDays : '';
-      var nSizes = sizesFor(g, v.storeId).length;
+      var nSizes = gsize === 'alle' ? sizesFor(g, v.storeId).length : 1;
       var sub = v.rawName + (vd ? ' · ' + vd : '') + (vu ? ' · ' + vu : '') + (nSizes > 1 ? ' · ' + nSizes + ' størrelser' : '');
       return h('div', Object.assign({ cls: 'row-hover', style: 'display: grid; grid-template-columns: 1fr auto auto; gap: 12px; align-items: center; cursor: pointer; padding: 14px 20px; border-bottom: 1px solid color-mix(in srgb, var(--color-text) 8%, transparent);' }, activate(openVariant(g.key, v.storeId), v.storeName + ', ' + nf(v.price) + (nSizes > 1 ? ', ' + nSizes + ' størrelser' : '') + ', se prishistorikk')), [
         h('span', { style: 'display: flex; align-items: center; gap: 12px;' }, [
@@ -891,36 +1200,154 @@
     var table = h('div', {}, [
       h('span', { style: KICKER, text: '01 · Selges hos' }),
       h('hr', { style: RULE }),
-      h('div', { cls: 'blueprint', style: 'padding: 0;' }, corners().concat(rows)),
-      h('p', { style: 'margin: 16px 0 0; font-size: 13px; color: ' + MUTED60 + ';', text: 'Prisene sammenlignes per liter/kilo. Trykk på en butikk for å se størrelsene den har og prishistorikken.' })
+      groupControls,
+      h('div', { cls: 'blueprint', style: 'padding: 0;' }, corners().concat(rows.length ? rows : [
+        h('p', { style: 'margin: 0; padding: 20px; font-size: 14px; color: ' + MUTED60 + ';', text: 'Ingen butikker fører denne varen i valgt størrelse.' })
+      ])),
+      h('p', { style: 'margin: 16px 0 0; font-size: 13px; color: ' + MUTED60 + ';', text: 'Prisene sammenlignes per liter/kilo. Trykk på en butikk for å se størrelsene den har og alle registreringene.' })
     ]);
 
-    return h('section', { 'data-screen-label': 'Produktgruppe' }, [head, table]);
+    // ── Prishistorikk, right on the product page ───────────────────────────
+    // Same store filter as the table above, so narrowing to one chain narrows
+    // both. Per kg/l needs a pack size the history rows don't carry — see
+    // amountByStore — so that view drops the stores without a known size.
+    var hist = state.history[g.key];
+    var visibleStores = {};
+    shownVariants.forEach(function (v) { visibleStores[v.storeId] = 1; });
+    var histBody, histNote = '';
+    if (hist === 'loading' || hist == null) {
+      histBody = h('p', { style: 'font-size: 15px; color: ' + MUTED70 + ';', text: 'Laster prishistorikk …' });
+    } else {
+      var perUnit = state.histMode === 'kilo';
+      var amounts = amountByStore(g, gsize);
+      var hrows = hist.filter(function (r) { return visibleStores[r.store_id]; });
+      var dropped = perUnit ? hrows.filter(function (r) { return !amounts[r.store_id]; }).length : 0;
+      var series = storeSeries(hrows, function (r, st) {
+        var p = Number(r.price);
+        if (!perUnit) return p;
+        var a = amounts[st];
+        return a ? p / a.amount : null;
+      });
+      if (!series.length) {
+        histBody = h('p', { style: 'font-size: 15px; color: ' + MUTED70 + ';', text: hrows.length ? 'Ingen av de valgte butikkene har en oppgitt pakningsstørrelse, så prisen kan ikke regnes om per kg/l.' : 'Ingen prishistorikk ennå for dette utvalget. Den bygges opp fra uke til uke.' });
+      } else {
+        var ch = chartFrom(series);
+        var dim = perUnit ? (Object.keys(amounts).map(function (k) { return amounts[k].dim; })[0] || 'enhet') : null;
+        histNote = (ch.single ? 'Ett målepunkt så langt — prishistorikken bygges opp hver uke fra tilbudsavisene.' : 'Ukentlige målepunkter fra tilbudsavisene.')
+          + (perUnit ? ' Vist per ' + dim + ', regnet om med pakningsstørrelsen butikken fører i dag' + (dropped ? ' — butikker uten oppgitt størrelse er utelatt' : '') + '.' : '');
+        histBody = chartBlock(ch, null, histNote, 'Prishistorikk for ' + g.name);
+      }
+    }
+    var HMODES = [['enhet', 'Enhetspris'], ['kilo', 'Per kg/l']];
+    var histModeControl = h('label', { style: 'display: flex; align-items: center; gap: 8px; font-size: 12px; letter-spacing: 0.08em; text-transform: uppercase; font-weight: 600; color: ' + MUTED70 + '; white-space: nowrap;' }, [
+      'Vis pris',
+      h('div', { role: 'group', 'aria-label': 'Vis prishistorikk per', style: 'display: inline-flex; border: 1px solid var(--color-divider);' }, HMODES.map(function (o, idx) {
+        var on = (state.histMode === 'kilo') === (o[0] === 'kilo');
+        return h('button', { type: 'button', 'aria-pressed': on ? 'true' : 'false', onClick: function () { setState({ histMode: o[0] }); }, style: 'min-height: 34px; padding: 4px 12px; font-size: 12px; letter-spacing: 0.06em; text-transform: uppercase; font-weight: 600; cursor: pointer; border: 0;' + (idx > 0 ? ' border-left: 1px solid var(--color-divider);' : '') + (on ? ' background: var(--color-accent); color: var(--color-bg);' : ' background: transparent; color: var(--color-text);'), text: o[1] });
+      }))
+    ]);
+    var histSection = h('div', { style: 'margin-top: 40px;' }, [
+      h('span', { style: KICKER, text: '02 · Prishistorikk' }),
+      h('hr', { style: RULE }),
+      h('div', { style: 'display: flex; justify-content: flex-end; margin-bottom: 18px;' }, [histModeControl]),
+      histBody
+    ]);
+
+    return h('section', { 'data-screen-label': 'Produktgruppe' }, [head, table, histSection]);
   }
 
-  // ── Variant page: price history ──────────────────────────────────────────
-  function historyChart(rows) {
+  // ── Price-history chart ──────────────────────────────────────────────────
+  // Generic over its series, so the same chart draws one store's history, a
+  // whole product group's, and the shopping list's total. A series is
+  // { id, name, color, dash, points: [{ date, value }] }.
+  function chartFrom(series) {
     var pl = 46, pr = 14, pt = 14, pb = 24, W = 760, H = 260;
+    series = (series || []).filter(function (s) { return s && s.points && s.points.length; });
     var dates = [], seen = {};
-    rows.forEach(function (r) { if (!seen[r.observed_at]) { seen[r.observed_at] = 1; dates.push(r.observed_at); } });
+    series.forEach(function (s) { s.points.forEach(function (p) { if (!seen[p.date]) { seen[p.date] = 1; dates.push(p.date); } }); });
     dates.sort();
     var di = {}; dates.forEach(function (d, i) { di[d] = i; });
     var lo = Infinity, hi = -Infinity;
-    rows.forEach(function (r) { var p = Number(r.price); if (p < lo) lo = p; if (p > hi) hi = p; });
-    var pad = (hi - lo) * 0.15 || 2; lo -= pad; hi += pad;
+    series.forEach(function (s) { s.points.forEach(function (p) { if (p.value < lo) lo = p.value; if (p.value > hi) hi = p.value; }); });
+    if (!isFinite(lo)) { lo = 0; hi = 1; }
+    var pad = (hi - lo) * 0.15 || Math.max(hi * 0.05, 1); lo -= pad; hi += pad;
     var n = dates.length;
     var x = function (i) { return n <= 1 ? (pl + (W - pl - pr) / 2) : pl + (i / (n - 1)) * (W - pl - pr); };
     var y = function (v) { return pt + (1 - (v - lo) / (hi - lo)) * (H - pt - pb); };
-    var byStore = {}; rows.forEach(function (r) { (byStore[r.store_id] || (byStore[r.store_id] = [])).push(r); });
-    var lines = Object.keys(byStore).map(function (s) {
-      var pts = byStore[s].slice().sort(function (a, b) { return a.observed_at < b.observed_at ? -1 : 1; });
-      var poly = pts.map(function (r) { return x(di[r.observed_at]).toFixed(1) + ',' + y(Number(r.price)).toFixed(1); });
+    var lines = series.map(function (s) {
+      var pts = s.points.slice().sort(function (a, b) { return a.date < b.date ? -1 : 1; });
       var last = pts[pts.length - 1];
-      return { store: s, storeName: STORE_NAME[s] || s, color: (STORE_STYLE[s] || {}).color || 'var(--color-accent)', dash: (STORE_STYLE[s] || {}).dash || '', points: poly.join(' '), lastX: x(di[last.observed_at]).toFixed(1), lastY: y(Number(last.price)).toFixed(1) };
+      return {
+        id: s.id, name: s.name, color: s.color || 'var(--color-accent)', dash: s.dash || '',
+        points: pts.map(function (p) { return x(di[p.date]).toFixed(1) + ',' + y(p.value).toFixed(1); }).join(' '),
+        lastX: x(di[last.date]).toFixed(1), lastY: y(last.value).toFixed(1)
+      };
     });
-    var grid = []; for (var i = 0; i < 4; i++) { var gv = lo + (i / 3) * (hi - lo), gy = y(gv); grid.push({ y: gy.toFixed(1), ty: (gy + 3.5).toFixed(1), label: Math.round(gv) + ' kr' }); }
-    var ticks = dates.map(function (d, i) { return { x: x(i).toFixed(1), label: d.slice(8, 10) + '.' + d.slice(5, 7) }; });
-    return { W: W, H: H, lines: lines, grid: grid, ticks: ticks, single: n <= 1 };
+    var axis = function (v) { return (Math.abs(v) < 20 ? (Math.round(v * 10) / 10).toFixed(1).replace('.', ',') : String(Math.round(v))) + ' kr'; };
+    var grid = []; for (var i = 0; i < 4; i++) { var gv = lo + (i / 3) * (hi - lo), gy = y(gv); grid.push({ y: gy.toFixed(1), ty: (gy + 3.5).toFixed(1), label: axis(gv) }); }
+    // With many dates the labels collide — thin them to at most ~10.
+    var step = Math.ceil(n / 10) || 1;
+    var ticks = dates.map(function (d, i) { return { x: x(i).toFixed(1), label: d.slice(8, 10) + '.' + d.slice(5, 7), show: (i % step === 0) || i === n - 1 }; })
+      .filter(function (t) { return t.show; });
+    return { W: W, H: H, lines: lines, grid: grid, ticks: ticks, single: n <= 1, dates: dates };
+  }
+
+  // Price-history rows → one series per store. `valueOf(row)` returns the
+  // plotted number, or null to drop the point (e.g. no size to convert with).
+  function storeSeries(rows, valueOf) {
+    var byStore = {};
+    (rows || []).forEach(function (r) { (byStore[r.store_id] || (byStore[r.store_id] = [])).push(r); });
+    return Object.keys(byStore).map(function (s) {
+      var pts = [];
+      byStore[s].forEach(function (r) {
+        var v = valueOf ? valueOf(r, s) : Number(r.price);
+        if (v != null && isFinite(v) && v > 0) pts.push({ date: r.observed_at, value: v });
+      });
+      return { id: s, name: STORE_NAME[s] || s, color: (STORE_STYLE[s] || {}).color || 'var(--color-accent)', dash: (STORE_STYLE[s] || {}).dash || '', points: pts };
+    }).filter(function (s) { return s.points.length; });
+  }
+
+  function chartLegend(c, emphId) {
+    return c.lines.map(function (l) {
+      return h('span', { style: 'display: inline-flex; align-items: center; gap: 8px; font-size: 13px; letter-spacing: 0.06em; text-transform: uppercase; font-weight: 600; opacity: ' + (!emphId || l.id === emphId ? '1' : '0.55') + ';' }, [storeLine(l.color, l.dash, 26), l.name]);
+    });
+  }
+  function chartSvg(c, emphId, label) {
+    var kids = [];
+    c.grid.forEach(function (gl) {
+      kids.push(h('line', { x1: '46', x2: '748', y1: gl.y, y2: gl.y, stroke: 'var(--color-divider)', 'stroke-width': '1' }));
+      kids.push(h('text', { x: '40', y: gl.ty, 'text-anchor': 'end', 'font-size': '11', fill: MUTED60, 'font-family': 'var(--font-body)', text: gl.label }));
+    });
+    // Anchor the edge ticks inward, or the first and last dates hang off the
+    // plot — the last one always shows, so it would clip on every chart.
+    c.ticks.forEach(function (t) {
+      var x = Number(t.x);
+      kids.push(h('text', { x: t.x, y: String(c.H - 6), 'text-anchor': x > c.W - 40 ? 'end' : (x < 60 ? 'start' : 'middle'), 'font-size': '11', fill: MUTED60, 'font-family': 'var(--font-body)', text: t.label }));
+    });
+    c.lines.forEach(function (l) {
+      var emph = !emphId || l.id === emphId;
+      kids.push(h('polyline', { points: l.points, fill: 'none', stroke: l.color, 'stroke-width': emph ? '2.8' : '1.6', 'stroke-dasharray': l.dash, 'stroke-linejoin': 'round', 'stroke-linecap': 'round', opacity: emph ? '1' : '0.5' }));
+      kids.push(h('circle', { cx: l.lastX, cy: l.lastY, r: emph ? '4' : '3', fill: l.color, opacity: emph ? '1' : '0.5' }));
+    });
+    return h('svg', { viewBox: '0 0 ' + c.W + ' ' + c.H, style: 'width: 100%; height: auto; display: block;', role: 'img', 'aria-label': label || 'Prishistorikk' }, kids);
+  }
+  // The whole block: legend, chart and caption, in the blueprint frame.
+  function chartBlock(c, emphId, note, label) {
+    return h('div', { cls: 'blueprint', style: 'padding: 24px;' }, corners().concat([
+      h('div', { style: 'display: flex; flex-wrap: wrap; gap: 20px; margin-bottom: 16px;' }, chartLegend(c, emphId)),
+      chartSvg(c, emphId, label),
+      note ? h('p', { style: 'margin: 16px 0 0; font-size: 13px; line-height: 20px; color: ' + MUTED60 + ';', text: note }) : null
+    ]));
+  }
+
+  // Per kg/l on a history row needs a pack size, and the rows don't carry one
+  // — they're per product group and store. Convert with the size that store
+  // sells today, which is right whenever the pack hasn't changed, and drop the
+  // stores where no size is known rather than inventing one. Callers say so.
+  function amountByStore(g, sizeId) {
+    var out = {};
+    bestPerStore(g, sizeId).forEach(function (v) { if (v.amount != null && v.unitDim) out[v.storeId] = { amount: v.amount, dim: v.unitDim }; });
+    return out;
   }
 
   function renderVariant() {
@@ -952,33 +1379,14 @@
     ]);
 
     var hist = state.history[g.key];
-    var chartBlock;
+    var histBlock;
     if (hist === 'loading' || hist == null) {
-      chartBlock = h('p', { style: 'font-size: 15px; color: ' + MUTED70 + ';', text: 'Laster prishistorikk …' });
+      histBlock = h('p', { style: 'font-size: 15px; color: ' + MUTED70 + ';', text: 'Laster prishistorikk …' });
     } else if (!hist.length) {
-      chartBlock = h('p', { style: 'font-size: 15px; color: ' + MUTED70 + ';', text: 'Ingen prishistorikk ennå. Den bygges opp fra uke til uke.' });
+      histBlock = h('p', { style: 'font-size: 15px; color: ' + MUTED70 + ';', text: 'Ingen prishistorikk ennå. Den bygges opp fra uke til uke.' });
     } else {
-      var c = historyChart(hist);
-      var legend = c.lines.map(function (l) {
-        return h('span', { style: 'display: inline-flex; align-items: center; gap: 8px; font-size: 13px; letter-spacing: 0.06em; text-transform: uppercase; font-weight: 600; opacity: ' + (l.store === v.storeId ? '1' : '0.55') + ';' }, [storeLine(l.color, l.dash, 26), l.storeName]);
-      });
-      var kids = [];
-      c.grid.forEach(function (gl) {
-        kids.push(h('line', { x1: '46', x2: '748', y1: gl.y, y2: gl.y, stroke: 'var(--color-divider)', 'stroke-width': '1' }));
-        kids.push(h('text', { x: '40', y: gl.ty, 'text-anchor': 'end', 'font-size': '11', fill: MUTED60, 'font-family': 'var(--font-body)', text: gl.label }));
-      });
-      c.ticks.forEach(function (t) { kids.push(h('text', { x: t.x, y: String(c.H - 6), 'text-anchor': 'middle', 'font-size': '11', fill: MUTED60, 'font-family': 'var(--font-body)', text: t.label })); });
-      c.lines.forEach(function (l) {
-        var emph = l.store === v.storeId;
-        kids.push(h('polyline', { points: l.points, fill: 'none', stroke: l.color, 'stroke-width': emph ? '2.8' : '1.6', 'stroke-dasharray': l.dash, 'stroke-linejoin': 'round', 'stroke-linecap': 'round', opacity: emph ? '1' : '0.5' }));
-        kids.push(h('circle', { cx: l.lastX, cy: l.lastY, r: emph ? '4' : '3', fill: l.color, opacity: emph ? '1' : '0.5' }));
-      });
-      var svg = h('svg', { viewBox: '0 0 ' + c.W + ' ' + c.H, style: 'width: 100%; height: auto; display: block;', role: 'img', 'aria-label': 'Prishistorikk' }, kids);
-      chartBlock = h('div', { cls: 'blueprint', style: 'padding: 24px;' }, corners().concat([
-        h('div', { style: 'display: flex; flex-wrap: wrap; gap: 20px; margin-bottom: 16px;' }, legend),
-        svg,
-        h('p', { style: 'margin: 16px 0 0; font-size: 13px; color: ' + MUTED60 + ';', text: c.single ? 'Ett målepunkt så langt — prishistorikken bygges opp hver uke fra tilbudsavisene.' : 'Ukentlige målepunkter fra tilbudsavisene.' })
-      ]));
+      var c = chartFrom(storeSeries(hist));
+      histBlock = chartBlock(c, v.storeId, c.single ? 'Ett målepunkt så langt — prishistorikken bygges opp hver uke fra tilbudsavisene.' : 'Ukentlige målepunkter fra tilbudsavisene.');
     }
 
     // ── Registreringer: the recorded price points behind the chart ─────────
@@ -1033,7 +1441,7 @@
 
     var sections = [];
     if (sizeBlock) sections.push({ title: 'Størrelser hos ' + v.storeName, body: sizeBlock });
-    sections.push({ title: 'Prishistorikk', body: chartBlock });
+    sections.push({ title: 'Prishistorikk', body: histBlock });
     sections.push({ title: 'Registreringer', body: regBlock });
     var body = sections.map(function (s, i) {
       return h('div', { style: i > 0 ? 'margin-top: 40px;' : '' }, [
@@ -1154,11 +1562,66 @@
   }
 
   // ── Handleliste: saved products + per-store basket comparison ─────────────
+  // Resolve the saved entries against today's catalogue. An entry names a
+  // product *and* the size the shopper picked, so every price below — the row,
+  // the per-store sum, the "billigst" tag — is that size, not whatever pack
+  // happens to be cheapest.
+  function listItems() {
+    var out = [], gone = 0;
+    state.list.forEach(function (e) {
+      var p = parseEntry(e), g = GROUP_BY_KEY[p.key];
+      if (!g) { gone++; return; }
+      var variants = bestPerStore(g, p.size);
+      if (!variants.length) { gone++; return; }
+      var first = variants[0];
+      out.push({
+        id: p.id, key: p.key, size: p.size, sizeLabel: sizeLabel(p.size), g: g, name: g.name,
+        variants: variants, minPrice: variants.reduce(function (m, v) { return Math.min(m, v.price); }, Infinity),
+        unitPrice: first.perUnit != null ? first.perUnit : null, unitDim: first.perUnit != null ? first.unitDim : null,
+        storeCount: variants.length
+      });
+    });
+    return { items: out, gone: gone };
+  }
+
+  // The basket over time: for every date a listed product was observed, its
+  // cheapest recorded price, carried forward from the last observation, summed
+  // across the list. Only dates where *every* product has a price are plotted
+  // — a partial sum would read as a price drop that never happened.
+  function listTotalSeries(items) {
+    var perItem = [], dates = {}, loading = false;
+    items.forEach(function (it) {
+      var rows = state.listHistory[it.key];
+      if (rows === 'loading' || rows == null) { loading = true; perItem.push(null); return; }
+      var byDate = {};
+      (rows || []).forEach(function (r) {
+        var p = Number(r.price);
+        if (!isFinite(p) || p <= 0 || !r.observed_at) return;
+        if (byDate[r.observed_at] == null || p < byDate[r.observed_at]) byDate[r.observed_at] = p;
+        dates[r.observed_at] = 1;
+      });
+      perItem.push(Object.keys(byDate).length ? byDate : null);
+    });
+    var all = Object.keys(dates).sort();
+    var last = perItem.map(function () { return null; });
+    var pts = [];
+    all.forEach(function (d) {
+      var sum = 0, have = 0;
+      perItem.forEach(function (bd, i) {
+        if (bd && bd[d] != null) last[i] = bd[d];
+        if (last[i] != null) { sum += last[i]; have++; }
+      });
+      if (have === items.length && items.length) pts.push({ date: d, value: Math.round(sum * 100) / 100 });
+    });
+    return { points: pts, loading: loading, covered: perItem.filter(Boolean).length };
+  }
+
   function renderList() {
-    var keys = Object.keys(state.list);
+    var resolved = listItems(), items = resolved.items, missing = resolved.gone;
+    var count = state.list.length;
 
     // "Del liste": copy a URL that encodes the current list.
-    var shareBtn = keys.length ? h('button', { type: 'button', cls: 'btn btn-secondary', style: 'margin-top: 20px;', onClick: function () {
+    var shareBtn = count ? h('button', { type: 'button', cls: 'btn btn-secondary', style: 'margin-top: 20px;', onClick: function () {
       var url = listShareUrl();
       var mark = function () { state.listShareCopied = true; render(); setTimeout(function () { state.listShareCopied = false; render(); }, 2000); };
       try { if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(url).then(mark, mark); else mark(); } catch (e) { mark(); }
@@ -1166,7 +1629,7 @@
 
     var head = h('div', { style: 'padding: 56px 0 24px;' }, [
       h('h1', { style: H1, text: 'Handlelisten din' }),
-      h('p', { style: 'margin: 16px 0 0; max-width: 60ch; font-size: 16px; line-height: 24px; color: ' + MUTED70 + ';', text: keys.length ? 'Varene du har stjernemerket, og hva hele lista koster i hver butikk. Lagret lokalt i nettleseren din — del den med en lenke.' : 'Stjernemerk varer i leksikonet, så samler de seg her — og du ser hvilken butikk som er billigst for hele lista.' }),
+      h('p', { style: 'margin: 16px 0 0; max-width: 60ch; font-size: 16px; line-height: 24px; color: ' + MUTED70 + ';', text: count ? 'Varene du har stjernemerket, i din rekkefølge, og hva hele lista koster i hver butikk. Lagret lokalt i nettleseren din — del den med en lenke.' : 'Stjernemerk varer i leksikonet, så samler de seg her — og du ser hvilken butikk som er billigst for hele lista.' }),
       shareBtn
     ]);
 
@@ -1174,14 +1637,17 @@
     // the visitor's own list silently).
     var sharedBanner = null;
     if (state.sharedList && state.sharedList.length) {
-      var skeys = state.sharedList;
-      var sNames = skeys.map(function (k) { var g = GROUP_BY_KEY[k]; return g ? g.name : null; }).filter(Boolean);
-      var newCount = skeys.filter(function (k) { return !state.list[k]; }).length;
-      var importShared = function () { skeys.forEach(function (k) { state.list[k] = 1; }); saveList(); state.sharedList = null; go('#/liste'); window.scrollTo(0, 0); };
+      var sentries = state.sharedList.map(function (k) { return parseEntry(k); });
+      var sNames = sentries.map(function (p) { var g = GROUP_BY_KEY[p.key]; return g ? g.name + (p.size !== 'alle' ? ' (' + sizeLabel(p.size) + ')' : '') : null; }).filter(Boolean);
+      var newCount = sentries.filter(function (p) { return state.list.indexOf(p.id) < 0; }).length;
+      var importShared = function () {
+        sentries.forEach(function (p) { if (state.list.indexOf(p.id) < 0) state.list.push(p.id); });
+        saveList(); state.sharedList = null; go('#/liste'); window.scrollTo(0, 0);
+      };
       var dismissShared = function () { state.sharedList = null; go('#/liste'); };
       sharedBanner = h('div', { cls: 'blueprint', style: 'padding: 20px 22px; margin-bottom: 32px; display: flex; flex-direction: column; gap: 12px; background: color-mix(in srgb, var(--color-accent) 5%, transparent);' }, corners().concat([
         h('span', { style: KICKER + ' margin-bottom: 0;', text: 'Delt handleliste' }),
-        h('p', { style: 'margin: 0; font-size: 15px; line-height: 22px;', text: 'Noen har delt en handleliste med ' + skeys.length + (skeys.length === 1 ? ' vare' : ' varer') + (sNames.length ? ': ' + sNames.slice(0, 10).join(', ') + (sNames.length > 10 ? ' m.fl.' : '') + '.' : '.') }),
+        h('p', { style: 'margin: 0; font-size: 15px; line-height: 22px;', text: 'Noen har delt en handleliste med ' + sentries.length + (sentries.length === 1 ? ' vare' : ' varer') + (sNames.length ? ': ' + sNames.slice(0, 10).join(', ') + (sNames.length > 10 ? ' m.fl.' : '') + '.' : '.') }),
         h('div', { style: 'display: flex; gap: 10px; flex-wrap: wrap;' }, [
           h('button', { type: 'button', cls: 'btn btn-primary', onClick: importShared, text: newCount ? 'Legg til i handlelisten (' + newCount + ' nye)' : 'Alt ligger allerede i lista di' }),
           h('button', { type: 'button', cls: 'btn btn-ghost', onClick: dismissShared, text: 'Lukk' })
@@ -1189,7 +1655,7 @@
       ]));
     }
 
-    if (!keys.length) {
+    if (!count) {
       return h('section', { 'data-screen-label': 'Handleliste' }, [head, sharedBanner,
         h('div', { style: 'margin-top: 8px;' }, [
           h('a', { href: '#/', onClick: nav('home'), cls: 'btn btn-primary', text: 'Til leksikonet' })
@@ -1197,41 +1663,34 @@
       ]);
     }
 
-    // Resolve saved keys; some may no longer be in the catalogue.
-    var items = [], missing = 0;
-    keys.forEach(function (k) { var g = GROUP_BY_KEY[k]; if (g) items.push(g); else missing++; });
-
-    // Per-store totals: for each store, sum the cheapest representative variant
-    // of every listed item the store carries, and count coverage. `lines` keeps
-    // the individual products behind the sum — shaped like a group (name /
-    // minPrice / unitPrice) so the list's own sort applies to them too — and
-    // `missing` names what the store doesn't carry, so an expanded row explains
-    // both halves of "har N av M".
+    // Per-store totals: for each store, sum its price for every listed item it
+    // carries in the chosen size, and count coverage. `lines` keeps the
+    // products behind the sum and `missing` names what the store doesn't
+    // carry, so an expanded row explains both halves of "har N av M".
     var totals = {};
     STORES.forEach(function (s) { totals[s.name] = { name: s.name, sum: 0, have: 0, id: s.id, lines: [], missing: [] }; });
-    items.forEach(function (g) {
+    items.forEach(function (it) {
       var seen = {};
-      g.variants.forEach(function (v) {
+      it.variants.forEach(function (v) {
         var t = totals[v.storeName];
         if (!t) return;
         seen[v.storeName] = 1;
         t.sum += v.price; t.have += 1;
-        t.lines.push({ key: g.key, name: g.name, minPrice: v.price, unitPrice: v.perUnit, unitDim: v.unitDim, isOffer: v.isOffer, best: g.storeCount > 1 && v.price <= g.minPrice });
+        t.lines.push({ key: it.key, name: it.name, sizeLabel: it.sizeLabel, size: it.size, price: v.price, perUnit: v.perUnit, unitDim: v.unitDim, isOffer: v.isOffer, best: it.storeCount > 1 && v.price <= it.minPrice });
       });
-      STORES.forEach(function (s) { if (!seen[s.name] && totals[s.name]) totals[s.name].missing.push(g.name); });
+      STORES.forEach(function (s) { if (!seen[s.name] && totals[s.name]) totals[s.name].missing.push(it.name); });
     });
-    var cheapestTotal = items.reduce(function (m, g) { return m + g.minPrice; }, 0);
+    var cheapestTotal = items.reduce(function (m, it) { return m + it.minPrice; }, 0);
     var storeRanks = Object.keys(totals).map(function (n) { return totals[n]; })
       .filter(function (t) { return t.have > 0; })
       .sort(function (a, b) { return (b.have - a.have) || (a.sum - b.sum); });
 
-    // Same controls as the leksikon, on the list: show and sort by kilo-/
-    // literpris (jamførpris) or by pack price, and optionally hide the items
-    // that carry no comparable price at all.
+    // Price view for the list: kilo-/literpris (jamførpris) or pack price, and
+    // an option to hide the items that carry no comparable price at all. The
+    // order is the shopper's own — drag the rows — so there is no sort here.
     var listKilo = state.listPriceMode !== 'enhet';
-    var noUnit = items.filter(function (g) { return g.unitPrice == null; }).length;
-    var visible = (state.listOnlyUnit ? items.filter(function (g) { return g.unitPrice != null; }) : items);
-    visible = sortList(visible, state.listSort, state.listPriceMode);
+    var noUnit = items.filter(function (it) { return it.unitPrice == null; }).length;
+    var visible = state.listOnlyUnit ? items.filter(function (it) { return it.unitPrice != null; }) : items;
 
     var LPMODES = [['kilo', 'Per kg/l'], ['enhet', 'Enhetspris']];
     var listPriceModeControl = h('label', { style: 'display: flex; align-items: center; gap: 8px; font-size: 12px; letter-spacing: 0.08em; text-transform: uppercase; font-weight: 600; color: ' + MUTED70 + '; white-space: nowrap;' }, [
@@ -1241,32 +1700,28 @@
         return h('button', { type: 'button', 'aria-pressed': on ? 'true' : 'false', onClick: function () { setState({ listPriceMode: o[0] }); }, style: 'min-height: 34px; padding: 4px 12px; font-size: 12px; letter-spacing: 0.06em; text-transform: uppercase; font-weight: 600; cursor: pointer; border: 0;' + (idx > 0 ? ' border-left: 1px solid var(--color-divider);' : '') + (on ? ' background: var(--color-accent); color: var(--color-bg);' : ' background: transparent; color: var(--color-text);'), text: o[1] });
       }))
     ]);
-    var LSORTS = [['navn', 'Navn A–Å'], ['billigst', listKilo ? 'Lavest kg/l-pris' : 'Billigst'], ['dyrest', listKilo ? 'Høyest kg/l-pris' : 'Dyrest']];
-    var listSortControl = h('label', { style: 'display: flex; align-items: center; gap: 8px; font-size: 12px; letter-spacing: 0.08em; text-transform: uppercase; font-weight: 600; color: ' + MUTED70 + '; white-space: nowrap;' }, [
-      'Sorter',
-      h('select', { cls: 'input', 'aria-label': 'Sorter varene i handlelisten', style: 'min-height: 34px; width: auto;', value: state.listSort, onChange: function (e) { setState({ listSort: e.target.value }); } },
-        LSORTS.map(function (o) { return h('option', { value: o[0], selected: state.listSort === o[0] ? 'selected' : false, text: o[1] }); }))
-    ]);
     var onlyUnitControl = noUnit ? h('button', { type: 'button', cls: 'btn ' + (state.listOnlyUnit ? 'btn-primary' : 'btn-ghost'), 'aria-pressed': state.listOnlyUnit ? 'true' : 'false', onClick: function () { setState({ listOnlyUnit: !state.listOnlyUnit }); }, style: 'min-height: 34px; padding: 4px 14px; font-size: 13px; letter-spacing: 0.06em; text-transform: uppercase;', text: 'Bare med kg/l-pris' }) : null;
     var listControls = h('div', { style: 'display: flex; flex-wrap: wrap; gap: 16px 24px; align-items: center; justify-content: space-between; margin-bottom: 20px;' }, [
       onlyUnitControl || h('span', {}),
-      h('div', { style: 'display: flex; flex-wrap: wrap; gap: 16px 24px; align-items: center;' }, [listPriceModeControl, listSortControl])
+      listPriceModeControl
     ]);
 
-    var itemRows = visible.map(function (g) {
-      var best = g.variants[0];
-      var hasUnit = g.unitPrice != null;
-      var priceTxt = nf(g.minPrice) + (hasUnit ? ' · ' + nfUnit(g.unitPrice, g.unitDim) : '');
-      var whereTxt = g.storeCount > 1 ? 'billigst hos ' + best.storeName + ' · ' + g.storeCount + ' butikker' : best.storeName;
-      // In kg/l view the jamførpris leads and the pack price sits beneath;
-      // an item without one says so rather than showing a bare pack price
-      // that looks comparable but isn't.
-      var lead = (listKilo && hasUnit) ? nfUnit(g.unitPrice, g.unitDim) : nf(g.minPrice);
-      var sub = (listKilo && hasUnit) ? nf(g.minPrice) : (hasUnit ? nfUnit(g.unitPrice, g.unitDim) : (listKilo ? 'ingen kg/l-pris' : ''));
-      return h('div', { cls: 'row-hover', style: 'display: grid; grid-template-columns: auto 1fr auto; gap: 12px; align-items: center; padding: 12px 16px 12px 12px; border-bottom: 1px solid color-mix(in srgb, var(--color-text) 8%, transparent);' }, [
-        h('button', { type: 'button', cls: 'btn btn-ghost', 'aria-label': 'Fjern ' + g.name + ' fra handlelisten', title: 'Fjern fra handlelisten', style: 'width: 34px; height: 34px; padding: 0; font-size: 16px; color: var(--color-accent-700);', onClick: function () { toggleList(g.key); }, text: '★' }),
-        h('span', Object.assign({ style: 'cursor: pointer; display: block;' }, activate(openGroup(g.key), g.name + ', ' + priceTxt)), [
-          h('span', { style: NAME_STYLE, text: g.name }),
+    var itemRows = visible.map(function (it, idx) {
+      var best = it.variants[0];
+      var hasUnit = it.unitPrice != null;
+      var priceTxt = nf(it.minPrice) + (hasUnit ? ' · ' + nfUnit(it.unitPrice, it.unitDim) : '');
+      var whereTxt = (it.size === 'alle' ? 'alle størrelser' : it.sizeLabel) + ' · '
+        + (it.storeCount > 1 ? 'billigst hos ' + best.storeName + ' · ' + it.storeCount + ' butikker' : best.storeName);
+      // In kg/l view the jamførpris leads and the pack price sits beneath; an
+      // item without one says so rather than showing a bare pack price that
+      // looks comparable but isn't.
+      var lead = (listKilo && hasUnit) ? nfUnit(it.unitPrice, it.unitDim) : nf(it.minPrice);
+      var sub = (listKilo && hasUnit) ? nf(it.minPrice) : (hasUnit ? nfUnit(it.unitPrice, it.unitDim) : (listKilo ? 'ingen kg/l-pris' : ''));
+      return h('div', { 'data-lid': it.id, cls: 'row-hover', style: 'display: grid; grid-template-columns: auto auto 1fr auto; gap: 10px; align-items: center; padding: 12px 16px 12px 8px; border-bottom: 1px solid color-mix(in srgb, var(--color-text) 8%, transparent);' }, [
+        dragHandle(it, idx, visible.length),
+        h('button', { type: 'button', cls: 'btn btn-ghost', 'aria-label': 'Fjern ' + it.name + ' fra handlelisten', title: 'Fjern fra handlelisten', style: 'width: 34px; height: 34px; padding: 0; font-size: 16px; color: var(--color-accent-700);', onClick: function () { removeFromList(it.key); render(); }, text: '★' }),
+        h('span', Object.assign({ style: 'cursor: pointer; display: block;' }, activate(openGroup(it.key), it.name + ', ' + it.sizeLabel + ', ' + priceTxt)), [
+          h('span', { style: NAME_STYLE, text: it.name }),
           h('span', { style: 'display: block; font-size: 13px; color: ' + MUTED60 + ';', text: whereTxt })
         ]),
         h('span', { style: 'display: flex; flex-direction: column; align-items: flex-end; gap: 2px;' }, [
@@ -1286,13 +1741,14 @@
       h('div', { cls: 'blueprint', style: 'padding: 0;' }, corners().concat(itemRows.length ? itemRows : [
         h('p', { style: 'margin: 0; padding: 20px; font-size: 14px; color: ' + MUTED60 + ';', text: 'Ingen av varene i lista har en kg-/literpris. Slå av filteret for å se dem.' })
       ])),
-      hiddenNote ? h('p', { style: 'margin: 16px 0 0; font-size: 13px; color: ' + MUTED60 + ';', text: hiddenNote }) : null,
-      missing ? h('p', { style: 'margin: 16px 0 0; font-size: 13px; color: ' + MUTED60 + ';', text: missing + (missing === 1 ? ' vare' : ' varer') + ' i lista finnes ikke i leksikonet akkurat nå (kan ha gått ut av sortimentet) og telles ikke med.' }) : null
+      h('p', { style: 'margin: 16px 0 0; font-size: 13px; color: ' + MUTED60 + ';', text: 'Dra i ⠿ for å legge lista i den rekkefølgen du går gjennom butikken — rekkefølgen lagres. Piltastene flytter også, når håndtaket har fokus.' }),
+      hiddenNote ? h('p', { style: 'margin: 8px 0 0; font-size: 13px; color: ' + MUTED60 + ';', text: hiddenNote }) : null,
+      missing ? h('p', { style: 'margin: 8px 0 0; font-size: 13px; color: ' + MUTED60 + ';', text: missing + (missing === 1 ? ' vare' : ' varer') + ' i lista finnes ikke i leksikonet i valgt størrelse akkurat nå (kan ha gått ut av sortimentet) og telles ikke med.' }) : null
     ]);
 
     // Each store row opens to show what makes up its sum — the listed products
-    // at that store's own price, in the same order and price view as section 01
-    // — plus what it doesn't carry, which is the other half of "har N av M".
+    // at that store's own price — plus what it doesn't carry, which is the
+    // other half of "har N av M".
     var compRows = storeRanks.map(function (t, i) {
       var full = t.have === items.length;
       var open = state.listOpenStore === t.id;
@@ -1313,13 +1769,14 @@
 
       var panel = null;
       if (open) {
-        var lines = sortList(t.lines, state.listSort, state.listPriceMode).map(function (ln) {
-          var hasUnit = ln.unitPrice != null;
-          var lead = (listKilo && hasUnit) ? nfUnit(ln.unitPrice, ln.unitDim) : nf(ln.minPrice);
-          var sub = (listKilo && hasUnit) ? nf(ln.minPrice) : (hasUnit ? nfUnit(ln.unitPrice, ln.unitDim) : '');
+        var lines = t.lines.map(function (ln) {
+          var hasUnit = ln.perUnit != null;
+          var lead = (listKilo && hasUnit) ? nfUnit(ln.perUnit, ln.unitDim) : nf(ln.price);
+          var sub = (listKilo && hasUnit) ? nf(ln.price) : (hasUnit ? nfUnit(ln.perUnit, ln.unitDim) : '');
           return h('div', { cls: 'row-hover', style: 'display: grid; grid-template-columns: 1fr auto; gap: 12px; align-items: center; padding: 9px 20px 9px 44px;' }, [
             h('span', Object.assign({ style: 'cursor: pointer; display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap;' }, activate(openGroup(ln.key), 'Åpne ' + ln.name + ' i leksikonet')), [
               h('span', { style: 'font-size: 14px;', text: ln.name }),
+              ln.size !== 'alle' ? h('span', { style: 'font-size: 12px; color: ' + MUTED60 + ';', text: ln.sizeLabel }) : null,
               ln.best ? h('span', { cls: 'tag tag-accent', style: 'font-size: 10px;', text: 'billigst' }) : null,
               ln.isOffer ? h('span', { cls: 'tag tag-outline', style: 'font-size: 10px;', text: 'tilbud' }) : null
             ]),
@@ -1345,7 +1802,36 @@
       h('p', { style: 'margin: 16px 0 0; font-size: 13px; color: ' + MUTED60 + ';', text: 'Trykk på en butikk for å se varene og prisene bak summen. Summen gjelder bare varene hver butikk faktisk fører (se «har N av ' + items.length + '»), så en lav sum kan bety at butikken mangler varer. Handler du hver vare der den er billigst, lander lista på ' + nf(cheapestTotal) + '.' })
     ]);
 
-    return h('section', { 'data-screen-label': 'Handleliste' }, [head, sharedBanner, listBlock, compBlock]);
+    // ── 03 · Handleliste prishistorikk ────────────────────────────────────
+    var ts = listTotalSeries(items);
+    var histBody;
+    if (ts.loading) {
+      histBody = h('p', { style: 'font-size: 15px; color: ' + MUTED70 + ';', text: 'Laster prishistorikk for lista …' });
+    } else if (ts.points.length < 2) {
+      histBody = h('p', { style: 'font-size: 15px; line-height: 22px; color: ' + MUTED70 + ';', text: ts.points.length === 1
+        ? 'Bare ett målepunkt der alle varene i lista har en registrert pris — kurven tegnes så snart det finnes minst to.'
+        : 'Ingen dato har en registrert pris på alle varene i lista ennå. Historikken bygges opp uke for uke, så kurven kommer når varene har vært prissatt samtidig.' });
+    } else {
+      var first = ts.points[0], lastPt = ts.points[ts.points.length - 1];
+      var diff = lastPt.value - first.value;
+      var dTxt = function (d) { return d.slice(8, 10) + '.' + d.slice(5, 7) + '.' + d.slice(0, 4); };
+      var c = chartFrom([{ id: 'total', name: 'Hele lista', color: 'var(--color-accent)', dash: '', points: ts.points }]);
+      histBody = h('div', {}, [
+        h('div', { style: 'display: flex; flex-wrap: wrap; gap: 8px 20px; align-items: baseline; margin-bottom: 16px;' }, [
+          h('span', { style: "font-family: var(--font-heading); font-weight: 600; font-size: 30px; font-feature-settings: 'tnum' 1;", text: nf(lastPt.value) }),
+          h('span', { style: 'font-size: 14px; color: ' + (Math.abs(diff) < 0.005 ? MUTED70 : (diff > 0 ? 'var(--color-accent-900)' : 'var(--color-accent-700)')) + ';', text: (Math.abs(diff) < 0.005 ? 'uendret' : (diff > 0 ? '+' : '−') + nf(Math.abs(diff)).replace('kr ', 'kr ')) + ' siden ' + dTxt(first.date) }),
+          h('span', { style: 'font-size: 13px; color: ' + MUTED60 + ';', text: 'målt ' + dTxt(lastPt.date) })
+        ]),
+        chartBlock(c, null, 'Hva hele lista ville kostet på hver måledato, med den billigste registrerte prisen per vare. Bare datoer der alle ' + items.length + ' varene har en registrert pris er med, og prisen for en vare føres videre til den måles på nytt. Siste punkt er siste måling, ikke nødvendigvis dagens pris i seksjon 02. Historikken kjenner ikke pakningsstørrelse, så den følger varen — ikke størrelsen du valgte.', 'Prishistorikk for handlelisten')
+      ]);
+    }
+    var histBlock = h('div', { style: 'margin-top: 40px;' }, [
+      h('span', { style: KICKER, text: '03 · Handleliste prishistorikk' }),
+      h('hr', { style: RULE }),
+      histBody
+    ]);
+
+    return h('section', { 'data-screen-label': 'Handleliste' }, [head, sharedBanner, listBlock, compBlock, histBlock]);
   }
 
   // ── Om / kilder / personvern ─────────────────────────────────────────────
@@ -1487,6 +1973,12 @@
     else container.appendChild(renderHome());
     frag.appendChild(container);
     frag.appendChild(renderFooter());
+    var picker = state.sizePicker ? sizePickerOverlay() : null;
+    if (picker) {
+      frag.appendChild(picker);
+      // Move focus into the dialog once it's in the document.
+      setTimeout(function () { var el = document.querySelector('[role="dialog"] button'); if (el) el.focus(); }, 0);
+    }
     return frag;
   }
 
@@ -1494,6 +1986,7 @@
   // clears #app first, then threw), leaving a white page. Guard it: on failure
   // show a recoverable crash screen instead of nothing.
   function render() {
+    if (dragging) return; // a rebuild mid-drag would yank the rows away
     var focus = captureFocus();
     try {
       root.textContent = '';
@@ -1671,7 +2164,9 @@
       parseAmount: parseAmount, normUnit: normUnit, foldName: foldName,
       minceKey: minceKey, ckey: ckey, canonLabel: canonLabel,
       buildStores: buildStores, buildGroups: buildGroups, searchRank: searchRank,
-      coveredStores: coveredStores, staleDaysFor: staleDaysFor, sortList: sortList
+      coveredStores: coveredStores, staleDaysFor: staleDaysFor,
+      sizeIdOf: sizeIdOf, sizeLabel: sizeLabel, sizeOptions: sizeOptions, bestPerStore: bestPerStore,
+      entryId: entryId, parseEntry: parseEntry, moveEntry: moveEntry, chartFrom: chartFrom
     };
   }
 })();
