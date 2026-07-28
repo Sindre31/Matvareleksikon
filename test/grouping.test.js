@@ -356,40 +356,93 @@ test('buildGroups — malformed offer rows are skipped, not fatal', () => {
   assert.equal(byKey(groups, 'ost'), undefined);
 });
 
-// ── Handleliste: sorting by kilo-/literpris vs pack price ─────────────────
-const LIST = [
-  { name: 'Yoghurt', minPrice: 12, unitPrice: 48, unitDim: 'kg' },   // dyrest per kg, billigst pakke
-  { name: 'Lettmelk', minPrice: 18.9, unitPrice: 18.9, unitDim: 'l' },
-  { name: 'Appelsinjuice', minPrice: 24.9, unitPrice: 12.45, unitDim: 'l' }, // billigst per l, dyrest pakke
-  { name: 'Tacokrydder', minPrice: 15, unitPrice: null, unitDim: null }      // ingen jamførpris
-];
-const names = (arr) => arr.map((g) => g.name);
-
-test('sortList — kilo mode orders by unit price, items without one sink', () => {
-  assert.deepEqual(names(lib.sortList(LIST, 'billigst', 'kilo')),
-    ['Appelsinjuice', 'Lettmelk', 'Yoghurt', 'Tacokrydder']);
-  // ... and they stay at the bottom in the opposite direction too
-  assert.deepEqual(names(lib.sortList(LIST, 'dyrest', 'kilo')),
-    ['Yoghurt', 'Lettmelk', 'Appelsinjuice', 'Tacokrydder']);
+// ── Pack sizes: the unit a list entry is pinned to ─────────────────────────
+test('sizeIdOf / sizeLabel — a pack size ids and reads back in Norwegian', () => {
+  assert.equal(lib.sizeIdOf({ amount: 1.75, unitDim: 'l' }), '1.75l');
+  assert.equal(lib.sizeLabel('1.75l'), '1,75 l');
+  assert.equal(lib.sizeIdOf({ amount: 0.4, unitDim: 'kg' }), '0.4kg');
+  assert.equal(lib.sizeLabel('0.4kg'), '0,4 kg');
+  assert.equal(lib.sizeLabel('12stk'), '12 stk');
+  // no stated amount → the catch-all bucket, never a made-up size
+  assert.equal(lib.sizeIdOf({ amount: null, unitDim: null }), 'ukjent');
+  assert.equal(lib.sizeLabel('ukjent'), 'Uoppgitt størrelse');
+  assert.equal(lib.sizeLabel('alle'), 'Alle størrelser');
 });
 
-test('sortList — enhet mode orders by pack price, so the order flips', () => {
-  assert.deepEqual(names(lib.sortList(LIST, 'billigst', 'enhet')),
-    ['Yoghurt', 'Tacokrydder', 'Lettmelk', 'Appelsinjuice']);
-  assert.deepEqual(names(lib.sortList(LIST, 'dyrest', 'enhet')),
-    ['Appelsinjuice', 'Lettmelk', 'Tacokrydder', 'Yoghurt']);
+test('sizeOptions — every distinct size, smallest first, priced and counted', () => {
+  lib.buildStores(STORES);
+  const groups = lib.buildGroups([
+    offer('kiwi', 'Lettmelk 1 l', 18.9),
+    offer('rema', 'Lettmelk 1 l', 19.9),
+    offer('kiwi', 'Lettmelk 1,75 l', 28.8),
+    offer('rema', 'Lettmelk', 21)   // no stated amount
+  ]);
+  const opts = lib.sizeOptions(byKey(groups, 'lettmelk'));
+  assert.deepEqual(opts.map((o) => o.id), ['1l', '1.75l', 'ukjent']); // 'ukjent' always last
+  assert.deepEqual(opts.map((o) => o.label), ['1 l', '1,75 l', 'Uoppgitt størrelse']);
+  assert.equal(opts[0].storeCount, 2);   // both chains carry the 1 l
+  assert.equal(opts[0].minPrice, 18.9);
+  assert.equal(opts[1].storeCount, 1);
 });
 
-test('sortList — navn sorts Norwegian-aware; unknown sort keeps the order', () => {
-  assert.deepEqual(names(lib.sortList([{ name: 'Ørret' }, { name: 'Agurk' }, { name: 'Zucchini' }], 'navn', 'kilo')),
-    ['Agurk', 'Zucchini', 'Ørret']);
-  assert.deepEqual(names(lib.sortList(LIST, 'noe-annet', 'kilo')), names(LIST));
+test('bestPerStore — narrowing to a size compares like for like', () => {
+  lib.buildStores(STORES);
+  const groups = lib.buildGroups([
+    offer('kiwi', 'Lettmelk 1 l', 18.9),
+    offer('kiwi', 'Lettmelk 1,75 l', 28.8),   // cheaper per litre, so it wins 'alle'
+    offer('rema', 'Lettmelk 1 l', 17.9)
+  ]);
+  const g = byKey(groups, 'lettmelk');
+  // any size: Kiwi is represented by the 1,75 l (16,46/l) and leads on unit price
+  assert.deepEqual(lib.bestPerStore(g, 'alle').map((v) => v.rawName), ['Lettmelk 1,75 l', 'Lettmelk 1 l']);
+  // pinned to 1 l: Kiwi's 1,75 l is out of the running and Rema is cheapest
+  const oneLitre = lib.bestPerStore(g, '1l');
+  assert.deepEqual(oneLitre.map((v) => v.storeId), ['rema', 'kiwi']);
+  assert.deepEqual(oneLitre.map((v) => v.price), [17.9, 18.9]);
+  // a size only one store carries leaves only that store
+  assert.deepEqual(lib.bestPerStore(g, '1.75l').map((v) => v.storeId), ['kiwi']);
+  assert.deepEqual(lib.bestPerStore(g, '0.5l'), []);
 });
 
-test('sortList — never mutates the input, tolerates junk', () => {
-  const before = names(LIST);
-  lib.sortList(LIST, 'billigst', 'kilo');
-  assert.deepEqual(names(LIST), before);
-  assert.deepEqual(lib.sortList(null, 'billigst', 'kilo'), []);
-  assert.doesNotThrow(() => lib.sortList([{}, { name: null, minPrice: 5 }], 'billigst', 'enhet'));
+// ── Handleliste entries: product + size, in the shopper's own order ────────
+test('entryId / parseEntry — round-trip, and a legacy bare key means any size', () => {
+  assert.equal(lib.entryId('lettmelk q', '1.75l'), 'lettmelk q@1.75l');
+  assert.deepEqual(lib.parseEntry('lettmelk q@1.75l'), { id: 'lettmelk q@1.75l', key: 'lettmelk q', size: '1.75l' });
+  // a list saved before sizes existed still resolves, as "any size"
+  assert.deepEqual(lib.parseEntry('lettmelk q'), { id: 'lettmelk q@alle', key: 'lettmelk q', size: 'alle' });
+  assert.equal(lib.entryId('kaffe', null), 'kaffe@alle');
+});
+
+test('moveEntry — reorders without mutating, and clamps a stray drop', () => {
+  const list = ['a@alle', 'b@1l', 'c@alle'];
+  assert.deepEqual(lib.moveEntry(list, 2, 0), ['c@alle', 'a@alle', 'b@1l']);
+  assert.deepEqual(lib.moveEntry(list, 0, 1), ['b@1l', 'a@alle', 'c@alle']);
+  assert.deepEqual(list, ['a@alle', 'b@1l', 'c@alle']);      // input untouched
+  assert.deepEqual(lib.moveEntry(list, 0, 99), ['b@1l', 'c@alle', 'a@alle']); // clamped to the end
+  assert.deepEqual(lib.moveEntry(list, 1, -3), ['b@1l', 'a@alle', 'c@alle']); // clamped to the start
+  assert.deepEqual(lib.moveEntry(list, 7, 0), list);          // out-of-range source: no-op
+});
+
+// ── The price-history chart ────────────────────────────────────────────────
+test('chartFrom — plots each series over the union of dates', () => {
+  const c = lib.chartFrom([
+    { id: 'kiwi', name: 'Kiwi', points: [{ date: '2026-01-01', value: 10 }, { date: '2026-01-08', value: 12 }] },
+    { id: 'rema', name: 'Rema', points: [{ date: '2026-01-08', value: 11 }] }
+  ]);
+  assert.deepEqual(c.dates, ['2026-01-01', '2026-01-08']);
+  assert.equal(c.lines.length, 2);
+  assert.equal(c.single, false);
+  assert.equal(c.lines[0].points.split(' ').length, 2);
+  assert.ok(c.grid.every((g) => /kr$/.test(g.label)));
+});
+
+test('chartFrom — empty and single-point series stay drawable', () => {
+  const empty = lib.chartFrom([]);
+  assert.deepEqual(empty.lines, []);
+  assert.equal(empty.single, true);
+  const one = lib.chartFrom([{ id: 't', name: 'Total', points: [{ date: '2026-01-01', value: 190 }] }]);
+  assert.equal(one.single, true);
+  assert.equal(one.lines.length, 1);
+  // a flat series still gets a padded axis rather than a zero-height one
+  assert.ok(one.grid[0].label !== one.grid[3].label);
 });
