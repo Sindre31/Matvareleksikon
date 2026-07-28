@@ -42,7 +42,27 @@ select cron.schedule(
   select net.http_post(
     url := 'https://jiaxeedguivvhixychcg.supabase.co/functions/v1/ml-ingest-kassalapp',
     headers := jsonb_build_object('Content-Type','application/json','Authorization','Bearer <SUPABASE_ANON_KEY>'),
-    body := jsonb_build_object('bulk', true, 'startPage', 1, 'pages', 90, 'deleteFirst', false, 'autochain', true),
+    body := jsonb_build_object('bulk', true, 'restart', true, 'pages', 90, 'deleteFirst', false, 'autochain', true),
+    timeout_milliseconds := 170000
+  );
+  $cmd$
+);
+
+-- Watchdog for the sweep above. dispatchNext is fire-and-forget: an invocation
+-- killed on the platform wall-clock before it fires the next range ends the
+-- whole chain silently, with nothing in the logs. Measured 2026-07-28: the
+-- chain died at 77 % of the catalogue and reported success. Every 10 minutes
+-- this resumes the sweep from ml_sweep_state.next_page. It no-ops while the
+-- chain is alive (checkpoint younger than 4 min) and once the sweep is
+-- finished, so a healthy week costs one cheap invocation per tick.
+select cron.schedule(
+  'ml-ingest-kassalapp-resume',
+  '*/10 * * * *',
+  $cmd$
+  select net.http_post(
+    url := 'https://jiaxeedguivvhixychcg.supabase.co/functions/v1/ml-ingest-kassalapp',
+    headers := jsonb_build_object('Content-Type','application/json','Authorization','Bearer <SUPABASE_ANON_KEY>'),
+    body := jsonb_build_object('bulk', true, 'resume', true, 'pages', 90, 'deleteFirst', false, 'autochain', true),
     timeout_milliseconds := 170000
   );
   $cmd$

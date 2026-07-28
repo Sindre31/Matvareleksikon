@@ -13,13 +13,25 @@
 //   {}                                  refresh default terms (add/update, no delete)
 //   { terms:[...], pages:N }            add a batch for specific terms
 //   { bulk:true, startPage:N, pages:M } page the whole /products catalogue
+//   { bulk:true, restart:true }         start a fresh catalogue sweep (weekly cron)
+//   { bulk:true, resume:true }          watchdog: continue a sweep whose chain died
 //   { deleteFirst:true, ... }           opt in to wiping kassalapp rows first
 // Requires the KASSALAPP_TOKEN secret; a no-op ({skipped}) without it.
 import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 
 const API = "https://kassal.app/api/v1";
 const PAGE_SIZE = 100;
-const TIME_BUDGET_MS = 115000;
+// Kept well under the platform's wall-clock limit: the upserts still have to run
+// after the loop, and an invocation killed before it reaches dispatchNext takes
+// the whole self-chain down with it. Measured 2026-07-28 with a 115 s budget:
+// invocations landed at 120–125 s and the chain died at 77 % of the catalogue.
+const TIME_BUDGET_MS = 95000;
+// Checkpoint so a broken chain is resumable instead of lost (see ml_sweep_state).
+const SWEEP_NAME = "kassalapp";
+// A resume only takes over once nothing has advanced the checkpoint for this
+// long. Otherwise a chain link is still working, and two invocations paging at
+// once would break the one-call-at-a-time rate-limit invariant.
+const RESUME_AFTER_MS = 240000;
 // Kassalapp allows ~60 requests/minute per token ("1 kall per sekund"). One
 // page fetch = one request, so hold ~1.1 s between them (~54/min) to stay under
 // the cap; going faster earns 429s that silently drop pages (and the Rema/Kiwi
@@ -28,7 +40,7 @@ const TIME_BUDGET_MS = 115000;
 //
 // This is the interval between request *starts*, not a sleep bolted onto the
 // end of each one. A flat post-fetch sleep double-counts: the fetch itself
-// takes ~1.8 s, so 1.1 s of extra sleep paced the sweep at ~2.9 s/page — about
+// takes ~1.6 s, so 1.1 s of extra sleep paced the sweep at ~2.9 s/page — about
 // 21 req/min, a third of what the token allows, and the reason a 90-page range
 // only got through ~41 pages inside the time budget (measured on the 2026-07-27
 // run). Sleeping only the remainder keeps the promised 1 call/second and reads
@@ -122,6 +134,31 @@ function dispatchNext(SB_URL: string, SB_KEY: string, startPage: number, pages: 
   if (ER && typeof ER.waitUntil === "function") ER.waitUntil(req);
 }
 
+// ── Sweep checkpoint ────────────────────────────────────────────────────────
+// The bulk sweep is ~34 self-chained invocations. dispatchNext is fire-and-
+// forget, so one lost link (an isolate killed on the wall-clock before it can
+// fire) ends the run silently — there is no retry and nothing in the logs.
+// Persisting the next page turns that unrecoverable chain into a resumable job:
+// the chain stays the fast path, and a cron watchdog calling {resume:true}
+// picks it up wherever it stopped.
+type SweepState = { next_page: number; pages_done: number; updated_at: string; finished_at: string | null };
+async function readSweep(SB_URL: string, sbHeaders: Record<string, string>): Promise<SweepState | null> {
+  try {
+    const r = await fetch(`${SB_URL}/rest/v1/ml_sweep_state?name=eq.${SWEEP_NAME}&select=next_page,pages_done,updated_at,finished_at`, { headers: sbHeaders });
+    if (!r.ok) return null;
+    const rows = await r.json();
+    return Array.isArray(rows) && rows[0] ? rows[0] as SweepState : null;
+  } catch (e) { console.error("sweep state read failed", String(e)); return null; }
+}
+async function writeSweep(SB_URL: string, sbHeaders: Record<string, string>, patch: Record<string, unknown>) {
+  try {
+    const r = await fetch(`${SB_URL}/rest/v1/ml_sweep_state?name=eq.${SWEEP_NAME}`, {
+      method: "PATCH", headers: { ...sbHeaders, Prefer: "return=minimal" }, body: JSON.stringify(patch),
+    });
+    if (!r.ok) console.error("sweep state write failed", r.status, await r.text());
+  } catch (e) { console.error("sweep state write failed", String(e)); }
+}
+
 function rowFrom(p: any): any | null {
   const price = num(p?.current_price) ?? num(p?.price);
   const slug = storeSlug(p?.store?.name);
@@ -157,11 +194,37 @@ Deno.serve(async (req: Request) => {
   // An upper bound on the range, not a promise: TIME_BUDGET_MS is what actually
   // ends a run, and the sweep self-chains from wherever it stopped, so the whole
   // catalogue is covered either way. At the measured ~1.5 s/page a range gets
-  // through ~75 pages before the budget bites.
+  // through ~55 pages before the budget bites.
   const pages = Math.max(1, Number(body.pages) || (bulk ? 90 : 2));
-  const startPage = Math.max(1, Number(body.startPage) || 1);
   const autochain = body.autochain !== false; // bulk self-continuation, on by default
   const terms: string[] = Array.isArray(body.terms) && body.terms.length ? body.terms : DEFAULT_TERMS;
+
+  // Where this range starts. Three bulk entry points:
+  //   {restart:true}  a fresh sweep from page 1 (the weekly cron)
+  //   {resume:true}   the watchdog — continue from the checkpoint, but only if
+  //                   the sweep is unfinished AND no chain link is still active
+  //   {startPage:N}   an explicit range: the chain's own links, and manual runs
+  const nowIso = () => new Date().toISOString();
+  let startPage = Math.max(1, Number(body.startPage) || 1);
+  let sweepState: SweepState | null = null;
+  if (bulk) {
+    sweepState = await readSweep(SB_URL, sbHeaders);
+    if (body.restart === true) {
+      startPage = 1;
+      await writeSweep(SB_URL, sbHeaders, { next_page: 1, pages_done: 0, started_at: nowIso(), updated_at: nowIso(), finished_at: null, last_note: "restart" });
+      sweepState = null;
+    } else if (body.resume === true) {
+      if (sweepState?.finished_at) {
+        return json({ skipped: true, reason: "sweep already finished", finishedAt: sweepState.finished_at, pagesDone: sweepState.pages_done });
+      }
+      const ageMs = sweepState ? Date.now() - Date.parse(sweepState.updated_at) : Infinity;
+      if (ageMs < RESUME_AFTER_MS) {
+        return json({ skipped: true, reason: "chain still active", ageMs, nextPage: sweepState?.next_page ?? null });
+      }
+      startPage = Math.max(1, sweepState?.next_page ?? 1);
+      console.log(`kassalapp: resuming dead chain at page ${startPage} (checkpoint ${Math.round(ageMs / 1000)} s stale)`);
+    }
+  }
 
   const start = Date.now();
   const byKey = new Map<string, any>();
@@ -242,6 +305,18 @@ Deno.serve(async (req: Request) => {
   }
 
   const backfillInserted = await backfillPreviousWeek(SB_URL, sbHeaders, historyRows, today);
+
+  // Checkpoint BEFORE dispatching the next link, so a link that dies on the
+  // wall-clock still leaves a resumable position behind.
+  if (bulk && lastPage >= startPage) {
+    await writeSweep(SB_URL, sbHeaders, {
+      next_page: hitEnd ? lastPage : lastPage + 1,
+      pages_done: (sweepState?.pages_done ?? 0) + pagesRead,
+      updated_at: nowIso(),
+      finished_at: hitEnd ? nowIso() : null,
+      last_note: hitEnd ? `finished at page ${lastPage}` : `swept ${startPage}-${lastPage}`,
+    });
+  }
 
   // Self-chain: if this was a bulk range that stopped on its time budget (not at
   // the catalogue's end), kick off the next range so a single weekly trigger

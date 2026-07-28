@@ -95,3 +95,22 @@ alter function public.ml_reg_filter()        set search_path = public, pg_temp;
 revoke execute on function public.ml_reg_filter()    from anon, authenticated, public;
 revoke execute on function public.ml_reg_propagate() from anon, authenticated, public;
 revoke execute on function public.ml_reg_ratelimit() from anon, authenticated, public;
+
+-- Sweep checkpoint. The Kassalapp catalogue sweep is ~40 self-chained edge
+-- function invocations, and dispatchNext is fire-and-forget: an invocation
+-- killed on the platform wall-clock before it fires the next range ends the run
+-- silently — no retry, and the chained calls don't even show up in the function
+-- logs. Measured 2026-07-28: a full sweep died at 77 % of the catalogue and
+-- still reported success. Persisting the next page turns the unrecoverable
+-- chain into a resumable job that the ml-ingest-kassalapp-resume cron picks up.
+create table if not exists ml_sweep_state (
+  name        text primary key,
+  next_page   int         not null default 1,
+  pages_done  int         not null default 0,
+  started_at  timestamptz not null default now(),
+  updated_at  timestamptz not null default now(),
+  finished_at timestamptz,
+  last_note   text
+);
+alter table ml_sweep_state enable row level security;  -- service-role only, no policies
+insert into ml_sweep_state (name) values ('kassalapp') on conflict (name) do nothing;
