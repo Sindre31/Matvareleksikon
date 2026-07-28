@@ -355,3 +355,41 @@ test('buildGroups — malformed offer rows are skipped, not fatal', () => {
   assert.equal(byKey(groups, 'brod'), undefined);
   assert.equal(byKey(groups, 'ost'), undefined);
 });
+
+// ── Handleliste: sorting by kilo-/literpris vs pack price ─────────────────
+const LIST = [
+  { name: 'Yoghurt', minPrice: 12, unitPrice: 48, unitDim: 'kg' },   // dyrest per kg, billigst pakke
+  { name: 'Lettmelk', minPrice: 18.9, unitPrice: 18.9, unitDim: 'l' },
+  { name: 'Appelsinjuice', minPrice: 24.9, unitPrice: 12.45, unitDim: 'l' }, // billigst per l, dyrest pakke
+  { name: 'Tacokrydder', minPrice: 15, unitPrice: null, unitDim: null }      // ingen jamførpris
+];
+const names = (arr) => arr.map((g) => g.name);
+
+test('sortList — kilo mode orders by unit price, items without one sink', () => {
+  assert.deepEqual(names(lib.sortList(LIST, 'billigst', 'kilo')),
+    ['Appelsinjuice', 'Lettmelk', 'Yoghurt', 'Tacokrydder']);
+  // ... and they stay at the bottom in the opposite direction too
+  assert.deepEqual(names(lib.sortList(LIST, 'dyrest', 'kilo')),
+    ['Yoghurt', 'Lettmelk', 'Appelsinjuice', 'Tacokrydder']);
+});
+
+test('sortList — enhet mode orders by pack price, so the order flips', () => {
+  assert.deepEqual(names(lib.sortList(LIST, 'billigst', 'enhet')),
+    ['Yoghurt', 'Tacokrydder', 'Lettmelk', 'Appelsinjuice']);
+  assert.deepEqual(names(lib.sortList(LIST, 'dyrest', 'enhet')),
+    ['Appelsinjuice', 'Lettmelk', 'Tacokrydder', 'Yoghurt']);
+});
+
+test('sortList — navn sorts Norwegian-aware; unknown sort keeps the order', () => {
+  assert.deepEqual(names(lib.sortList([{ name: 'Ørret' }, { name: 'Agurk' }, { name: 'Zucchini' }], 'navn', 'kilo')),
+    ['Agurk', 'Zucchini', 'Ørret']);
+  assert.deepEqual(names(lib.sortList(LIST, 'noe-annet', 'kilo')), names(LIST));
+});
+
+test('sortList — never mutates the input, tolerates junk', () => {
+  const before = names(LIST);
+  lib.sortList(LIST, 'billigst', 'kilo');
+  assert.deepEqual(names(LIST), before);
+  assert.deepEqual(lib.sortList(null, 'billigst', 'kilo'), []);
+  assert.doesNotThrow(() => lib.sortList([{}, { name: null, minPrice: 5 }], 'billigst', 'enhet'));
+});

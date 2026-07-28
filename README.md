@@ -57,7 +57,11 @@ python3 -m http.server 8000
   shopping list. The top bar shows how fresh the data is ("sist oppdatert" =
   the latest recorded price point).
 - **Handleliste** `#/liste` — the products you've starred, kept in
-  `localStorage` (no account). Lists each item's cheapest price and, below,
+  `localStorage` (no account). The list carries the same price controls as the
+  leksikon: **per kg/l** (jamførpris) or **enhetspris**, a **sort** (navn /
+  lavest / høyest — following the chosen price), and a **"bare med kg/l-pris"**
+  filter that hides items whose pack states no amount (they still count in the
+  per-store totals). Lists each item's cheapest price and, below,
   **what the whole list costs in each store** — the per-store total plus a
   coverage badge ("har N av M"), ranked by coverage then price, with the
   "handle alt billigst" total spelled out. Purely client-side. **"Del liste"**

@@ -326,6 +326,27 @@
   function inList(k) { return !!state.list[k]; }
   function listCount() { return Object.keys(state.list).length; }
   function toggleList(k) { if (state.list[k]) delete state.list[k]; else state.list[k] = 1; saveList(); render(); }
+  // Order the handleliste. `mode` decides which price the sort reads — 'kilo'
+  // the jamførpris (per kg/l/stk), 'enhet' the pack price. An item without a
+  // unit price has nothing to compare on, so in kilo mode it sinks to the
+  // bottom in both directions rather than sorting as if it were free.
+  // Names break ties, so the order is stable for equal prices.
+  function sortList(items, sort, mode) {
+    var arr = (Array.isArray(items) ? items : []).slice();
+    var byName = function (a, b) { return String(a.name || '').localeCompare(String(b.name || ''), 'nb'); };
+    if (sort === 'navn') return arr.sort(byName);
+    if (sort !== 'billigst' && sort !== 'dyrest') return arr;
+    var kilo = mode !== 'enhet';
+    var val = function (g) { return kilo ? (g.unitPrice != null ? g.unitPrice : null) : g.minPrice; };
+    return arr.sort(function (a, b) {
+      var va = val(a), vb = val(b);
+      if (va == null && vb == null) return byName(a, b);
+      if (va == null) return 1;
+      if (vb == null) return -1;
+      return (sort === 'billigst' ? va - vb : vb - va) || byName(a, b);
+    });
+  }
+
   // A shareable list URL encodes the group keys after the hash (keys are folded
   // to [a-z0-9 ], so '~' is a safe separator) — no account, no server.
   function listShareUrl() {
@@ -340,6 +361,7 @@
     scanSubmitting: false, scanError: null, scanImageUrl: null, scanNote: null,
     doneCount: 0, doneMsgN: 0,
     list: {}, copiedFor: null, lastUpdated: '', fromCache: false, sharedList: null, listShareCopied: false,
+    listSort: 'navn', listPriceMode: 'kilo', listOnlyUnit: false,
     history: {} // key -> 'loading' | [rows]
   };
   state.list = loadList();
@@ -1194,10 +1216,44 @@
       .filter(function (t) { return t.have > 0; })
       .sort(function (a, b) { return (b.have - a.have) || (a.sum - b.sum); });
 
-    var itemRows = items.map(function (g) {
+    // Same controls as the leksikon, on the list: show and sort by kilo-/
+    // literpris (jamførpris) or by pack price, and optionally hide the items
+    // that carry no comparable price at all.
+    var listKilo = state.listPriceMode !== 'enhet';
+    var noUnit = items.filter(function (g) { return g.unitPrice == null; }).length;
+    var visible = (state.listOnlyUnit ? items.filter(function (g) { return g.unitPrice != null; }) : items);
+    visible = sortList(visible, state.listSort, state.listPriceMode);
+
+    var LPMODES = [['kilo', 'Per kg/l'], ['enhet', 'Enhetspris']];
+    var listPriceModeControl = h('label', { style: 'display: flex; align-items: center; gap: 8px; font-size: 12px; letter-spacing: 0.08em; text-transform: uppercase; font-weight: 600; color: ' + MUTED70 + '; white-space: nowrap;' }, [
+      'Vis pris',
+      h('div', { role: 'group', 'aria-label': 'Vis pris per', style: 'display: inline-flex; border: 1px solid var(--color-divider);' }, LPMODES.map(function (o, idx) {
+        var on = listKilo === (o[0] === 'kilo');
+        return h('button', { type: 'button', 'aria-pressed': on ? 'true' : 'false', onClick: function () { setState({ listPriceMode: o[0] }); }, style: 'min-height: 34px; padding: 4px 12px; font-size: 12px; letter-spacing: 0.06em; text-transform: uppercase; font-weight: 600; cursor: pointer; border: 0;' + (idx > 0 ? ' border-left: 1px solid var(--color-divider);' : '') + (on ? ' background: var(--color-accent); color: var(--color-bg);' : ' background: transparent; color: var(--color-text);'), text: o[1] });
+      }))
+    ]);
+    var LSORTS = [['navn', 'Navn A–Å'], ['billigst', listKilo ? 'Lavest kg/l-pris' : 'Billigst'], ['dyrest', listKilo ? 'Høyest kg/l-pris' : 'Dyrest']];
+    var listSortControl = h('label', { style: 'display: flex; align-items: center; gap: 8px; font-size: 12px; letter-spacing: 0.08em; text-transform: uppercase; font-weight: 600; color: ' + MUTED70 + '; white-space: nowrap;' }, [
+      'Sorter',
+      h('select', { cls: 'input', 'aria-label': 'Sorter varene i handlelisten', style: 'min-height: 34px; width: auto;', value: state.listSort, onChange: function (e) { setState({ listSort: e.target.value }); } },
+        LSORTS.map(function (o) { return h('option', { value: o[0], selected: state.listSort === o[0] ? 'selected' : false, text: o[1] }); }))
+    ]);
+    var onlyUnitControl = noUnit ? h('button', { type: 'button', cls: 'btn ' + (state.listOnlyUnit ? 'btn-primary' : 'btn-ghost'), 'aria-pressed': state.listOnlyUnit ? 'true' : 'false', onClick: function () { setState({ listOnlyUnit: !state.listOnlyUnit }); }, style: 'min-height: 34px; padding: 4px 14px; font-size: 13px; letter-spacing: 0.06em; text-transform: uppercase;', text: 'Bare med kg/l-pris' }) : null;
+    var listControls = h('div', { style: 'display: flex; flex-wrap: wrap; gap: 16px 24px; align-items: center; justify-content: space-between; margin-bottom: 20px;' }, [
+      onlyUnitControl || h('span', {}),
+      h('div', { style: 'display: flex; flex-wrap: wrap; gap: 16px 24px; align-items: center;' }, [listPriceModeControl, listSortControl])
+    ]);
+
+    var itemRows = visible.map(function (g) {
       var best = g.variants[0];
-      var priceTxt = nf(g.minPrice) + (g.unitPrice != null ? ' · ' + nfUnit(g.unitPrice, g.unitDim) : '');
+      var hasUnit = g.unitPrice != null;
+      var priceTxt = nf(g.minPrice) + (hasUnit ? ' · ' + nfUnit(g.unitPrice, g.unitDim) : '');
       var whereTxt = g.storeCount > 1 ? 'billigst hos ' + best.storeName + ' · ' + g.storeCount + ' butikker' : best.storeName;
+      // In kg/l view the jamførpris leads and the pack price sits beneath;
+      // an item without one says so rather than showing a bare pack price
+      // that looks comparable but isn't.
+      var lead = (listKilo && hasUnit) ? nfUnit(g.unitPrice, g.unitDim) : nf(g.minPrice);
+      var sub = (listKilo && hasUnit) ? nf(g.minPrice) : (hasUnit ? nfUnit(g.unitPrice, g.unitDim) : (listKilo ? 'ingen kg/l-pris' : ''));
       return h('div', { cls: 'row-hover', style: 'display: grid; grid-template-columns: auto 1fr auto; gap: 12px; align-items: center; padding: 12px 16px 12px 12px; border-bottom: 1px solid color-mix(in srgb, var(--color-text) 8%, transparent);' }, [
         h('button', { type: 'button', cls: 'btn btn-ghost', 'aria-label': 'Fjern ' + g.name + ' fra handlelisten', title: 'Fjern fra handlelisten', style: 'width: 34px; height: 34px; padding: 0; font-size: 16px; color: var(--color-accent-700);', onClick: function () { toggleList(g.key); }, text: '★' }),
         h('span', Object.assign({ style: 'cursor: pointer; display: block;' }, activate(openGroup(g.key), g.name + ', ' + priceTxt)), [
@@ -1205,16 +1261,23 @@
           h('span', { style: 'display: block; font-size: 13px; color: ' + MUTED60 + ';', text: whereTxt })
         ]),
         h('span', { style: 'display: flex; flex-direction: column; align-items: flex-end; gap: 2px;' }, [
-          h('span', { style: "font-family: var(--font-heading); font-weight: 600; font-size: 20px; font-feature-settings: 'tnum' 1; white-space: nowrap;", text: nf(g.minPrice) }),
-          g.unitPrice != null ? h('span', { style: 'font-size: 12px; color: ' + MUTED60 + "; font-feature-settings: 'tnum' 1; white-space: nowrap;", text: nfUnit(g.unitPrice, g.unitDim) }) : null
+          h('span', { style: "font-family: var(--font-heading); font-weight: 600; font-size: 20px; font-feature-settings: 'tnum' 1; white-space: nowrap;", text: lead }),
+          sub ? h('span', { style: 'font-size: 12px; color: ' + MUTED60 + "; font-feature-settings: 'tnum' 1; white-space: nowrap;", text: sub }) : null
         ])
       ]);
     });
 
+    var hiddenNote = (state.listOnlyUnit && noUnit)
+      ? noUnit + (noUnit === 1 ? ' vare uten' : ' varer uten') + ' kg-/literpris er skjult (pakningen oppgir ingen mengde). De teller fortsatt med i butikksummene under.'
+      : '';
     var listBlock = h('div', {}, [
       h('span', { style: KICKER, text: '01 · Varene dine (' + items.length + ')' }),
       h('hr', { style: RULE }),
-      h('div', { cls: 'blueprint', style: 'padding: 0;' }, corners().concat(itemRows)),
+      listControls,
+      h('div', { cls: 'blueprint', style: 'padding: 0;' }, corners().concat(itemRows.length ? itemRows : [
+        h('p', { style: 'margin: 0; padding: 20px; font-size: 14px; color: ' + MUTED60 + ';', text: 'Ingen av varene i lista har en kg-/literpris. Slå av filteret for å se dem.' })
+      ])),
+      hiddenNote ? h('p', { style: 'margin: 16px 0 0; font-size: 13px; color: ' + MUTED60 + ';', text: hiddenNote }) : null,
       missing ? h('p', { style: 'margin: 16px 0 0; font-size: 13px; color: ' + MUTED60 + ';', text: missing + (missing === 1 ? ' vare' : ' varer') + ' i lista finnes ikke i leksikonet akkurat nå (kan ha gått ut av sortimentet) og telles ikke med.' }) : null
     ]);
 
@@ -1563,7 +1626,7 @@
       parseAmount: parseAmount, normUnit: normUnit, foldName: foldName,
       minceKey: minceKey, ckey: ckey, canonLabel: canonLabel,
       buildStores: buildStores, buildGroups: buildGroups, searchRank: searchRank,
-      coveredStores: coveredStores, staleDaysFor: staleDaysFor
+      coveredStores: coveredStores, staleDaysFor: staleDaysFor, sortList: sortList
     };
   }
 })();
