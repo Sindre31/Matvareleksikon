@@ -98,12 +98,19 @@ python3 -m http.server 8000
   only those, so an odd week recorded in another pack carries the last real
   price forward; only a store that never once recorded the pinned size falls
   back to **scaling** the measurement to it, labelled both in the caption and
-  beside the headline. Residual bias worth knowing: the history stores the
-  cheapest *pack*, not the cheapest *per unit*, so scaling starts from an
-  expensive-per-litre carton and can make a chain look dearer in the chart than
-  it is today in section 02. Recording the cheapest-per-unit row would fix that
-  at the source, but it changes what the stored series means and would sit
-  discontinuously on the rows already collected.
+  beside the headline. The representative row is the chain's **best value**
+  that day: all four ingests now pick the lowest price per litre/kilo/piece,
+  not the lowest sticker price (`betterHistoryRow`). It used to be the cheapest
+  pack, which is what created the bias — Kiwi's lettmelk was recorded at 13,10
+  for the half-litre (26,20/l) while its 1,75 l sat at 16,46/l, so the series
+  read as an expensive chain. The unit price comes from the source where it
+  publishes one and otherwise from the size in the product name; Kassalapp
+  reports it for every Meny row and for **none** of Kiwi's, so the name parse is
+  what makes the rule bite for the chain the bug was reported against. Litres
+  are never compared against kilos — that falls back to the pack price. Note
+  that this changes what the stored series means, so points recorded before
+  2026-07-28 are still cheapest-pack and sit discontinuously under the newer
+  ones.
   Purely client-side. **"Del liste"**
   copies a URL that encodes the entries after the hash (`#/liste?d=…`); opening
   it shows a preview + import banner, so a list travels between phone and PC

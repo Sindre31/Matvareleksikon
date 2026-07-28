@@ -55,6 +55,63 @@ function rowFrom(hit: any): any | null {
   };
 }
 
+// Which row represents a (group, store) in the day's price history: its best
+// VALUE, not its lowest sticker price. The history keeps ONE row per group,
+// store and day, and it used to keep the cheapest pack — so a chain whose
+// half-litre was cheapest per pack got recorded at 13,10 while its litre sat
+// at 17,40, and everything reading the series back saw an expensive-per-litre
+// carton as that chain's price. The rest of the app already ranks the other
+// way ("cheapest per unit, so a small carton can't masquerade as the best
+// deal"); this brings the history in line.
+// The pack size stated in the product name, normalised to l / kg / stk. The
+// source's own unit price is preferred where it exists, but it often doesn't:
+// Kassalapp reports current_unit_price for every Meny row and for none of
+// Kiwi's, so without this the per-unit rule would quietly fall back to
+// pack price for exactly the chain the bug was reported against. Percentages
+// are stripped first so "Lettmelk 0,5% 0,5l" reads as a half-litre and not as
+// half a percent. Mirrors parseAmount/baseAmount in app.js.
+const PCT_RE = /\d+([.,]\d+)?\s*%/g;
+const SIZE_RE = /(\d+(?:[.,]\d+)?)\s*(kg|hg|g|ml|cl|dl|l|stk)\b/gi;
+function nameAmount(name: string): { value: number; dim: string } | null {
+  const s = String(name ?? "").toLowerCase().replace(PCT_RE, " ");
+  let best: { value: number; dim: string } | null = null;
+  for (const m of s.matchAll(SIZE_RE)) {
+    const n = Number(m[1].replace(",", "."));
+    if (!isFinite(n) || n <= 0) continue;
+    const u = m[2];
+    let value = n, dim = "stk";
+    if (u === "l") { dim = "l"; }
+    else if (u === "dl") { dim = "l"; value = n / 10; }
+    else if (u === "cl") { dim = "l"; value = n / 100; }
+    else if (u === "ml") { dim = "l"; value = n / 1000; }
+    else if (u === "kg") { dim = "kg"; }
+    else if (u === "hg") { dim = "kg"; value = n / 10; }
+    else if (u === "g") { dim = "kg"; value = n / 1000; }
+    // The largest stated size is the pack ("0,5 l eller 1 l" → 1 l).
+    if (!best || value > best.value) best = { value, dim };
+  }
+  return best;
+}
+// Price per litre / kilo / piece: the source's own figure when it has one,
+// otherwise derived from the size in the name.
+function perUnitOf(r: any): { value: number; dim: string } | null {
+  const u = String(r?.unit_price_unit ?? "").toLowerCase().trim();
+  const p = Number(r?.unit_price);
+  if (u && isFinite(p) && p > 0) return { value: p, dim: u };
+  const a = nameAmount(r?.product_name);
+  const price = Number(r?.price);
+  if (!a || !isFinite(price) || price <= 0) return null;
+  return { value: price / a.value, dim: a.dim };
+}
+function betterHistoryRow(cand: any, cur: any): boolean {
+  if (!cur) return true;
+  const cp = perUnitOf(cand), np = perUnitOf(cur);
+  // Only comparable in the same dimension — litres against kilos is not
+  // arithmetic anyone should do, so that falls back to the pack price.
+  if (cp && np && cp.dim === np.dim) return cp.value < np.value;
+  return Number(cand?.price) < Number(cur?.price);
+}
+
 Deno.serve(async (_req: Request) => {
   const SB_URL = Deno.env.get("SUPABASE_URL"), SB_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY");
   if (!SB_URL || !SB_KEY) return json({ error: "Service role not available" }, 500);
@@ -83,7 +140,7 @@ Deno.serve(async (_req: Request) => {
 
   const today = new Date().toISOString().slice(0, 10);
   const histMap = new Map<string, any>();
-  for (const r of rows) { const k = r.group_key + "|" + r.store_id; const ex = histMap.get(k); if (!ex || Number(r.price) < Number(ex.price)) histMap.set(k, r); }
+  for (const r of rows) { const k = r.group_key + "|" + r.store_id; if (betterHistoryRow(r, histMap.get(k))) histMap.set(k, r); }
   const historyRows = [...histMap.values()].map((r) => ({ group_key: r.group_key, store_id: r.store_id, product_name: r.product_name, image_url: r.image_url, price: r.price, pre_price: r.pre_price, is_offer: r.pre_price != null, observed_at: today }));
   let historyInserted = 0;
   for (let i = 0; i < historyRows.length; i += 500) {
