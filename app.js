@@ -778,7 +778,9 @@
     };
     for (var i = 0; i < keys.length; i += CHUNK) {
       var part = keys.slice(i, i + CHUNK).map(function (k) { return '"' + String(k).replace(/"/g, '') + '"'; }).join(',');
-      sb('/ml_price_history?select=store_id,price,group_key,observed_at&group_key=in.(' + encodeURIComponent(part) + ')&order=observed_at.asc')
+      // product_name rides along: each line is drawn in the size its entry is
+      // pinned to, and only the row itself knows which pack it measured.
+      sb('/ml_price_history?select=store_id,price,group_key,observed_at,product_name&group_key=in.(' + encodeURIComponent(part) + ')&order=observed_at.asc')
         .then(function (r) { return r.ok ? r.json() : []; })
         .then(function (rows) {
           (rows || []).forEach(function (r) {
@@ -1631,36 +1633,57 @@
     return { items: out, gone: gone };
   }
 
-  // The basket over time: for every date a listed product was observed, its
-  // cheapest recorded price, carried forward from the last observation, summed
-  // across the list. Only dates where *every* product has a price are plotted
-  // — a partial sum would read as a price drop that never happened.
-  function listTotalSeries(items) {
-    var perItem = [], dates = {}, loading = false;
-    items.forEach(function (it) {
-      var rows = state.listHistory[it.key];
-      if (rows === 'loading' || rows == null) { loading = true; perItem.push(null); return; }
-      var byDate = {};
+  // The basket over time — one line per chain, the same thing section 02
+  // totals, just on every measurement date instead of today.
+  //
+  // A line is a real basket: only that chain's own recorded prices, only the
+  // points recorded for the pack size the entry is pinned to, and only dates
+  // where the chain has a price for *every* item. Summing across chains, or
+  // across sizes, produces a number nobody can shop at — which is what the
+  // single "cheapest per item" line used to show, well below the per-store
+  // totals right above it.
+  //
+  // A chain that never has the whole list is left out rather than drawn on a
+  // partial basket, since a missing item reads as a price drop. Prices carry
+  // forward from a chain's last observation of an item until it's seen again.
+  function listStoreSeries(items, histBy, stores) {
+    var loading = false, dates = {}, noSize = [];
+    // item → store → date → price
+    var perItem = (items || []).map(function (it) {
+      var rows = (histBy || {})[it.key];
+      if (rows === 'loading' || rows == null) { loading = true; return null; }
+      var byStore = {}, matched = 0;
       (rows || []).forEach(function (r) {
+        if (it.size !== 'alle' && rowSizeId(r) !== it.size) return;
         var p = Number(r.price);
         if (!isFinite(p) || p <= 0 || !r.observed_at) return;
-        if (byDate[r.observed_at] == null || p < byDate[r.observed_at]) byDate[r.observed_at] = p;
+        matched++;
+        var m = byStore[r.store_id] || (byStore[r.store_id] = {});
+        if (m[r.observed_at] == null || p < m[r.observed_at]) m[r.observed_at] = p;
         dates[r.observed_at] = 1;
       });
-      perItem.push(Object.keys(byDate).length ? byDate : null);
+      if (!matched && (rows || []).length) noSize.push(it.name);
+      return byStore;
     });
+    if (loading) return { series: [], loading: true, incomplete: [], noSize: [] };
+
     var all = Object.keys(dates).sort();
-    var last = perItem.map(function () { return null; });
-    var pts = [];
-    all.forEach(function (d) {
-      var sum = 0, have = 0;
-      perItem.forEach(function (bd, i) {
-        if (bd && bd[d] != null) last[i] = bd[d];
-        if (last[i] != null) { sum += last[i]; have++; }
+    var series = [], incomplete = [];
+    (stores || []).forEach(function (s) {
+      var last = items.map(function () { return null; }), pts = [];
+      all.forEach(function (d) {
+        var sum = 0, have = 0;
+        perItem.forEach(function (byStore, i) {
+          var m = byStore && byStore[s.id];
+          if (m && m[d] != null) last[i] = m[d];
+          if (last[i] != null) { sum += last[i]; have++; }
+        });
+        if (have === items.length && items.length) pts.push({ date: d, value: Math.round(sum * 100) / 100 });
       });
-      if (have === items.length && items.length) pts.push({ date: d, value: Math.round(sum * 100) / 100 });
+      if (pts.length) series.push({ id: s.id, name: s.name, color: s.color || 'var(--color-accent)', dash: s.dash || '', points: pts });
+      else incomplete.push(s.name);
     });
-    return { points: pts, loading: loading, covered: perItem.filter(Boolean).length };
+    return { series: series, loading: false, incomplete: incomplete, noSize: noSize };
   }
 
   function renderList() {
@@ -1865,26 +1888,35 @@
     ]);
 
     // ── 03 · Handleliste prishistorikk ────────────────────────────────────
-    var ts = listTotalSeries(items);
+    // One line per chain — the same basket section 02 prices today, on every
+    // measurement date. Nothing is summed across chains or across sizes.
+    var ts = listStoreSeries(items, state.listHistory, STORES);
+    var dTxt = function (d) { return d.slice(8, 10) + '.' + d.slice(5, 7) + '.' + d.slice(0, 4); };
     var histBody;
     if (ts.loading) {
       histBody = h('p', { style: 'font-size: 15px; color: ' + MUTED70 + ';', text: 'Laster prishistorikk for lista …' });
-    } else if (ts.points.length < 2) {
-      histBody = h('p', { style: 'font-size: 15px; line-height: 22px; color: ' + MUTED70 + ';', text: ts.points.length === 1
-        ? 'Bare ett målepunkt der alle varene i lista har en registrert pris — kurven tegnes så snart det finnes minst to.'
-        : 'Ingen dato har en registrert pris på alle varene i lista ennå. Historikken bygges opp uke for uke, så kurven kommer når varene har vært prissatt samtidig.' });
+    } else if (!ts.series.length) {
+      histBody = h('p', { style: 'font-size: 15px; line-height: 22px; color: ' + MUTED70 + ';', text: ts.noSize.length
+        ? 'Ingen målepunkter i valgt størrelse for ' + ts.noSize.slice(0, 3).join(', ') + (ts.noSize.length > 3 ? ' m.fl.' : '') + '. Hver uke lagres bare den billigste pakningen per butikk, så en bestemt størrelse mangler de ukene den ikke var billigst — sett varen til «alle størrelser» for å ta med alt.'
+        : 'Ingen butikk har ennå en registrert pris på alle ' + items.length + ' varene på samme dato. Historikken bygges opp uke for uke, så kurvene kommer når hele lista har vært prissatt samtidig hos én kjede.' });
     } else {
-      var first = ts.points[0], lastPt = ts.points[ts.points.length - 1];
-      var diff = lastPt.value - first.value;
-      var dTxt = function (d) { return d.slice(8, 10) + '.' + d.slice(5, 7) + '.' + d.slice(0, 4); };
-      var c = chartFrom([{ id: 'total', name: 'Hele lista', color: 'var(--color-accent)', dash: '', points: ts.points }]);
+      // Headline: the cheapest complete basket at its own last measurement.
+      var best = ts.series.map(function (s) { return { s: s, last: s.points[s.points.length - 1], first: s.points[0] }; })
+        .sort(function (a, b) { return a.last.value - b.last.value; })[0];
+      var diff = best.last.value - best.first.value;
+      var c = chartFrom(ts.series);
+      var caption = 'Hva hele lista ville kostet i hver kjede på hver måledato — kjedens egne registrerte priser, i størrelsen du har valgt per vare. '
+        + 'Bare datoer der kjeden har en registrert pris på alle ' + items.length + ' varene er med, og en pris føres videre til den måles på nytt. '
+        + (ts.incomplete.length ? ts.incomplete.join(', ') + (ts.incomplete.length === 1 ? ' er utelatt — den har' : ' er utelatt — de har') + ' ikke hatt hele lista registrert på én dato. ' : '')
+        + 'Siste punkt er siste måling, ikke nødvendigvis dagens pris i seksjon 02.';
       histBody = h('div', {}, [
         h('div', { style: 'display: flex; flex-wrap: wrap; gap: 8px 20px; align-items: baseline; margin-bottom: 16px;' }, [
-          h('span', { style: "font-family: var(--font-heading); font-weight: 600; font-size: 30px; font-feature-settings: 'tnum' 1;", text: nf(lastPt.value) }),
-          h('span', { style: 'font-size: 14px; color: ' + (Math.abs(diff) < 0.005 ? MUTED70 : (diff > 0 ? 'var(--color-accent-900)' : 'var(--color-accent-700)')) + ';', text: (Math.abs(diff) < 0.005 ? 'uendret' : (diff > 0 ? '+' : '−') + nf(Math.abs(diff)).replace('kr ', 'kr ')) + ' siden ' + dTxt(first.date) }),
-          h('span', { style: 'font-size: 13px; color: ' + MUTED60 + ';', text: 'målt ' + dTxt(lastPt.date) })
+          h('span', { style: "font-family: var(--font-heading); font-weight: 600; font-size: 30px; font-feature-settings: 'tnum' 1;", text: nf(best.last.value) }),
+          h('span', { style: 'font-size: 14px; color: ' + MUTED70 + ';', text: 'billigst hos ' + best.s.name }),
+          h('span', { style: 'font-size: 14px; color: ' + (Math.abs(diff) < 0.005 ? MUTED70 : (diff > 0 ? 'var(--color-accent-900)' : 'var(--color-accent-700)')) + ';', text: (Math.abs(diff) < 0.005 ? 'uendret' : (diff > 0 ? '+' : '−') + nf(Math.abs(diff))) + ' siden ' + dTxt(best.first.date) }),
+          h('span', { style: 'font-size: 13px; color: ' + MUTED60 + ';', text: 'målt ' + dTxt(best.last.date) })
         ]),
-        chartBlock(c, null, 'Hva hele lista ville kostet på hver måledato, med den billigste registrerte prisen per vare. Bare datoer der alle ' + items.length + ' varene har en registrert pris er med, og prisen for en vare føres videre til den måles på nytt. Siste punkt er siste måling, ikke nødvendigvis dagens pris i seksjon 02. Historikken kjenner ikke pakningsstørrelse, så den følger varen — ikke størrelsen du valgte.', 'Prishistorikk for handlelisten')
+        chartBlock(c, null, caption, 'Prishistorikk for handlelisten, per butikk')
       ]);
     }
     var histBlock = h('div', { style: 'margin-top: 40px;' }, [
@@ -2229,7 +2261,7 @@
       coveredStores: coveredStores, staleDaysFor: staleDaysFor,
       sizeIdOf: sizeIdOf, sizeLabel: sizeLabel, sizeOptions: sizeOptions, bestPerStore: bestPerStore,
       entryId: entryId, parseEntry: parseEntry, moveEntry: moveEntry, swapEntry: swapEntry,
-      chartFrom: chartFrom, rowSizeId: rowSizeId
+      chartFrom: chartFrom, rowSizeId: rowSizeId, listStoreSeries: listStoreSeries
     };
   }
 })();

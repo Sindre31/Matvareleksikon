@@ -75,9 +75,15 @@ python3 -m http.server 8000
   products behind its sum: each listed item at that store's own price, tagged
   "billigst"/"tilbud" where it applies, and a "fører ikke" line naming what the
   store is missing. Last, **"Handleliste prishistorikk"** charts what the whole
-  basket would have cost at each measurement date (cheapest recorded price per
-  item, carried forward between observations; only dates where *every* item has
-  a price, since a partial sum reads as a price drop that never happened).
+  basket would have cost at each measurement date — **one line per chain**
+  (`listStoreSeries`), which is the same basket section 02 prices today. A line
+  uses only that chain's own recorded prices and only the points recorded for
+  the size each entry is pinned to; nothing is summed across chains or across
+  sizes, since that produces a number nobody can shop at. Only dates where a
+  chain has a price for *every* item count (a partial basket reads as a price
+  drop that never happened), prices carry forward between observations, and a
+  chain that never has the whole list is named as left out rather than drawn
+  short.
   Purely client-side. **"Del liste"**
   copies a URL that encodes the entries after the hash (`#/liste?d=…`); opening
   it shows a preview + import banner, so a list travels between phone and PC

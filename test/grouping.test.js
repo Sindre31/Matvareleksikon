@@ -444,6 +444,70 @@ test('rowSizeId — a history point is sized by the product it recorded', () => 
   assert.equal(lib.rowSizeId(null), 'ukjent');
 });
 
+// ── The shopping list over time: one basket per chain ──────────────────────
+const HSTORES = [{ id: 'kiwi', name: 'Kiwi' }, { id: 'meny', name: 'Meny' }];
+const hrow = (store, name, price, date) => ({ store_id: store, product_name: name, price, observed_at: date });
+
+test('listStoreSeries — a line is one chain\'s own basket, never a mix', () => {
+  const items = [
+    { key: 'melk', name: 'Melk', size: 'alle' },
+    { key: 'brod', name: 'Brød', size: 'alle' }
+  ];
+  const hist = {
+    melk: [hrow('kiwi', 'Melk 1 l', 20, '2026-01-01'), hrow('meny', 'Melk 1 l', 22, '2026-01-01'),
+           hrow('kiwi', 'Melk 1 l', 21, '2026-01-08'), hrow('meny', 'Melk 1 l', 23, '2026-01-08')],
+    brod: [hrow('kiwi', 'Brød', 30, '2026-01-01'), hrow('meny', 'Brød', 31, '2026-01-01'),
+           hrow('kiwi', 'Brød', 30, '2026-01-08'), hrow('meny', 'Brød', 33, '2026-01-08')]
+  };
+  const out = lib.listStoreSeries(items, hist, HSTORES);
+  assert.deepEqual(out.series.map((s) => s.name), ['Kiwi', 'Meny']);
+  // each chain sums only its own prices — never 20 + 31 across chains
+  assert.deepEqual(out.series[0].points, [{ date: '2026-01-01', value: 50 }, { date: '2026-01-08', value: 51 }]);
+  assert.deepEqual(out.series[1].points, [{ date: '2026-01-01', value: 53 }, { date: '2026-01-08', value: 56 }]);
+  assert.deepEqual(out.incomplete, []);
+});
+
+test('listStoreSeries — a chain without the whole list is left out, not drawn short', () => {
+  const items = [{ key: 'melk', name: 'Melk', size: 'alle' }, { key: 'kaffe', name: 'Kaffe', size: 'alle' }];
+  const hist = {
+    melk: [hrow('kiwi', 'Melk 1 l', 20, '2026-01-01'), hrow('meny', 'Melk 1 l', 22, '2026-01-01')],
+    kaffe: [hrow('kiwi', 'Kaffe 500 g', 60, '2026-01-01')]   // Meny never carries it
+  };
+  const out = lib.listStoreSeries(items, hist, HSTORES);
+  assert.deepEqual(out.series.map((s) => s.name), ['Kiwi']);
+  assert.deepEqual(out.series[0].points, [{ date: '2026-01-01', value: 80 }]);
+  assert.deepEqual(out.incomplete, ['Meny']);   // named, not silently dropped
+});
+
+test('listStoreSeries — points are the entry\'s size, and carry forward', () => {
+  const items = [{ key: 'melk', name: 'Melk', size: '1l' }];
+  const hist = {
+    melk: [
+      hrow('kiwi', 'Melk 1 l', 20, '2026-01-01'),
+      hrow('kiwi', 'Melk 1,75 l', 28, '2026-01-08'),  // wrong size: not this line's price
+      hrow('kiwi', 'Melk 1 l', 21, '2026-01-15')
+    ]
+  };
+  const out = lib.listStoreSeries(items, hist, [HSTORES[0]]);
+  // the 1,75 l week keeps the last 1 l price rather than dropping to another pack
+  assert.deepEqual(out.series[0].points, [{ date: '2026-01-01', value: 20 }, { date: '2026-01-15', value: 21 }]);
+});
+
+test('listStoreSeries — an item with no point in its size names itself', () => {
+  const items = [{ key: 'melk', name: 'Melk', size: '0.5l' }];
+  const hist = { melk: [hrow('kiwi', 'Melk 1 l', 20, '2026-01-01')] };
+  const out = lib.listStoreSeries(items, hist, HSTORES);
+  assert.deepEqual(out.series, []);
+  assert.deepEqual(out.noSize, ['Melk']);
+});
+
+test('listStoreSeries — still loading, or nothing listed', () => {
+  const items = [{ key: 'melk', name: 'Melk', size: 'alle' }];
+  assert.equal(lib.listStoreSeries(items, { melk: 'loading' }, HSTORES).loading, true);
+  assert.equal(lib.listStoreSeries(items, {}, HSTORES).loading, true);  // not fetched yet
+  assert.deepEqual(lib.listStoreSeries([], {}, HSTORES).series, []);
+});
+
 // ── The price-history chart ────────────────────────────────────────────────
 test('chartFrom — plots each series over the union of dates', () => {
   const c = lib.chartFrom([
