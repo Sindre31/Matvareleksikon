@@ -378,12 +378,30 @@
   // an older saved list reads as '@alle' (any size).
   // The list is an *ordered* array — the shopper drags it into shopping order,
   // so order is data, not presentation.
+  // How many of the item the shopper wants rides along as a '*N' suffix, left
+  // off entirely at 1. Group keys are [a-z0-9 ] and sizes are digits + a unit,
+  // so '*' can no more appear in one than '@' can — which means quantity
+  // travels with the entry id through localStorage, the drag order and the
+  // share link without any of them needing to know about it. An older saved
+  // list, or a link shared before this existed, simply reads as 1.
   var LIST_KEY = 'prisboka_liste';
-  function entryId(key, size) { return key + '@' + (size || 'alle'); }
+  var MAX_QTY = 99;
+  function clampQty(n) {
+    n = Math.round(Number(n));
+    return isFinite(n) && n > 1 ? Math.min(n, MAX_QTY) : 1;
+  }
+  function entryId(key, size, qty) {
+    var q = clampQty(qty);
+    return key + '@' + (size || 'alle') + (q > 1 ? '*' + q : '');
+  }
   function parseEntry(e) {
-    var s = String(e || ''), i = s.lastIndexOf('@');
-    if (i < 0) return { id: entryId(s, 'alle'), key: s, size: 'alle' };
-    return { id: s, key: s.slice(0, i), size: s.slice(i + 1) || 'alle' };
+    var s = String(e || ''), qty = 1;
+    var star = s.lastIndexOf('*');
+    if (star > -1 && /^\d+$/.test(s.slice(star + 1))) { qty = clampQty(s.slice(star + 1)); s = s.slice(0, star); }
+    var i = s.lastIndexOf('@');
+    var key = i < 0 ? s : s.slice(0, i);
+    var size = i < 0 ? 'alle' : (s.slice(i + 1) || 'alle');
+    return { id: entryId(key, size, qty), key: key, size: size, qty: qty };
   }
   function loadList() {
     try {
@@ -853,10 +871,20 @@
     return arr;
   }
   function replaceEntry(oldId, key, size) {
-    var id = entryId(key, size);
+    // Changing the size must not silently reset how many the shopper wanted.
+    var id = entryId(key, size, parseEntry(oldId).qty);
     if (state.list.indexOf(oldId) < 0) { addToList(key, size); return; }
     state.list = swapEntry(state.list, oldId, id);
     saveList();
+  }
+  // Set the count on an entry, in place — the list is in the shopper's own
+  // dragged order, so changing a quantity must not move the row.
+  function setEntryQty(entry, qty) {
+    var next = clampQty(qty);
+    if (next === entry.qty) return;
+    state.list = swapEntry(state.list, entry.id, entryId(entry.key, entry.size, next));
+    saveList();
+    render();
   }
 
   // Small star toggle overlaid on a product card (does not open the card).
@@ -1398,6 +1426,31 @@
     var a = rowAmount(r);
     return sizeIdOf({ amount: a ? a.value : null, unitDim: a ? a.dim : null });
   }
+  function parseSizeId(id) {
+    var m = String(id || '').match(/^([\d.]+)(kg|l|stk)$/);
+    var v = m ? Number(m[1]) : NaN;
+    return m && isFinite(v) && v > 0 ? { value: v, dim: m[2] } : null;
+  }
+  // What a history row says the entry's pinned size costs.
+  //
+  // ml_price_history keeps ONE row per (group, store, day) — that day's
+  // cheapest pack — so which size got recorded varies by store and by date.
+  // Demanding an exact size match therefore threw away whole chains: a list
+  // pinned to 1 l lettmelk drew no Kiwi line at all, because Kiwi's recorded
+  // row was the 0,5 l carton every single day, while the per-store totals
+  // right above the chart had Kiwi as the cheapest chain. When the two sizes
+  // are comparable, scale the measured price to the pinned size instead of
+  // discarding it — and say so, since a scaled figure is arithmetic on a real
+  // measurement, not a price anyone was charged.
+  function priceAtSize(row, sizeId) {
+    var p = Number(row && row.price);
+    if (!isFinite(p) || p <= 0) return null;
+    if (!sizeId || sizeId === 'alle') return { price: p, scaled: false };
+    if (rowSizeId(row) === sizeId) return { price: p, scaled: false };
+    var want = parseSizeId(sizeId), got = rowAmount(row);
+    if (!want || !got || want.dim !== got.dim || !(got.value > 0)) return null;
+    return { price: Math.round(p * (want.value / got.value) * 100) / 100, scaled: true };
+  }
 
   function renderVariant() {
     var g = GROUP_BY_KEY[state.groupKey];
@@ -1624,7 +1677,7 @@
       if (!variants.length) { gone++; return; }
       var first = variants[0];
       out.push({
-        id: p.id, key: p.key, size: p.size, sizeLabel: sizeLabel(p.size), g: g, name: g.name,
+        id: p.id, key: p.key, size: p.size, sizeLabel: sizeLabel(p.size), qty: p.qty, g: g, name: g.name,
         variants: variants, minPrice: variants.reduce(function (m, v) { return Math.min(m, v.price); }, Infinity),
         unitPrice: first.perUnit != null ? first.perUnit : null, unitDim: first.perUnit != null ? first.unitDim : null,
         storeCount: variants.length
@@ -1647,25 +1700,41 @@
   // partial basket, since a missing item reads as a price drop. Prices carry
   // forward from a chain's last observation of an item until it's seen again.
   function listStoreSeries(items, histBy, stores) {
-    var loading = false, dates = {}, noSize = [];
+    var loading = false, dates = {}, noSize = [], scaledStores = {};
     // item → store → date → price
     var perItem = (items || []).map(function (it) {
       var rows = (histBy || {})[it.key];
       if (rows === 'loading' || rows == null) { loading = true; return null; }
-      var byStore = {}, matched = 0;
+      // Two passes per store. Exact-size measurements are the truth and are
+      // used alone when a store has any — a week where only another pack was
+      // recorded then carries the last real price forward rather than jumping
+      // to a different pack's. Only a store that never once recorded this size
+      // falls back to scaling, which is the difference between a line that
+      // wobbles and a chain that is absent from the chart entirely.
+      var exact = {}, approx = {}, matched = 0;
       (rows || []).forEach(function (r) {
-        if (it.size !== 'alle' && rowSizeId(r) !== it.size) return;
-        var p = Number(r.price);
-        if (!isFinite(p) || p <= 0 || !r.observed_at) return;
+        if (!r || !r.observed_at) return;
+        var at = priceAtSize(r, it.size);
+        if (!at) return;
         matched++;
-        var m = byStore[r.store_id] || (byStore[r.store_id] = {});
-        if (m[r.observed_at] == null || p < m[r.observed_at]) m[r.observed_at] = p;
-        dates[r.observed_at] = 1;
+        var into = at.scaled ? approx : exact;
+        var m = into[r.store_id] || (into[r.store_id] = {});
+        if (m[r.observed_at] == null || at.price < m[r.observed_at].price) m[r.observed_at] = at;
+      });
+      var byStore = {};
+      Object.keys(exact).forEach(function (st) { byStore[st] = exact[st]; });
+      Object.keys(approx).forEach(function (st) {
+        if (byStore[st]) return;                       // a real measurement wins
+        byStore[st] = approx[st];
+        if (STORE_NAME[st]) scaledStores[STORE_NAME[st]] = 1;
+      });
+      Object.keys(byStore).forEach(function (st) {
+        Object.keys(byStore[st]).forEach(function (d) { dates[d] = 1; });
       });
       if (!matched && (rows || []).length) noSize.push(it.name);
       return byStore;
     });
-    if (loading) return { series: [], loading: true, incomplete: [], noSize: [] };
+    if (loading) return { series: [], loading: true, incomplete: [], noSize: [], scaled: [] };
 
     var all = Object.keys(dates).sort();
     var series = [], incomplete = [];
@@ -1676,14 +1745,39 @@
         perItem.forEach(function (byStore, i) {
           var m = byStore && byStore[s.id];
           if (m && m[d] != null) last[i] = m[d];
-          if (last[i] != null) { sum += last[i]; have++; }
+          // Each item counts as many times as the shopper wants it.
+          if (last[i] != null) { sum += last[i].price * (items[i].qty || 1); have++; }
         });
         if (have === items.length && items.length) pts.push({ date: d, value: Math.round(sum * 100) / 100 });
       });
       if (pts.length) series.push({ id: s.id, name: s.name, color: s.color || 'var(--color-accent)', dash: s.dash || '', points: pts });
       else incomplete.push(s.name);
     });
-    return { series: series, loading: false, incomplete: incomplete, noSize: noSize };
+    return { series: series, loading: false, incomplete: incomplete, noSize: noSize, scaled: Object.keys(scaledStores) };
+  }
+
+  // − N + on a list row. A plain number input would be fewer elements, but the
+  // list is used one-handed in a shop, so the two targets are the point.
+  function qtyStepper(it) {
+    var btn = function (label, to, aria, enabled) {
+      return h('button', {
+        type: 'button', 'aria-label': aria, title: aria, disabled: enabled ? false : 'disabled',
+        style: 'width: 28px; height: 28px; padding: 0; font-size: 15px; line-height: 1; border: 1px solid var(--color-divider); background: transparent;'
+          + ' color: ' + (enabled ? 'var(--color-text)' : MUTED60) + '; cursor: ' + (enabled ? 'pointer' : 'default') + ';',
+        onClick: function (e) { e.stopPropagation(); if (enabled) setEntryQty(it, to); }
+      }, label);
+    };
+    return h('span', {
+      style: 'display: inline-flex; align-items: center; gap: 6px;',
+      role: 'group', 'aria-label': 'Antall ' + it.name
+    }, [
+      btn('−', it.qty - 1, 'Én mindre ' + it.name, it.qty > 1),
+      h('span', {
+        style: "min-width: 1.6em; text-align: center; font-feature-settings: 'tnum' 1; font-weight: 600; font-size: 15px;",
+        'aria-live': 'polite', text: String(it.qty)
+      }),
+      btn('+', it.qty + 1, 'Én mer ' + it.name, it.qty < MAX_QTY)
+    ]);
   }
 
   function renderList() {
@@ -1740,17 +1834,18 @@
     var totals = {};
     STORES.forEach(function (s) { totals[s.name] = { name: s.name, sum: 0, have: 0, id: s.id, lines: [], missing: [] }; });
     items.forEach(function (it) {
-      var seen = {};
+      var seen = {}, qty = it.qty || 1;
       it.variants.forEach(function (v) {
         var t = totals[v.storeName];
         if (!t) return;
         seen[v.storeName] = 1;
-        t.sum += v.price; t.have += 1;
-        t.lines.push({ key: it.key, name: it.name, sizeLabel: it.sizeLabel, size: it.size, price: v.price, perUnit: v.perUnit, unitDim: v.unitDim, isOffer: v.isOffer, best: it.storeCount > 1 && v.price <= it.minPrice });
+        // What the basket costs, so a quantity has to count that many times.
+        t.sum += v.price * qty; t.have += 1;
+        t.lines.push({ key: it.key, name: it.name, sizeLabel: it.sizeLabel, size: it.size, qty: qty, price: v.price, perUnit: v.perUnit, unitDim: v.unitDim, isOffer: v.isOffer, best: it.storeCount > 1 && v.price <= it.minPrice });
       });
       STORES.forEach(function (s) { if (!seen[s.name] && totals[s.name]) totals[s.name].missing.push(it.name); });
     });
-    var cheapestTotal = items.reduce(function (m, it) { return m + it.minPrice; }, 0);
+    var cheapestTotal = items.reduce(function (m, it) { return m + it.minPrice * (it.qty || 1); }, 0);
     var storeRanks = Object.keys(totals).map(function (n) { return totals[n]; })
       .filter(function (t) { return t.have > 0; })
       .sort(function (a, b) { return (b.have - a.have) || (a.sum - b.sum); });
@@ -1795,7 +1890,7 @@
       // looks comparable but isn't.
       var lead = (listKilo && hasUnit) ? nfUnit(it.unitPrice, it.unitDim) : nf(it.minPrice);
       var sub = (listKilo && hasUnit) ? nf(it.minPrice) : (hasUnit ? nfUnit(it.unitPrice, it.unitDim) : (listKilo ? 'ingen kg/l-pris' : ''));
-      return h('div', { 'data-lid': it.id, cls: 'row-hover', style: 'display: grid; grid-template-columns: auto auto 1fr auto; gap: 10px; align-items: center; padding: 12px 16px 12px 8px; border-bottom: 1px solid color-mix(in srgb, var(--color-text) 8%, transparent);' }, [
+      return h('div', { 'data-lid': it.id, cls: 'row-hover', style: 'display: grid; grid-template-columns: auto auto 1fr auto auto; gap: 10px; align-items: center; padding: 12px 16px 12px 8px; border-bottom: 1px solid color-mix(in srgb, var(--color-text) 8%, transparent);' }, [
         dragHandle(it, idx, visible.length),
         h('button', { type: 'button', cls: 'btn btn-ghost', 'aria-label': 'Fjern ' + it.name + ' fra handlelisten', title: 'Fjern fra handlelisten', style: 'width: 34px; height: 34px; padding: 0; font-size: 16px; color: var(--color-accent-700);', onClick: function () { removeFromList(it.key); render(); }, text: '★' }),
         // The name opens the product; the size button below it is its own
@@ -1809,9 +1904,13 @@
             sizeBtn, h('span', { text: '· ' + whereTxt })
           ])
         ]),
+        qtyStepper(it),
         h('span', { style: 'display: flex; flex-direction: column; align-items: flex-end; gap: 2px;' }, [
           h('span', { style: "font-family: var(--font-heading); font-weight: 600; font-size: 20px; font-feature-settings: 'tnum' 1; white-space: nowrap;", text: lead }),
-          sub ? h('span', { style: 'font-size: 12px; color: ' + MUTED60 + "; font-feature-settings: 'tnum' 1; white-space: nowrap;", text: sub }) : null
+          sub ? h('span', { style: 'font-size: 12px; color: ' + MUTED60 + "; font-feature-settings: 'tnum' 1; white-space: nowrap;", text: sub }) : null,
+          // The line total only earns its space once it differs from the unit
+          // price above it.
+          it.qty > 1 ? h('span', { style: 'font-size: 12px; font-weight: 600; color: var(--color-accent-700);' + " font-feature-settings: 'tnum' 1; white-space: nowrap;", text: it.qty + ' × = ' + nf(it.minPrice * it.qty) }) : null
         ])
       ]);
     });
@@ -1908,13 +2007,20 @@
       var caption = 'Hva hele lista ville kostet i hver kjede på hver måledato — kjedens egne registrerte priser, i størrelsen du har valgt per vare. '
         + 'Bare datoer der kjeden har en registrert pris på alle ' + items.length + ' varene er med, og en pris føres videre til den måles på nytt. '
         + (ts.incomplete.length ? ts.incomplete.join(', ') + (ts.incomplete.length === 1 ? ' er utelatt — den har' : ' er utelatt — de har') + ' ikke hatt hele lista registrert på én dato. ' : '')
+        // A scaled line is arithmetic on a real measurement, not a price the
+        // chain ever charged — so it must never pass for one.
+        + (ts.scaled.length ? 'For ' + ts.scaled.join(', ') + ' er prisen regnet om fra en annen pakningsstørrelse (bare den billigste pakningen lagres per butikk per dag), så ' + (ts.scaled.length === 1 ? 'den linja' : 'de linjene') + ' er et anslag. ' : '')
         + 'Siste punkt er siste måling, ikke nødvendigvis dagens pris i seksjon 02.';
       histBody = h('div', {}, [
         h('div', { style: 'display: flex; flex-wrap: wrap; gap: 8px 20px; align-items: baseline; margin-bottom: 16px;' }, [
           h('span', { style: "font-family: var(--font-heading); font-weight: 600; font-size: 30px; font-feature-settings: 'tnum' 1;", text: nf(best.last.value) }),
           h('span', { style: 'font-size: 14px; color: ' + MUTED70 + ';', text: 'billigst hos ' + best.s.name }),
           h('span', { style: 'font-size: 14px; color: ' + (Math.abs(diff) < 0.005 ? MUTED70 : (diff > 0 ? 'var(--color-accent-900)' : 'var(--color-accent-700)')) + ';', text: (Math.abs(diff) < 0.005 ? 'uendret' : (diff > 0 ? '+' : '−') + nf(Math.abs(diff))) + ' siden ' + dTxt(best.first.date) }),
-          h('span', { style: 'font-size: 13px; color: ' + MUTED60 + ';', text: 'målt ' + dTxt(best.last.date) })
+          h('span', { style: 'font-size: 13px; color: ' + MUTED60 + ';', text: 'målt ' + dTxt(best.last.date) }),
+          // An estimated line can beat a measured one purely because the pack
+          // it was scaled from is dearer per litre, so the "cheapest" claim
+          // must not be read as this week's answer — that's section 02's job.
+          ts.scaled.length ? h('span', { style: 'font-size: 13px; color: var(--color-accent-700);', text: '· inneholder anslag — se 02 for dagens priser' }) : null
         ]),
         chartBlock(c, null, caption, 'Prishistorikk for handlelisten, per butikk')
       ]);

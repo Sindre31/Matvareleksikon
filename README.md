@@ -57,13 +57,19 @@ python3 -m http.server 8000
   shopping list. The top bar shows how fresh the data is ("sist oppdatert" =
   the latest recorded price point).
 - **Handleliste** `#/liste` — the products you've starred, kept in
-  `localStorage` (no account). An entry is `<group key>@<size id>`: adding a
+  `localStorage` (no account). An entry is `<group key>@<size id>[*<qty>]`: adding a
   product **asks which pack size** you buy (a one-size product skips the
   dialog), and every price below — the row, the per-store sum, the "billigst"
   tag — is *that* size, so the comparison holds like for like. `@alle` means
   "any size" and is what a list saved before sizes existed reads as.
   The size on each row is a button — **change it** and the item keeps its slot
   in the list (`swapEntry`), so a size change never reshuffles the order.
+  Each row carries a **quantity** (− N +) that counts through the per-store
+  totals, the "handle alt billigst" figure and the basket chart. It rides along
+  as the `*N` suffix, left off entirely at 1, so it survives saving, dragging
+  and sharing without any of those needing to know about it; a list saved or
+  shared before quantities existed reads as one of each. Changing the size
+  keeps the count, and changing the count keeps the row's slot.
   Order is the shopper's own: **drag the ⠿ grip** (pointer events, so touch
   works) or move a row with the arrow keys; the order is saved. Price view is
   **per kg/l** (jamførpris) or **enhetspris**, plus a **"bare med kg/l-pris"**
@@ -83,7 +89,21 @@ python3 -m http.server 8000
   chain has a price for *every* item count (a partial basket reads as a price
   drop that never happened), prices carry forward between observations, and a
   chain that never has the whole list is named as left out rather than drawn
-  short.
+  short. **Pack sizes are the catch**: `ml_price_history` keeps one row per
+  (group, store, day) — that day's cheapest pack — so which size got recorded
+  varies by store and by date, and demanding an exact match made a chain whose
+  cheapest pack is never the pinned size vanish from the chart entirely (a list
+  pinned to 1 l lettmelk drew no Kiwi line, while section 02 above it had Kiwi
+  as the cheapest chain). A store with *any* exact-size measurement still uses
+  only those, so an odd week recorded in another pack carries the last real
+  price forward; only a store that never once recorded the pinned size falls
+  back to **scaling** the measurement to it, labelled both in the caption and
+  beside the headline. Residual bias worth knowing: the history stores the
+  cheapest *pack*, not the cheapest *per unit*, so scaling starts from an
+  expensive-per-litre carton and can make a chain look dearer in the chart than
+  it is today in section 02. Recording the cheapest-per-unit row would fix that
+  at the source, but it changes what the stored series means and would sit
+  discontinuously on the rows already collected.
   Purely client-side. **"Del liste"**
   copies a URL that encodes the entries after the hash (`#/liste?d=…`); opening
   it shows a preview + import banner, so a list travels between phone and PC
