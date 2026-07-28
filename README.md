@@ -340,12 +340,24 @@ group as the offers):
   `ml_price_history` point, so historical prices and offers are preserved — it
   never deletes unless called with `{deleteFirst:true}`. Supports a weekly search
   refresh (`{}`) and a **full-catalogue bulk sweep** (`{bulk:true}`). Kassalapp
-  rate-limits to ~60 req/min per token, so the bulk sweep runs **sequentially and
-  self-chains**: one invocation pages a range (~90 pages) at ~1.1 s/page, then
-  fires the next range itself (`autochain`, on by default) until it reaches the
-  catalogue's reported `last_page`. Only one invocation ever calls the API at a
-  time, so no 429s silently drop pages, and there's no hard page cap to keep in
-  sync as the catalogue grows.
+  rate-limits to ~60 req/min per token ("1 kall per sekund"), so the bulk sweep
+  runs **sequentially and self-chains**: one invocation pages a range until its
+  ~115 s time budget, then fires the next range itself (`autochain`, on by
+  default) until a short page marks the end of the catalogue (~2450 pages).
+  Only one invocation ever calls the API at a time, so no 429s silently drop
+  pages, and there's no hard page cap to keep in sync as the catalogue grows.
+
+  **Pacing** is the interval between request *starts*, not a sleep after each
+  one. The two are not the same: the fetch itself takes ~1.6 s, so adding a flat
+  1.1 s sleep on top paced the sweep at ~2.9 s/page — ~21 req/min, a third of
+  what the token allows, and a 90-page range only got through **41 pages** per
+  invocation. Sleeping only the remainder took the same range to **72 pages**
+  (measured: 1617 ms/page, 37 req/min, 0 skipped), so the full sweep is ~34
+  chained invocations instead of ~60. Each run reports `pagesRead`, `msPerPage`
+  and `reqPerMin`, so a slowdown at the source shows up instead of silently
+  halving coverage. The sweep is now bound by Kassalapp's own response time
+  rather than by our sleep; going faster would need concurrent requests, which
+  would break both the one-call-at-a-time invariant and their stated 1 call/s.
 - **`ml-ingest-ngdata`** — the authoritative Meny assortment (with product
   images) from NorgesGruppen's public **ngdata** API (keyless, browser
   `User-Agent`), the same source `billigkurv` uses for Meny/Spar.
@@ -401,7 +413,8 @@ with no policies — it is the rate limiter's own table, reached only through
   commercial tier is kr 750/month). Prisboka is a free hobby project with no
   ads, which is what that tier allows — adding advertising or any paid feature
   would require the commercial plan. Their rate limit is 60 calls/minute, which
-  the sweep respects (1,1 s/page).
+  the sweep respects — it measures 37 req/min, held down by Kassalapp's own
+  response time rather than by our pacing floor.
 - **Product images are hotlinked** from the chains' CDNs. Kassalapp states it
   does not own the rights to them ("Bilder kan være beskyttet av opphavsrett"),
   so treat a takedown request as expected maintenance rather than a surprise.

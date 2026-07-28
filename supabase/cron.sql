@@ -31,9 +31,10 @@ select cron.schedule(
 -- so every product's price is refreshed weekly and nothing is deleted. Kassalapp
 -- caps requests at ~60/min per token, so the sweep must be SEQUENTIAL: one
 -- net.http_post starts the sweep at page 1, and the edge function self-chains to
--- the next page range (~90 pages/invocation) until it hits the catalogue's
--- last_page. This keeps exactly one invocation calling the API at a time (no 429s
--- dropping pages) and needs no hard page cap — it follows the reported last_page.
+-- the next page range until a short page marks the end of the catalogue (~2450
+-- pages, ~72 per invocation as measured — the 115 s time budget ends a range,
+-- not the `pages` argument). This keeps exactly one invocation calling the API
+-- at a time (no 429s dropping pages) and needs no hard page cap.
 select cron.schedule(
   'ml-ingest-kassalapp-weekly',
   '10 4 * * 1',

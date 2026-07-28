@@ -20,12 +20,20 @@ import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 const API = "https://kassal.app/api/v1";
 const PAGE_SIZE = 100;
 const TIME_BUDGET_MS = 115000;
-// Kassalapp allows ~60 requests/minute per token. One page fetch = one request,
-// so pace the bulk sweep at ~1.1 s between pages (~54/min) to stay under the
-// cap; going faster earns 429s that silently drop pages (and the Rema/Kiwi
+// Kassalapp allows ~60 requests/minute per token ("1 kall per sekund"). One
+// page fetch = one request, so hold ~1.1 s between them (~54/min) to stay under
+// the cap; going faster earns 429s that silently drop pages (and the Rema/Kiwi
 // products on them). Because the sweep self-chains sequentially (below), only
 // one invocation is ever calling the API at a time, so this budget is global.
-const BULK_SLEEP_MS = 1100;
+//
+// This is the interval between request *starts*, not a sleep bolted onto the
+// end of each one. A flat post-fetch sleep double-counts: the fetch itself
+// takes ~1.8 s, so 1.1 s of extra sleep paced the sweep at ~2.9 s/page — about
+// 21 req/min, a third of what the token allows, and the reason a 90-page range
+// only got through ~41 pages inside the time budget (measured on the 2026-07-27
+// run). Sleeping only the remainder keeps the promised 1 call/second and reads
+// ~50 % more of the catalogue per invocation.
+const BULK_INTERVAL_MS = 1100;
 // Safety stop for the self-chaining bulk sweep. The catalogue does not report
 // `last_page` at all (measured: it is absent on every page), so end-of-
 // catalogue is detected from a short page and this is the only hard backstop.
@@ -146,8 +154,10 @@ Deno.serve(async (req: Request) => {
   // offers are preserved.
   const deleteFirst = body.deleteFirst === true;
   const bulk = !!body.bulk;
-  // ~90 pages fits the ~115 s budget at the 1.1 s/page rate limit; the sweep
-  // then self-chains to the next range, so the whole catalogue is covered.
+  // An upper bound on the range, not a promise: TIME_BUDGET_MS is what actually
+  // ends a run, and the sweep self-chains from wherever it stopped, so the whole
+  // catalogue is covered either way. At the measured ~1.5 s/page a range gets
+  // through ~75 pages before the budget bites.
   const pages = Math.max(1, Number(body.pages) || (bulk ? 90 : 2));
   const startPage = Math.max(1, Number(body.startPage) || 1);
   const autochain = body.autochain !== false; // bulk self-continuation, on by default
@@ -158,10 +168,11 @@ Deno.serve(async (req: Request) => {
   const add = (p: any) => { const r = rowFrom(p); if (!r) return; const prev = byKey.get(r.external_id); if (prev && Number(prev.price) <= r.price) return; byKey.set(r.external_id, r); };
 
   let lastPage = startPage - 1, hitEnd = false, catalogLastPage: number | null = null;
-  let skippedPages = 0, consecutiveFailures = 0;
+  let skippedPages = 0, consecutiveFailures = 0, pagesRead = 0;
   if (bulk) {
     for (let page = startPage; page < startPage + pages; page++) {
       if (Date.now() - start > TIME_BUDGET_MS) break;
+      const pageStart = Date.now();
       const { data, lastPage: metaLast } = await getPage(`${API}/products?size=${PAGE_SIZE}&page=${page}`, token);
       lastPage = page;
       if (metaLast != null) catalogLastPage = metaLast;
@@ -177,27 +188,38 @@ Deno.serve(async (req: Request) => {
           console.error(`kassalapp: giving up range at page ${page} after ${consecutiveFailures} failures`);
           break;
         }
-        await sleep(BULK_SLEEP_MS * consecutiveFailures);
+        await sleep(BULK_INTERVAL_MS * consecutiveFailures);
         continue;
       }
       consecutiveFailures = 0;
+      pagesRead++;
       data.forEach(add);
       // End of catalogue: a short page, or we've reached the reported last_page.
       if (data.length < PAGE_SIZE || (catalogLastPage != null && page >= catalogLastPage)) { hitEnd = true; break; }
-      await sleep(BULK_SLEEP_MS);
+      // Hold the interval from this request's START, so the fetch's own latency
+      // counts towards it instead of being added on top.
+      const wait = pageStart + BULK_INTERVAL_MS - Date.now();
+      if (wait > 0) await sleep(wait);
     }
   } else {
     for (const term of terms) {
       if (Date.now() - start > TIME_BUDGET_MS) break;
       for (let page = 1; page <= pages; page++) {
+        const pageStart = Date.now();
         const { data } = await getPage(`${API}/products?search=${encodeURIComponent(term)}&size=${PAGE_SIZE}&page=${page}`, token);
         if (data == null) break;
+        pagesRead++;
         data.forEach(add);
         if (data.length < PAGE_SIZE) break;
-        await sleep(BULK_SLEEP_MS);
+        const wait = pageStart + BULK_INTERVAL_MS - Date.now();
+        if (wait > 0) await sleep(wait);
       }
     }
   }
+
+  // Pacing is measured over the fetch loop alone — the upserts below are our
+  // own database time and would flatter the req/min figure.
+  const loopMs = Date.now() - start;
 
   const rows = [...byKey.values()];
   if (deleteFirst) await fetch(`${SB_URL}/rest/v1/ml_offers?source=eq.kassalapp`, { method: "DELETE", headers: sbHeaders });
@@ -232,7 +254,16 @@ Deno.serve(async (req: Request) => {
     chained = true;
   }
 
-  return json({ mode: bulk ? "bulk" : "search", productsFound: rows.length, inserted, historyInserted, backfillInserted, lastPage, catalogLastPage, hitEnd, skippedPages, chained, nextPage: bulk && !hitEnd ? nextPage : null, elapsedMs: Date.now() - start });
+  const elapsedMs = Date.now() - start;
+  return json({
+    mode: bulk ? "bulk" : "search", productsFound: rows.length, inserted, historyInserted, backfillInserted,
+    lastPage, catalogLastPage, hitEnd, skippedPages, chained, nextPage: bulk && !hitEnd ? nextPage : null,
+    // Pacing, so a slowdown at the source is visible instead of silently
+    // halving how much of the catalogue a run covers.
+    pagesRead, msPerPage: pagesRead ? Math.round(loopMs / pagesRead) : null,
+    reqPerMin: pagesRead ? Math.round(60000 / (loopMs / pagesRead)) : null,
+    elapsedMs,
+  });
 });
 
 function json(body: unknown, status = 200) {
