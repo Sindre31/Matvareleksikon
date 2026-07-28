@@ -407,10 +407,23 @@ test('bestPerStore — narrowing to a size compares like for like', () => {
 // ── Handleliste entries: product + size, in the shopper's own order ────────
 test('entryId / parseEntry — round-trip, and a legacy bare key means any size', () => {
   assert.equal(lib.entryId('lettmelk q', '1.75l'), 'lettmelk q@1.75l');
-  assert.deepEqual(lib.parseEntry('lettmelk q@1.75l'), { id: 'lettmelk q@1.75l', key: 'lettmelk q', size: '1.75l' });
+  assert.deepEqual(lib.parseEntry('lettmelk q@1.75l'), { id: 'lettmelk q@1.75l', key: 'lettmelk q', size: '1.75l', qty: 1 });
   // a list saved before sizes existed still resolves, as "any size"
-  assert.deepEqual(lib.parseEntry('lettmelk q'), { id: 'lettmelk q@alle', key: 'lettmelk q', size: 'alle' });
+  assert.deepEqual(lib.parseEntry('lettmelk q'), { id: 'lettmelk q@alle', key: 'lettmelk q', size: 'alle', qty: 1 });
   assert.equal(lib.entryId('kaffe', null), 'kaffe@alle');
+});
+
+test('entryId / parseEntry — quantity rides along, and 1 leaves no trace', () => {
+  assert.equal(lib.entryId('melk', '1l', 3), 'melk@1l*3');
+  assert.equal(lib.entryId('melk', '1l', 1), 'melk@1l', 'the common case stays as it was');
+  assert.deepEqual(lib.parseEntry('melk@1l*3'), { id: 'melk@1l*3', key: 'melk', size: '1l', qty: 3 });
+  // a list shared or saved before quantities existed reads as one of each
+  assert.equal(lib.parseEntry('melk@1l').qty, 1);
+  // nonsense never yields a nonsense basket
+  assert.equal(lib.parseEntry('melk@1l*0').qty, 1);
+  assert.equal(lib.parseEntry('melk@1l*-2').qty, 1, 'a stray minus is not a quantity marker');
+  assert.equal(lib.parseEntry('melk@1l*999').qty, 99, 'clamped');
+  assert.equal(lib.entryId('melk', '1l', 'tre'), 'melk@1l');
 });
 
 test('moveEntry — reorders without mutating, and clamps a stray drop', () => {
@@ -493,12 +506,59 @@ test('listStoreSeries — points are the entry\'s size, and carry forward', () =
   assert.deepEqual(out.series[0].points, [{ date: '2026-01-01', value: 20 }, { date: '2026-01-15', value: 21 }]);
 });
 
-test('listStoreSeries — an item with no point in its size names itself', () => {
-  const items = [{ key: 'melk', name: 'Melk', size: '0.5l' }];
+// The regression behind "Kiwi vises ikke": ml_price_history keeps one row per
+// (group, store, day), so a chain whose cheapest pack is never the pinned size
+// used to vanish from the chart entirely — while the per-store totals right
+// above it had that chain as the cheapest.
+test('listStoreSeries — a chain that never records the pinned size is scaled in, not dropped', () => {
+  const items = [{ key: 'melk', name: 'Melk', size: '1l' }];
+  const hist = {
+    melk: [
+      hrow('kiwi', 'Lettmelk 0,5 l', 13.1, '2026-01-01'),   // Kiwi only ever records the half-litre
+      hrow('meny', 'Lettmelk 1 l', 21.5, '2026-01-01')
+    ]
+  };
+  const out = lib.listStoreSeries(items, hist, HSTORES);
+  assert.deepEqual(out.series.map((s) => s.name), ['Kiwi', 'Meny'], 'both chains are on the chart');
+  assert.deepEqual(out.series[0].points, [{ date: '2026-01-01', value: 26.2 }], '0,5 l scaled to the litre');
+  assert.deepEqual(out.series[1].points, [{ date: '2026-01-01', value: 21.5 }], 'a real measurement is untouched');
+  assert.deepEqual(out.scaled, ['Kiwi'], 'and the reader is told which line is arithmetic');
+  assert.deepEqual(out.noSize, []);
+});
+
+test('listStoreSeries — a real measurement beats a scaled one for the same chain', () => {
+  const items = [{ key: 'melk', name: 'Melk', size: '1l' }];
+  const hist = {
+    melk: [
+      hrow('kiwi', 'Melk 0,5 l', 13, '2026-01-01'),   // would scale to 26
+      hrow('kiwi', 'Melk 1 l', 20, '2026-01-08')      // the real thing
+    ]
+  };
+  const out = lib.listStoreSeries(items, hist, [HSTORES[0]]);
+  assert.deepEqual(out.series[0].points, [{ date: '2026-01-08', value: 20 }]);
+  assert.deepEqual(out.scaled, [], 'nothing was estimated for this chain');
+});
+
+test('listStoreSeries — sizes that cannot be converted still name themselves', () => {
+  // Litres against kilos is not arithmetic anyone should do.
+  const items = [{ key: 'melk', name: 'Melk', size: '0.5kg' }];
   const hist = { melk: [hrow('kiwi', 'Melk 1 l', 20, '2026-01-01')] };
   const out = lib.listStoreSeries(items, hist, HSTORES);
   assert.deepEqual(out.series, []);
   assert.deepEqual(out.noSize, ['Melk']);
+});
+
+test('listStoreSeries — a quantity counts that many times', () => {
+  const items = [
+    { key: 'melk', name: 'Melk', size: 'alle', qty: 3 },
+    { key: 'kaffe', name: 'Kaffe', size: 'alle' }        // no qty = one
+  ];
+  const hist = {
+    melk: [hrow('kiwi', 'Melk 1 l', 20, '2026-01-01')],
+    kaffe: [hrow('kiwi', 'Kaffe 500 g', 60, '2026-01-01')]
+  };
+  const out = lib.listStoreSeries(items, hist, [HSTORES[0]]);
+  assert.deepEqual(out.series[0].points, [{ date: '2026-01-01', value: 120 }]);   // 3×20 + 60
 });
 
 test('listStoreSeries — still loading, or nothing listed', () => {
