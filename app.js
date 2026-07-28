@@ -361,7 +361,7 @@
     scanSubmitting: false, scanError: null, scanImageUrl: null, scanNote: null,
     doneCount: 0, doneMsgN: 0,
     list: {}, copiedFor: null, lastUpdated: '', fromCache: false, sharedList: null, listShareCopied: false,
-    listSort: 'navn', listPriceMode: 'kilo', listOnlyUnit: false,
+    listSort: 'navn', listPriceMode: 'kilo', listOnlyUnit: false, listOpenStore: null,
     history: {} // key -> 'loading' | [rows]
   };
   state.list = loadList();
@@ -1202,14 +1202,23 @@
     keys.forEach(function (k) { var g = GROUP_BY_KEY[k]; if (g) items.push(g); else missing++; });
 
     // Per-store totals: for each store, sum the cheapest representative variant
-    // of every listed item the store carries, and count coverage.
+    // of every listed item the store carries, and count coverage. `lines` keeps
+    // the individual products behind the sum — shaped like a group (name /
+    // minPrice / unitPrice) so the list's own sort applies to them too — and
+    // `missing` names what the store doesn't carry, so an expanded row explains
+    // both halves of "har N av M".
     var totals = {};
-    STORES.forEach(function (s) { totals[s.name] = { name: s.name, sum: 0, have: 0, id: s.id }; });
+    STORES.forEach(function (s) { totals[s.name] = { name: s.name, sum: 0, have: 0, id: s.id, lines: [], missing: [] }; });
     items.forEach(function (g) {
+      var seen = {};
       g.variants.forEach(function (v) {
         var t = totals[v.storeName];
-        if (t) { t.sum += v.price; t.have += 1; }
+        if (!t) return;
+        seen[v.storeName] = 1;
+        t.sum += v.price; t.have += 1;
+        t.lines.push({ key: g.key, name: g.name, minPrice: v.price, unitPrice: v.perUnit, unitDim: v.unitDim, isOffer: v.isOffer, best: g.storeCount > 1 && v.price <= g.minPrice });
       });
+      STORES.forEach(function (s) { if (!seen[s.name] && totals[s.name]) totals[s.name].missing.push(g.name); });
     });
     var cheapestTotal = items.reduce(function (m, g) { return m + g.minPrice; }, 0);
     var storeRanks = Object.keys(totals).map(function (n) { return totals[n]; })
@@ -1281,9 +1290,19 @@
       missing ? h('p', { style: 'margin: 16px 0 0; font-size: 13px; color: ' + MUTED60 + ';', text: missing + (missing === 1 ? ' vare' : ' varer') + ' i lista finnes ikke i leksikonet akkurat nå (kan ha gått ut av sortimentet) og telles ikke med.' }) : null
     ]);
 
+    // Each store row opens to show what makes up its sum — the listed products
+    // at that store's own price, in the same order and price view as section 01
+    // — plus what it doesn't carry, which is the other half of "har N av M".
     var compRows = storeRanks.map(function (t, i) {
       var full = t.have === items.length;
-      return h('div', { style: 'display: grid; grid-template-columns: 1fr auto auto; gap: 12px; align-items: center; padding: 14px 20px; border-bottom: 1px solid color-mix(in srgb, var(--color-text) 8%, transparent);' + (i === 0 ? ' background: color-mix(in srgb, var(--color-accent) 6%, transparent);' : '') }, [
+      var open = state.listOpenStore === t.id;
+      var toggle = function () { setState({ listOpenStore: open ? null : t.id }); };
+      var headRow = h('div', Object.assign({
+        cls: 'row-hover',
+        style: 'display: grid; grid-template-columns: auto 1fr auto auto; gap: 12px; align-items: center; padding: 14px 20px; cursor: pointer;',
+        'aria-expanded': open ? 'true' : 'false'
+      }, activate(toggle, (open ? 'Skjul' : 'Vis') + ' varene ' + t.name + ' fører, ' + nf(t.sum) + ' for ' + t.have + ' av ' + items.length)), [
+        h('span', { 'aria-hidden': 'true', style: 'font-size: 12px; color: ' + MUTED60 + '; width: 12px; display: inline-block;' + (open ? ' transform: rotate(90deg);' : ''), text: '▶' }),
         h('span', { style: 'display: flex; align-items: center; gap: 12px;' }, [
           storeLine((STORE_STYLE[t.id] || {}).color || 'var(--color-accent)', (STORE_STYLE[t.id] || {}).dash || '', 18),
           h('span', { style: NAME_STYLE, text: t.name })
@@ -1291,13 +1310,39 @@
         h('span', { cls: 'tag ' + (full ? 'tag-accent' : 'tag-neutral'), text: 'har ' + t.have + ' av ' + items.length }),
         h('span', { style: "font-family: var(--font-heading); font-weight: 600; font-size: 22px; font-feature-settings: 'tnum' 1; white-space: nowrap;", text: nf(t.sum) })
       ]);
+
+      var panel = null;
+      if (open) {
+        var lines = sortList(t.lines, state.listSort, state.listPriceMode).map(function (ln) {
+          var hasUnit = ln.unitPrice != null;
+          var lead = (listKilo && hasUnit) ? nfUnit(ln.unitPrice, ln.unitDim) : nf(ln.minPrice);
+          var sub = (listKilo && hasUnit) ? nf(ln.minPrice) : (hasUnit ? nfUnit(ln.unitPrice, ln.unitDim) : '');
+          return h('div', { cls: 'row-hover', style: 'display: grid; grid-template-columns: 1fr auto; gap: 12px; align-items: center; padding: 9px 20px 9px 44px;' }, [
+            h('span', Object.assign({ style: 'cursor: pointer; display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap;' }, activate(openGroup(ln.key), 'Åpne ' + ln.name + ' i leksikonet')), [
+              h('span', { style: 'font-size: 14px;', text: ln.name }),
+              ln.best ? h('span', { cls: 'tag tag-accent', style: 'font-size: 10px;', text: 'billigst' }) : null,
+              ln.isOffer ? h('span', { cls: 'tag tag-outline', style: 'font-size: 10px;', text: 'tilbud' }) : null
+            ]),
+            h('span', { style: 'display: flex; flex-direction: column; align-items: flex-end;' }, [
+              h('span', { style: "font-size: 15px; font-weight: 600; font-feature-settings: 'tnum' 1; white-space: nowrap;", text: lead }),
+              sub ? h('span', { style: 'font-size: 12px; color: ' + MUTED60 + "; font-feature-settings: 'tnum' 1; white-space: nowrap;", text: sub }) : null
+            ])
+          ]);
+        });
+        if (t.missing.length) {
+          lines.push(h('p', { style: 'margin: 0; padding: 10px 20px 12px 44px; font-size: 13px; line-height: 20px; color: ' + MUTED60 + ';', text: 'Fører ikke: ' + t.missing.join(', ') + '.' }));
+        }
+        panel = h('div', { style: 'border-top: 1px dashed color-mix(in srgb, var(--color-text) 12%, transparent); padding: 4px 0 2px; background: color-mix(in srgb, var(--color-text) 3%, transparent);' }, lines);
+      }
+
+      return h('div', { style: 'border-bottom: 1px solid color-mix(in srgb, var(--color-text) 8%, transparent);' + (i === 0 ? ' background: color-mix(in srgb, var(--color-accent) 6%, transparent);' : '') }, [headRow, panel]);
     });
 
     var compBlock = h('div', { style: 'margin-top: 40px;' }, [
       h('span', { style: KICKER, text: '02 · Hva lista koster per butikk' }),
       h('hr', { style: RULE }),
       h('div', { cls: 'blueprint', style: 'padding: 0;' }, corners().concat(compRows)),
-      h('p', { style: 'margin: 16px 0 0; font-size: 13px; color: ' + MUTED60 + ';', text: 'Summen gjelder bare varene hver butikk faktisk fører (se «har N av ' + items.length + '»), så en lav sum kan bety at butikken mangler varer. Handler du hver vare der den er billigst, lander lista på ' + nf(cheapestTotal) + '.' })
+      h('p', { style: 'margin: 16px 0 0; font-size: 13px; color: ' + MUTED60 + ';', text: 'Trykk på en butikk for å se varene og prisene bak summen. Summen gjelder bare varene hver butikk faktisk fører (se «har N av ' + items.length + '»), så en lav sum kan bety at butikken mangler varer. Handler du hver vare der den er billigst, lander lista på ' + nf(cheapestTotal) + '.' })
     ]);
 
     return h('section', { 'data-screen-label': 'Handleliste' }, [head, sharedBanner, listBlock, compBlock]);
