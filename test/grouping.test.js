@@ -423,6 +423,27 @@ test('moveEntry — reorders without mutating, and clamps a stray drop', () => {
   assert.deepEqual(lib.moveEntry(list, 7, 0), list);          // out-of-range source: no-op
 });
 
+test('swapEntry — a size change keeps the item in its slot', () => {
+  const list = ['a@alle', 'b@1l', 'c@alle'];
+  assert.deepEqual(lib.swapEntry(list, 'b@1l', 'b@1.75l'), ['a@alle', 'b@1.75l', 'c@alle']);
+  assert.deepEqual(list, ['a@alle', 'b@1l', 'c@alle']);          // input untouched
+  assert.deepEqual(lib.swapEntry(list, 'x@alle', 'x@1l'), list); // unknown entry: no-op
+  // the same product can never end up in the list twice
+  assert.deepEqual(lib.swapEntry(['a@alle', 'b@1l', 'a@1l'], 'b@1l', 'a@1l'), ['a@alle', 'a@1l']);
+  assert.deepEqual(lib.swapEntry(['a@1l', 'b@1l'], 'b@1l', 'a@1l'), ['a@1l']);
+});
+
+test('rowSizeId — a history point is sized by the product it recorded', () => {
+  // the weekly row keeps the name it came from, so the pack it measured is
+  // knowable even when next week's row is a different size
+  assert.equal(lib.rowSizeId({ product_name: 'Lettmelk 0,5% 1,75l Q' }), '1.75l');
+  assert.equal(lib.rowSizeId({ product_name: 'Lettmelk 1 l' }), '1l');
+  assert.equal(lib.rowSizeId({ product_name: 'Kjottdeig 400 g' }), '0.4kg');
+  assert.equal(lib.rowSizeId({ product_name: 'Tacokrydder' }), 'ukjent');
+  assert.equal(lib.rowSizeId({}), 'ukjent');
+  assert.equal(lib.rowSizeId(null), 'ukjent');
+});
+
 // ── The price-history chart ────────────────────────────────────────────────
 test('chartFrom — plots each series over the union of dates', () => {
   const c = lib.chartFrom([

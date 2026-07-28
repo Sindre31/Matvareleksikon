@@ -62,6 +62,8 @@ python3 -m http.server 8000
   dialog), and every price below — the row, the per-store sum, the "billigst"
   tag — is *that* size, so the comparison holds like for like. `@alle` means
   "any size" and is what a list saved before sizes existed reads as.
+  The size on each row is a button — **change it** and the item keeps its slot
+  in the list (`swapEntry`), so a size change never reshuffles the order.
   Order is the shopper's own: **drag the ⠿ grip** (pointer events, so touch
   works) or move a row with the arrow keys; the order is saved. Price view is
   **per kg/l** (jamførpris) or **enhetspris**, plus a **"bare med kg/l-pris"**
@@ -94,11 +96,15 @@ python3 -m http.server 8000
   so a small carton can't masquerade as the best deal.
   The page carries **filters and a sort** — by chain, by pack **size**, and
   billigst / størst pakning / butikk A–Å — and a **price-history chart right
-  here**, no click-through needed. The chain filter drives both: narrowing to
-  one chain narrows the chart too. The chart can be shown **per kg/l**, which
-  needs a pack size the history rows don't carry, so it converts with the size
-  that store sells today and **drops the stores with no stated size** rather
-  than inventing one (the caption says so).
+  here**, no click-through needed. Both filters drive the chart: the chain
+  filter picks the lines, the size filter keeps only the points recorded for
+  that pack. That works because `ml_price_history` keeps the `product_name`
+  each point was recorded from, so a point's own size is knowable (`rowSizeId`)
+  — necessary, since the ingest stores only the **cheapest** row per (group,
+  store, day), so which size a weekly point represents can change from week to
+  week. **Per kg/l** therefore divides by *that row's* size, never by the pack
+  the store sells today; points with no stated size are dropped and the caption
+  says so.
   The group and variant pages each carry a **"Kopier lenke"** button (the URLs
   are already shareable) and the shopping-list star.
 - **Produktside (variant)** `#/vare/:key/:store` — one store's product with, when
