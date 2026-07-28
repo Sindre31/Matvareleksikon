@@ -737,7 +737,9 @@
     // merge several of them, so fetch by the set of server keys it contains.
     var keys = (g.serverKeys && g.serverKeys.length) ? g.serverKeys : [key];
     var inList = keys.map(function (k) { return '"' + String(k).replace(/"/g, '') + '"'; }).join(',');
-    sb('/ml_price_history?select=store_id,price,pre_price,is_offer,observed_at,source&group_key=in.(' + encodeURIComponent(inList) + ')&order=observed_at.asc')
+    // product_name comes along so the chart can read each point's own pack
+    // size — the group page filters and converts per row, not per store.
+    sb('/ml_price_history?select=store_id,price,pre_price,is_offer,observed_at,source,product_name&group_key=in.(' + encodeURIComponent(inList) + ')&order=observed_at.asc')
       .then(function (r) { return r.ok ? r.json() : []; })
       // Drop points from stores the leksikon doesn't show, so a hidden chain
       // can't draw a line on the chart or a row in "Registreringer".
@@ -828,7 +830,31 @@
     var g = GROUP_BY_KEY[key];
     var opts = g ? sizeOptions(g) : [];
     if (opts.length <= 1) { addToList(key, opts.length ? opts[0].id : 'alle'); render(); return; }
-    setState({ sizePicker: key });
+    setState({ sizePicker: { key: key, replace: null } });
+  }
+  // Re-open the same dialog for an item already on the list. `replace` carries
+  // the entry it stands in for, so the new size lands in that entry's slot —
+  // changing a size must not shuffle a list the shopper has dragged into order.
+  function editEntrySize(entry) {
+    return function () { setState({ sizePicker: { key: entry.key, replace: entry.id, current: entry.size } }); };
+  }
+  // Swap one entry for another in place, keeping its slot. A duplicate of the
+  // incoming entry elsewhere in the list is dropped, so a swap can never leave
+  // the same product twice.
+  function swapEntry(list, oldId, newId) {
+    var arr = (Array.isArray(list) ? list : []).slice();
+    var i = arr.indexOf(oldId);
+    if (i < 0) return arr;
+    var dup = arr.indexOf(newId);
+    if (dup > -1 && dup !== i) { arr.splice(dup, 1); if (dup < i) i--; }
+    arr[i] = newId;
+    return arr;
+  }
+  function replaceEntry(oldId, key, size) {
+    var id = entryId(key, size);
+    if (state.list.indexOf(oldId) < 0) { addToList(key, size); return; }
+    state.list = swapEntry(state.list, oldId, id);
+    saveList();
   }
 
   // Small star toggle overlaid on a product card (does not open the card).
@@ -855,38 +881,46 @@
   // stores carry it, plus "alle størrelser" for a shopper who just wants the
   // product at whatever size is cheapest.
   function sizePickerOverlay() {
-    var key = state.sizePicker;
-    var g = key ? GROUP_BY_KEY[key] : null;
+    var req = state.sizePicker || {};
+    var g = req.key ? GROUP_BY_KEY[req.key] : null;
     if (!g) return null;
+    var editing = !!req.replace;
     var close = function () { setState({ sizePicker: null }); };
-    var pick = function (id) { return function () { addToList(key, id); setState({ sizePicker: null }); }; }
+    var pick = function (id) {
+      return function () {
+        if (editing) replaceEntry(req.replace, req.key, id); else addToList(req.key, id);
+        setState({ sizePicker: null });
+      };
+    };
     var opts = sizeOptions(g);
     var rowStyle = 'display: grid; grid-template-columns: 1fr auto; gap: 12px; align-items: center; width: 100%; text-align: left; padding: 12px 16px; cursor: pointer; border: 0; background: transparent; color: inherit; font: inherit; border-bottom: 1px solid color-mix(in srgb, var(--color-text) 8%, transparent);';
-    var rows = opts.map(function (o) {
-      return h('button', { type: 'button', cls: 'row-hover', style: rowStyle, onClick: pick(o.id) }, [
+    var sizeRow = function (id, label, sub, price) {
+      var on = editing && req.current === id;
+      return h('button', {
+        type: 'button', cls: 'row-hover', 'aria-current': on ? 'true' : false,
+        style: rowStyle + (on ? ' background: color-mix(in srgb, var(--color-accent) 8%, transparent);' : ''),
+        onClick: pick(id)
+      }, [
         h('span', {}, [
-          h('span', { style: SIZE_NAME_STYLE, text: o.label }),
-          h('span', { style: 'display: block; font-size: 13px; color: ' + MUTED60 + ';', text: o.storeCount + (o.storeCount === 1 ? ' butikk' : ' butikker') })
+          h('span', { style: SIZE_NAME_STYLE, text: label }),
+          h('span', { style: 'display: block; font-size: 13px; color: ' + MUTED60 + ';', text: on ? sub + ' · valgt nå' : sub })
         ]),
-        h('span', { style: "font-family: var(--font-heading); font-weight: 600; font-size: 18px; font-feature-settings: 'tnum' 1; white-space: nowrap;", text: 'fra ' + nf(o.minPrice) })
+        h('span', { style: "font-family: var(--font-heading); font-weight: 600; font-size: 18px; font-feature-settings: 'tnum' 1; white-space: nowrap;", text: 'fra ' + nf(price) })
       ]);
+    };
+    var rows = opts.map(function (o) {
+      return sizeRow(o.id, o.label, o.storeCount + (o.storeCount === 1 ? ' butikk' : ' butikker'), o.minPrice);
     });
-    rows.push(h('button', { type: 'button', cls: 'row-hover', style: rowStyle, onClick: pick('alle') }, [
-      h('span', {}, [
-        h('span', { style: SIZE_NAME_STYLE, text: 'Alle størrelser' }),
-        h('span', { style: 'display: block; font-size: 13px; color: ' + MUTED60 + ';', text: 'sammenlign på billigst per kg/l uansett pakning' })
-      ]),
-      h('span', { style: "font-family: var(--font-heading); font-weight: 600; font-size: 18px; font-feature-settings: 'tnum' 1; white-space: nowrap;", text: 'fra ' + nf(g.minPrice) })
-    ]));
+    rows.push(sizeRow('alle', 'Alle størrelser', 'sammenlign på billigst per kg/l uansett pakning', g.minPrice));
     var card = h('div', {
-      cls: 'blueprint', role: 'dialog', 'aria-modal': 'true', 'aria-label': 'Velg størrelse for ' + g.name,
+      cls: 'blueprint', role: 'dialog', 'aria-modal': 'true', 'aria-label': (editing ? 'Endre størrelse for ' : 'Velg størrelse for ') + g.name,
       style: 'width: min(520px, 100%); max-height: 80vh; overflow: auto; background: var(--color-bg); padding: 0;',
       onClick: function (e) { e.stopPropagation(); }
     }, corners().concat([
       h('div', { style: 'padding: 20px 16px 12px;' }, [
-        h('span', { style: KICKER + ' margin-bottom: 6px;', text: 'Velg størrelse' }),
+        h('span', { style: KICKER + ' margin-bottom: 6px;', text: editing ? 'Endre størrelse' : 'Velg størrelse' }),
         h('span', { style: 'display: block; font-family: var(--font-heading); font-weight: 600; font-size: 22px; letter-spacing: 0.02em; text-transform: uppercase;', text: g.name }),
-        h('p', { style: 'margin: 8px 0 0; font-size: 14px; line-height: 20px; color: ' + MUTED70 + ';', text: 'Hvilken pakning skal i handlelisten? Butikksummene regnes ut fra den, så sammenligningen gjelder samme vare.' })
+        h('p', { style: 'margin: 8px 0 0; font-size: 14px; line-height: 20px; color: ' + MUTED70 + ';', text: (editing ? 'Hvilken pakning skal lista regne med? Varen blir liggende der den er i lista.' : 'Hvilken pakning skal i handlelisten?') + ' Butikksummene regnes ut fra den, så sammenligningen gjelder samme vare.' })
       ]),
       h('div', {}, rows),
       h('div', { style: 'padding: 14px 16px;' }, [
@@ -1208,9 +1242,12 @@
     ]);
 
     // ── Prishistorikk, right on the product page ───────────────────────────
-    // Same store filter as the table above, so narrowing to one chain narrows
-    // both. Per kg/l needs a pack size the history rows don't carry — see
-    // amountByStore — so that view drops the stores without a known size.
+    // Both filters above drive the chart: the chain filter picks the lines,
+    // and the size filter keeps only the points recorded for that pack — each
+    // history row names the product it came from, so its own size is knowable
+    // (rowAmount). Per kg/l divides by *that* row's size, never by the pack the
+    // store happens to sell today, which is the only way a group whose weekly
+    // point flips between a 0,5 l and a 1,75 l carton compares at all.
     var hist = state.history[g.key];
     var visibleStores = {};
     shownVariants.forEach(function (v) { visibleStores[v.storeId] = 1; });
@@ -1219,22 +1256,31 @@
       histBody = h('p', { style: 'font-size: 15px; color: ' + MUTED70 + ';', text: 'Laster prishistorikk …' });
     } else {
       var perUnit = state.histMode === 'kilo';
-      var amounts = amountByStore(g, gsize);
-      var hrows = hist.filter(function (r) { return visibleStores[r.store_id]; });
-      var dropped = perUnit ? hrows.filter(function (r) { return !amounts[r.store_id]; }).length : 0;
-      var series = storeSeries(hrows, function (r, st) {
+      var inView = hist.filter(function (r) { return visibleStores[r.store_id]; });
+      var hrows = gsize === 'alle' ? inView : inView.filter(function (r) { return rowSizeId(r) === gsize; });
+      var sizeDropped = inView.length - hrows.length;
+      var unitDropped = 0;
+      var series = storeSeries(hrows, function (r) {
         var p = Number(r.price);
         if (!perUnit) return p;
-        var a = amounts[st];
-        return a ? p / a.amount : null;
+        var a = rowAmount(r);
+        if (!a) { unitDropped++; return null; }
+        return p / a.value;
       });
       if (!series.length) {
-        histBody = h('p', { style: 'font-size: 15px; color: ' + MUTED70 + ';', text: hrows.length ? 'Ingen av de valgte butikkene har en oppgitt pakningsstørrelse, så prisen kan ikke regnes om per kg/l.' : 'Ingen prishistorikk ennå for dette utvalget. Den bygges opp fra uke til uke.' });
+        histBody = h('p', { style: 'font-size: 15px; line-height: 22px; color: ' + MUTED70 + ';', text: !inView.length
+          ? 'Ingen prishistorikk ennå for dette utvalget. Den bygges opp fra uke til uke.'
+          : (!hrows.length
+            ? 'Ingen målepunkter for ' + sizeLabel(gsize).toLowerCase() + ' ennå. Hver uke lagres bare den billigste pakningen per butikk, så en størrelse dukker opp i grafen de ukene den var billigst. Velg «alle størrelser» for å se alt.'
+            : 'Ingen av målepunktene oppgir en pakningsstørrelse, så prisen kan ikke regnes om per kg/l.') });
       } else {
         var ch = chartFrom(series);
-        var dim = perUnit ? (Object.keys(amounts).map(function (k) { return amounts[k].dim; })[0] || 'enhet') : null;
+        var dims = {};
+        hrows.forEach(function (r) { var a = rowAmount(r); if (a) dims[a.dim] = 1; });
+        var dim = Object.keys(dims)[0] || 'enhet';
         histNote = (ch.single ? 'Ett målepunkt så langt — prishistorikken bygges opp hver uke fra tilbudsavisene.' : 'Ukentlige målepunkter fra tilbudsavisene.')
-          + (perUnit ? ' Vist per ' + dim + ', regnet om med pakningsstørrelsen butikken fører i dag' + (dropped ? ' — butikker uten oppgitt størrelse er utelatt' : '') + '.' : '');
+          + (perUnit ? ' Vist per ' + dim + ', regnet om med pakningsstørrelsen hvert målepunkt faktisk gjelder' + (unitDropped ? ' — målepunkter uten oppgitt størrelse er utelatt' : '') + '.' : '')
+          + (gsize !== 'alle' ? ' Bare målepunkter for ' + sizeLabel(gsize).toLowerCase() + (sizeDropped ? ' — ' + sizeDropped + ' punkt' + (sizeDropped === 1 ? '' : 'er') + ' for andre størrelser er utelatt' : '') + '.' : '');
         histBody = chartBlock(ch, null, histNote, 'Prishistorikk for ' + g.name);
       }
     }
@@ -1340,14 +1386,15 @@
     ]));
   }
 
-  // Per kg/l on a history row needs a pack size, and the rows don't carry one
-  // — they're per product group and store. Convert with the size that store
-  // sells today, which is right whenever the pack hasn't changed, and drop the
-  // stores where no size is known rather than inventing one. Callers say so.
-  function amountByStore(g, sizeId) {
-    var out = {};
-    bestPerStore(g, sizeId).forEach(function (v) { if (v.amount != null && v.unitDim) out[v.storeId] = { amount: v.amount, dim: v.unitDim }; });
-    return out;
+  // A history row keeps the product name it was recorded from, so the pack it
+  // measured is knowable — read the size off the row itself rather than
+  // assuming the pack the store sells today. Only the ingest's cheapest row
+  // per (group, store, day) is stored, so which size a point represents can
+  // change from week to week; that's exactly why this must be per row.
+  function rowAmount(r) { return parseAmount(r && r.product_name) || null; }
+  function rowSizeId(r) {
+    var a = rowAmount(r);
+    return sizeIdOf({ amount: a ? a.value : null, unitDim: a ? a.dim : null });
   }
 
   function renderVariant() {
@@ -1710,8 +1757,16 @@
       var best = it.variants[0];
       var hasUnit = it.unitPrice != null;
       var priceTxt = nf(it.minPrice) + (hasUnit ? ' · ' + nfUnit(it.unitPrice, it.unitDim) : '');
-      var whereTxt = (it.size === 'alle' ? 'alle størrelser' : it.sizeLabel) + ' · '
-        + (it.storeCount > 1 ? 'billigst hos ' + best.storeName + ' · ' + it.storeCount + ' butikker' : best.storeName);
+      var whereTxt = it.storeCount > 1 ? 'billigst hos ' + best.storeName + ' · ' + it.storeCount + ' butikker' : best.storeName;
+      // The size is its own control: tap it to swap pack size without losing
+      // the item's place in the list.
+      var sizeBtn = h('button', {
+        type: 'button', cls: 'btn btn-ghost',
+        'aria-label': 'Endre størrelse for ' + it.name + ', nå ' + it.sizeLabel.toLowerCase(),
+        title: 'Endre størrelse',
+        style: 'min-height: 22px; padding: 0 6px; font-size: 12px; letter-spacing: 0.02em; color: var(--color-accent-700);',
+        onClick: editEntrySize(it)
+      }, (it.size === 'alle' ? 'alle størrelser' : it.sizeLabel) + ' ▾');
       // In kg/l view the jamførpris leads and the pack price sits beneath; an
       // item without one says so rather than showing a bare pack price that
       // looks comparable but isn't.
@@ -1720,9 +1775,16 @@
       return h('div', { 'data-lid': it.id, cls: 'row-hover', style: 'display: grid; grid-template-columns: auto auto 1fr auto; gap: 10px; align-items: center; padding: 12px 16px 12px 8px; border-bottom: 1px solid color-mix(in srgb, var(--color-text) 8%, transparent);' }, [
         dragHandle(it, idx, visible.length),
         h('button', { type: 'button', cls: 'btn btn-ghost', 'aria-label': 'Fjern ' + it.name + ' fra handlelisten', title: 'Fjern fra handlelisten', style: 'width: 34px; height: 34px; padding: 0; font-size: 16px; color: var(--color-accent-700);', onClick: function () { removeFromList(it.key); render(); }, text: '★' }),
-        h('span', Object.assign({ style: 'cursor: pointer; display: block;' }, activate(openGroup(it.key), it.name + ', ' + it.sizeLabel + ', ' + priceTxt)), [
-          h('span', { style: NAME_STYLE, text: it.name }),
-          h('span', { style: 'display: block; font-size: 13px; color: ' + MUTED60 + ';', text: whereTxt })
+        // The name opens the product; the size button below it is its own
+        // control, so it sits outside the clickable name rather than nested in
+        // it (a button inside a button is neither clickable nor announceable).
+        h('span', { style: 'display: block; min-width: 0;' }, [
+          h('span', Object.assign({ style: 'cursor: pointer; display: block;' }, activate(openGroup(it.key), it.name + ', ' + it.sizeLabel + ', ' + priceTxt)), [
+            h('span', { style: NAME_STYLE, text: it.name })
+          ]),
+          h('span', { style: 'display: flex; flex-wrap: wrap; align-items: baseline; gap: 2px 6px; font-size: 13px; color: ' + MUTED60 + ';' }, [
+            sizeBtn, h('span', { text: '· ' + whereTxt })
+          ])
         ]),
         h('span', { style: 'display: flex; flex-direction: column; align-items: flex-end; gap: 2px;' }, [
           h('span', { style: "font-family: var(--font-heading); font-weight: 600; font-size: 20px; font-feature-settings: 'tnum' 1; white-space: nowrap;", text: lead }),
@@ -2166,7 +2228,8 @@
       buildStores: buildStores, buildGroups: buildGroups, searchRank: searchRank,
       coveredStores: coveredStores, staleDaysFor: staleDaysFor,
       sizeIdOf: sizeIdOf, sizeLabel: sizeLabel, sizeOptions: sizeOptions, bestPerStore: bestPerStore,
-      entryId: entryId, parseEntry: parseEntry, moveEntry: moveEntry, chartFrom: chartFrom
+      entryId: entryId, parseEntry: parseEntry, moveEntry: moveEntry, swapEntry: swapEntry,
+      chartFrom: chartFrom, rowSizeId: rowSizeId
     };
   }
 })();
