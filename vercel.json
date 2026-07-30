@@ -6,9 +6,15 @@
   "cleanUrls": true,
   "redirects": [
     {
-      "source": "/:path*",
+      "source": "/(.*)",
       "has": [{ "type": "host", "value": "www.prisboka.no" }],
-      "destination": "https://prisboka.no/:path*",
+      "destination": "https://prisboka.no/$1",
+      "permanent": true
+    },
+    {
+      "source": "/(.*)",
+      "has": [{ "type": "host", "value": "matvareleksikon.vercel.app" }],
+      "destination": "https://prisboka.no/$1",
       "permanent": true
     }
   ],

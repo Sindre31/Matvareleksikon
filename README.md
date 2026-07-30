@@ -533,12 +533,24 @@ curl -sI https://prisboka.no/styles.css        # expect 200, not 3xx
 curl -sI https://www.prisboka.no/styles.css    # expect 301/308 → apex
 ```
 
-The old `matvareleksikon.vercel.app` hostname keeps serving the same site.
-Now that `prisboka.no` resolves and serves, it is worth redirecting the
-`.vercel.app` host there as well so the two do not compete for the same search
-listings — another `redirects` entry, `has` host `matvareleksikon.vercel.app`.
-Doing that *before* DNS is live would take the site down, which is why it is
-not in `vercel.json` yet.
+Every host rule uses `source: "/(.*)"` with `destination: ".../$1"`, not
+`/:path*`. The named-segment form does not match the bare root: while the loop
+above was live, `prisboka.no/styles.css` redirected but `prisboka.no/` answered
+`200`. That gap is what made the outage look like a styling bug instead of a
+redirect one, and for the `.vercel.app` host the root is the URL that actually
+competes in search listings — so the regex form, which does match the empty
+path, is the one to use.
+
+`matvareleksikon.vercel.app` is the project's own Vercel-assigned hostname and
+serves the same deployment, so it competed with `prisboka.no` for the same
+search listings. It gets the same 308 → apex treatment via a second `redirects`
+entry keyed on that host.
+
+Preview deployments are unaffected: their hostnames carry a
+`-git-<branch>-<team>` infix (`prisboka-matvareleksikon-git-…vercel.app`), so
+they never match the `matvareleksikon.vercel.app` host — worth re-checking if
+the project is ever renamed, since a rule that swallowed preview hosts would
+redirect every preview to production and make previews impossible to review.
 
 **Response headers** are set in `vercel.json` for every path:
 
