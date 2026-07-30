@@ -746,6 +746,65 @@
   function openGroup(key) { return function () { go('#/gruppe/' + encodeURIComponent(key)); window.scrollTo(0, 0); }; }
   function openVariant(key, store) { return function () { go('#/vare/' + encodeURIComponent(key) + '/' + encodeURIComponent(store)); window.scrollTo(0, 0); }; }
 
+  // ── Analytics ────────────────────────────────────────────────────────────
+  // Vercel Web Analytics counts a view only when the *pathname* changes, and
+  // its tracker skips hash-only navigation outright — so in this hash-routed
+  // app every screen would land on "/" and the dashboard would show one page.
+  // We report the views ourselves instead: `path` is the screen the visitor is
+  // on, `route` is the pattern it belongs to, so thousands of products group
+  // under /gruppe/[gruppe] rather than filling the list one by one. Both are
+  // ordinary page views (they hit the same /_vercel/insights/view endpoint as
+  // the automatic ones) — not custom events, so no paid plan is involved.
+  //
+  // `window.va` does not exist until the deferred tracker loads, so calls are
+  // queued in `window.vaq` and replayed on load. That queue is Vercel's own
+  // snippet; it lives here rather than inline in the HTML so the CSP can stay
+  // at script-src 'self'.
+  function va() {
+    if (typeof window === 'undefined') return;
+    if (!window.va) window.va = function () { (window.vaq = window.vaq || []).push(arguments); };
+    window.va.apply(null, arguments);
+  }
+
+  function viewFor(r) {
+    if (r.view === 'gruppe') return { path: '/gruppe/' + encodeURIComponent(r.groupKey), route: '/gruppe/[gruppe]' };
+    if (r.view === 'vare') return { path: '/vare/' + encodeURIComponent(r.groupKey) + '/' + encodeURIComponent(r.storeId), route: '/vare/[gruppe]/[butikk]' };
+    if (r.view === 'scan') return { path: '/skann', route: '/skann' };
+    if (r.view === 'om') return { path: '/om', route: '/om' };
+    // The shared list travels in the hash as ?d=<varer> — the screen is what we
+    // report, never its payload. See the beforeSend hook below.
+    if (r.view === 'liste') return { path: '/liste', route: '/liste' };
+    return { path: '/', route: '/' };
+  }
+
+  // Derived from parseHash, not from the raw hash, so an unrecognised URL
+  // collapses to home exactly the way the router treats it.
+  function trackView() {
+    var v = viewFor(parseHash());
+    va('pageview', { path: v.path, route: v.route });
+  }
+
+  var lastTrackedUrl = null;
+  function analyticsBeforeSend(e) {
+    var u;
+    try { u = new URL(e.url); } catch (err) { return e; }
+    // The tracker builds the URL from location.href, so the hash rides along
+    // even when `path` is set — and on #/liste that hash carries the visitor's
+    // shopping list. The screen is already in `path`; the list is not ours to
+    // send. (The query string is left alone: it is where utm_* lives.)
+    u.hash = '';
+    var url = u.href;
+    if (e.type === 'pageview') {
+      // Two page views for the same URL back-to-back can only be a double
+      // fire — you cannot re-enter a screen without leaving it first. This
+      // keeps the count honest if the tracker's own auto-tracking ever starts
+      // up alongside ours despite data-disable-auto-track.
+      if (url === lastTrackedUrl) return null;
+      lastTrackedUrl = url;
+    }
+    return { type: e.type, url: url, payload: e.payload };
+  }
+
   function loadHistory(g) {
     if (!g) return;
     var key = g.key;
@@ -2331,7 +2390,8 @@
   // below without a DOM). Guarded on window/document so `require('./app.js')`
   // never touches browser globals.
   if (typeof window !== 'undefined' && typeof document !== 'undefined') {
-    window.addEventListener('hashchange', route);
+    va('beforeSend', analyticsBeforeSend);
+    window.addEventListener('hashchange', function () { route(); trackView(); });
     document.addEventListener('paste', function (e) {
       if (state.phase !== 'ready' || state.view !== 'scan' || state.scanPhase !== 'idle') return;
       var items = (e.clipboardData && e.clipboardData.items) || [];
@@ -2353,6 +2413,10 @@
     }
 
     render();
+    // Reported before boot() rather than once the catalogue is ready: a visit
+    // where the data never loads is still a visit, and is the one you would
+    // most want to see in the dashboard.
+    trackView();
     boot();
   }
 

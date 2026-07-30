@@ -466,13 +466,47 @@ is a harmless 404. Both paths are same-origin, so the `script-src 'self'` /
 deliberately skips `/_vercel/*` so the tracker is never served from the shell
 cache.
 
-The plain script tag counts page views, visitors, referrers, countries and
-devices. Two limits worth knowing before reading the dashboard: the app is one
-page with hash routes (`#/vare/…`), and the script reports the path, so every
-screen lands on `/` rather than showing up per screen. Splitting them would
-mean [custom events](https://vercel.com/docs/analytics/custom-events), which
-need a Pro plan — and the `window.va` shim they're queued through is an inline
-script, so it would also mean giving the CSP `'unsafe-inline'`.
+**The app reports its own page views.** The tracker fires a view only when the
+`pathname` changes — reading its source, hash-only navigation is explicitly
+skipped, and it listens to `pushState`/`popstate` but never `hashchange`. This
+app changes nothing but the hash, so left to itself the tracker would report a
+single `/` per visit and no screen would ever appear. Hence
+`data-disable-auto-track` on the script tag and `trackView()` in `app.js`,
+which fires on load and on every `hashchange`:
+
+| Screen | `path` | `route` |
+| --- | --- | --- |
+| `#/` and anything unrecognised | `/` | `/` |
+| `#/gruppe/melk-lett` | `/gruppe/melk-lett` | `/gruppe/[gruppe]` |
+| `#/vare/melk-lett/kiwi` | `/vare/melk-lett/kiwi` | `/vare/[gruppe]/[butikk]` |
+| `#/skann`, `#/om`, `#/liste` | `/skann`, `/om`, `/liste` | same |
+
+`route` is what keeps the dashboard readable: every product would otherwise be
+its own row, and the panel keeps only the top handful before bucketing the rest
+into "Others". Both fields are documented Web Analytics dimensions
+(`requestPath`, `route`), and both travel as ordinary page views to
+`/_vercel/insights/view` — these are *not*
+[custom events](https://vercel.com/docs/analytics/custom-events), so no paid
+plan is involved. The `window.va` queue that Vercel's snippet puts inline lives
+in `app.js` instead, for the same reason the service worker registration does:
+an inline `<script>` would cost the CSP `'unsafe-inline'`.
+
+Two details in `app.js` that look optional and are not:
+
+- **The `beforeSend` hook strips the hash from the reported URL.** The tracker
+  builds that URL from `location.href`, so the hash rides along even when
+  `path` is set — and on `#/liste?d=…` the hash *is* the visitor's shopping
+  list. The screen is what gets reported, never its contents. The query string
+  is deliberately left alone, since that is where `utm_*` lives.
+- **The view is reported before `boot()`,** not once the catalogue is ready. A
+  visit where the data never loads is still a visit, and is the one you would
+  most want to see in the dashboard.
+
+`trackView` derives the screen from `parseHash`, the same function the router
+uses, so an unrecognised URL collapses to `/` exactly the way the router treats
+it, and the two can't drift apart. A deep link to a group that no longer exists
+reports `/gruppe/<key>` and then `/` when the router bounces it home — two
+views, which is what the visitor actually experienced.
 
 ### Domain
 
