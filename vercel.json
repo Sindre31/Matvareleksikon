@@ -4,6 +4,14 @@
   "buildCommand": "",
   "outputDirectory": ".",
   "cleanUrls": true,
+  "redirects": [
+    {
+      "source": "/:path*",
+      "has": [{ "type": "host", "value": "www.prisboka.no" }],
+      "destination": "https://prisboka.no/:path*",
+      "permanent": true
+    }
+  ],
   "headers": [
     {
       "source": "/(.*)",
