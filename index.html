@@ -87,9 +87,11 @@
        /_vercel/insights/ on our own origin (Vercel's edge injects those routes
        once Analytics is enabled for the project), so the existing
        script-src 'self' / connect-src 'self' CSP already covers them.
-       No window.va shim: that snippet is inline, only buys custom events
-       (a paid plan feature) and pre-load beforeSend hooks, and would cost us
-       'unsafe-inline'. Page views need nothing but this tag. -->
-  <script defer src="/_vercel/insights/script.js"></script>
+       data-disable-auto-track because app.js reports the views itself: the
+       tracker ignores hash-only navigation, which is all this app does, so its
+       automatic tracking would report a single "/" and nothing else. The queue
+       shim Vercel's snippet puts inline lives in app.js for the same reason
+       the service worker registration does — to keep script-src at 'self'. -->
+  <script defer src="/_vercel/insights/script.js" data-disable-auto-track="1"></script>
 </body>
 </html>
