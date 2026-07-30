@@ -83,5 +83,13 @@
        would force 'unsafe-inline' (or a hash to re-generate on every edit)
        into the Content-Security-Policy in vercel.json. -->
   <script src="app.js"></script>
+  <!-- Vercel Web Analytics. The script and its beacon both live under
+       /_vercel/insights/ on our own origin (Vercel's edge injects those routes
+       once Analytics is enabled for the project), so the existing
+       script-src 'self' / connect-src 'self' CSP already covers them.
+       No window.va shim: that snippet is inline, only buys custom events
+       (a paid plan feature) and pre-load beforeSend hooks, and would cost us
+       'unsafe-inline'. Page views need nothing but this tag. -->
+  <script defer src="/_vercel/insights/script.js"></script>
 </body>
 </html>

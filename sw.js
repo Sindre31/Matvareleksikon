@@ -34,6 +34,10 @@ self.addEventListener('fetch', function (e) {
   if (req.method !== 'GET') return;
   var url = new URL(req.url);
   if (url.origin !== self.location.origin) return; // let Supabase & co. hit the network
+  // Vercel's own routes (Web Analytics' script + view beacon) are same-origin
+  // but not ours to cache — a cached script.js would keep serving an old
+  // tracker, and a cached beacon response would hide a failing one.
+  if (url.pathname.indexOf('/_vercel/') === 0) return;
 
   // App-shell navigations: prefer the network (fresh HTML), fall back to cache.
   if (req.mode === 'navigate') {
