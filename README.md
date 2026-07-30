@@ -10,7 +10,8 @@ prototype [`Matvareleksikon.dc.html`](https://claude.ai/design/p/d6005f67-13a3-4
 built on the **Industry** design system and backed by a live **Supabase**
 database.
 
-**Live:** https://matvareleksikon.vercel.app
+**Live:** https://www.prisboka.no (`prisboka.no` redirecter dit; også nåbar
+på `matvareleksikon.vercel.app`)
 
 ## Run it
 
@@ -453,6 +454,60 @@ Oda 04:30 UTC every Monday = ~06:00–06:30 Oslo). See `supabase/cron.sql`.
 The Vercel project's build fetches the committed files from the public
 GitHub repo into its output directory, so the deployment is self-contained.
 Connect the repo to Vercel (Settings → Git) for automatic deploys on push.
+
+### Domain
+
+The canonical origin is **`https://www.prisboka.no`** — `www`, not the apex.
+That one hostname is what the `<link rel="canonical">`, the Open Graph
+`og:url` and `og:image`, the JSON-LD `@id`s, `sitemap.xml` and the `Sitemap:`
+line in `robots.txt` all point at, so all of them move together when the
+domain does.
+
+`www` over the apex because `www` can be a `CNAME`, which follows Vercel if
+their IPs change, where the apex needs a hardcoded `A` record. The choice is
+worth making once and keeping: the two are separate origins, and the app's
+shopping list (`localStorage`) and offer catalogue (Cache Storage) are
+per-origin, so moving the canonical host later would drop every user's saved
+list and orphan the scope of any installed PWA.
+
+Attaching it takes two sides, neither of which lives in this repo:
+
+**1. Vercel** (project `prisboka-matvareleksikon` → Settings → Domains) — add
+both `www.prisboka.no` and `prisboka.no`, make `www.prisboka.no` the
+production domain, and set `prisboka.no` to redirect (308) to it.
+
+**2. DNS at the registrar** — `prisboka.no` is registered outside Vercel, so
+the records are set wherever the nameservers point (today: a Norwegian
+registrar, not Vercel DNS):
+
+| Name | Type | Value |
+| --- | --- | --- |
+| `@` | `A` | `216.198.79.1` |
+| `www` | `CNAME` | `<project>.vercel-dns-<nnn>.com` |
+
+Vercel shows the exact apex `A` value and the per-project `www` `CNAME` target
+in the Domains panel when the domain is added — use the values it prints there
+rather than these, which are only the current defaults. Certificates are issued
+automatically once the records resolve; expect a few minutes, and up to a
+couple of hours if the old records were cached with a long TTL.
+
+apex → `www` is handled twice over, deliberately: Vercel redirects it at the
+edge because the domain is attached as a redirect, and `vercel.json` carries a
+308 `redirects` rule keyed on the `prisboka.no` host so the behaviour is in
+version control either way. The rule only fires for requests that already
+arrived at that hostname, so it is inert until DNS exists.
+
+Both halves must point the same way. A `vercel.json` rule pointing back at the
+host Vercel is redirecting *from* produces an infinite redirect: the edge sends
+apex → `www`, the deployment sends `www` → apex, and the browser gives up with
+`ERR_TOO_MANY_REDIRECTS`.
+
+The old `matvareleksikon.vercel.app` hostname keeps serving the same site.
+Once `www.prisboka.no` resolves and serves, it is worth redirecting the
+`.vercel.app` host there as well so the two do not compete for the same search
+listings — another `redirects` entry, `has` host `matvareleksikon.vercel.app`.
+Doing that *before* DNS is live would take the site down, which is why it is
+not in `vercel.json` yet.
 
 **Response headers** are set in `vercel.json` for every path:
 

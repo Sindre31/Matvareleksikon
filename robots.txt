@@ -1,4 +1,4 @@
 User-agent: *
 Allow: /
 
-Sitemap: https://matvareleksikon.vercel.app/sitemap.xml
+Sitemap: https://www.prisboka.no/sitemap.xml
