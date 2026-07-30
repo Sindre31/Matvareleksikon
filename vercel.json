@@ -7,8 +7,8 @@
   "redirects": [
     {
       "source": "/:path*",
-      "has": [{ "type": "host", "value": "www.prisboka.no" }],
-      "destination": "https://prisboka.no/:path*",
+      "has": [{ "type": "host", "value": "prisboka.no" }],
+      "destination": "https://www.prisboka.no/:path*",
       "permanent": true
     }
   ],
