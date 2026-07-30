@@ -455,6 +455,25 @@ The Vercel project's build fetches the committed files from the public
 GitHub repo into its output directory, so the deployment is self-contained.
 Connect the repo to Vercel (Settings → Git) for automatic deploys on push.
 
+### Web Analytics
+
+`index.html` loads Vercel Web Analytics from
+`/_vercel/insights/script.js`. That route doesn't exist in this repo — Vercel's
+edge serves it (and the `/_vercel/insights/view` beacon) only after **Analytics
+→ Enable** is switched on for the project in the dashboard; until then the tag
+is a harmless 404. Both paths are same-origin, so the `script-src 'self'` /
+`connect-src 'self'` CSP in `vercel.json` needs no exception, and `sw.js`
+deliberately skips `/_vercel/*` so the tracker is never served from the shell
+cache.
+
+The plain script tag counts page views, visitors, referrers, countries and
+devices. Two limits worth knowing before reading the dashboard: the app is one
+page with hash routes (`#/vare/…`), and the script reports the path, so every
+screen lands on `/` rather than showing up per screen. Splitting them would
+mean [custom events](https://vercel.com/docs/analytics/custom-events), which
+need a Pro plan — and the `window.va` shim they're queued through is an inline
+script, so it would also mean giving the CSP `'unsafe-inline'`.
+
 ### Domain
 
 The canonical origin is **`https://www.prisboka.no`** — `www`, not the apex.
