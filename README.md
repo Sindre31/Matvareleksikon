@@ -37,7 +37,7 @@ python3 -m http.server 8000
 | `icon-192.png`, `icon-512.png` | PWA/app icons (rasterised from the favicon) |
 | `og.png` | 1200×630 social preview card |
 | `robots.txt`, `sitemap.xml` | Crawler hints (single canonical URL — the app is hash-routed) |
-| `test/` | Unit tests (`node --test`): the pure price/grouping helpers, the "Ukas tilbud" selection, the cold-start offer paging, the on-demand photo loader, and the client mirror of `ml_group_key` |
+| `test/` | Unit tests (`node --test`): the pure price/grouping helpers, the "Ukas tilbud" selection, the cold-start offer paging, the on-demand photo loader, the client mirror of `ml_group_key`, and the error-report validation |
 | `design/` | The imported Claude Design source, kept for provenance |
 
 ## Screens (deep-linkable)
@@ -198,6 +198,30 @@ python3 -m http.server 8000
   the catalogue and on the product's chart — weight items keep their kr/kg. The
   confirmation screen links each contributed line back to the matching product
   in the leksikon.
+- **Rapporter feil** — not a screen but a dialog, reachable from every product:
+  a **"⚠ Rapporter feil"** button on the variant page and a ⚠ on each row of the
+  group page's "Selges hos" table. Two kinds, because those are the two the
+  leksikon can act on: **feil pris** (write the price on the shelf) or **feil
+  produkt** (write what the item is actually called), plus an optional comment.
+  Reports are anonymous, keyed to the variant they were filed from, and the
+  dialog refuses a "correction" that equals what is already shown.
+  **Three reports on the same product flag it** for review; **three that agree
+  on exactly the same price — or the same name — apply it by themselves**, and
+  the leksikon shows the corrected value from that moment. Agreement is counted
+  per reporter (a random id in `localStorage`, falling back to the IP), so one
+  person pressing the button three times is one report, and a product an admin
+  has edited by hand is never overwritten by the rule. See `ml_report_apply` in
+  `supabase/schema-changes.sql`.
+- **Admin** `#/admin` — the password-protected back office. Unlisted: no link in
+  the nav or the footer. Three tabs — the **report queue** (approve a
+  correction with "Bruk denne", or reject it), **product search** across the
+  whole catalogue, and **the products that have been changed**. Editing a
+  product sets its name and price, kills a bogus "førpris", or **removes** it
+  from the leksikon (a reversible hide — "Tilbakestill" puts the chain's own
+  data back). Edits are stored per (butikk, kjedens produktnavn) in
+  `ml_offer_overrides`, so they **survive the weekly ingest**, which rewrites
+  `ml_offers` wholesale. The password lives as a Supabase secret and is checked
+  in the `ml-admin` Edge Function, never in the browser — see below.
 - **Om** `#/om` — what Prisboka is, **sources** (tilbudsaviser and receipt
   scans) with a note on the coverage threshold, an independence disclaimer,
   and a **privacy** note (no accounts/tracking; the shopping list is local-only;
@@ -219,6 +243,9 @@ schema:
 | `ml_registrations` | Append-only community contributions from the scan flow (item, price, store, **receipt date**, and structured unit/quantity for weight items). A trigger propagates each into `ml_offers` and `ml_price_history` |
 | `ml_scan_allow()` | RPC: per-IP rate limit for the receipt-scan function |
 | `ml_scan_rate` | Backing table for the rate limiter |
+| `ml_price_reports` | Append-only community **error reports** (`kind` = `pris`/`produkt`, the reported variant, the proposed correction, an optional comment). Anyone may insert; nobody may read them back (they carry an IP) or set their own `status`. `ml_report_prepare` validates and rate-limits on the way in, `ml_report_apply` runs the three-report rule |
+| `ml_offer_overrides` | The corrections themselves, keyed on (`store_id`, the **chain's** `product_name`): new name, new price, "drop the før-price", hidden, plus `flagged`/`admin_locked`/`origin`. Public-readable, service-role-writable |
+| `ml_admin_*()` | The admin API — `search`, `overrides`, `reports`, `save`, `reset`, `set_report`, `apply_report`, `stats`. Typed arguments, `service_role`-only, called by the `ml-admin` Edge Function (product names are full of commas and dots, which PostgREST reads as filter syntax) |
 
 The leksikon is built entirely from **real prices** (`ml_offers`); the app
 groups store-specific products by `group_key` for comparison. (The earlier
@@ -244,7 +271,46 @@ direct/scripted floods so a shared link can't pollute the leksikon: a spoof-proo
 **global cap** (1500 rows/hour) plus a best-effort **per-IP cap** (200 rows/hour,
 skipped when the IP is unknown so it never over-blocks). It reuses the scan
 limiter (`ml_scan_allow` / `ml_scan_rate`) under a `reg:` key namespace, and fires
-after `ml_reg_filter` so dropped pant/emballasje lines don't count.
+after `ml_reg_filter` so dropped pant/emballasje lines don't count. Error reports
+reuse it once more under `rep:` (500/hour globally, 20/hour per IP).
+
+**Corrections ride on the offer row, they don't join to it.** `ml_offer_overrides`
+is the source of truth — it must be, since `ml-ingest-offers` DELETEs and
+re-inserts its whole source every Monday, so an edit written into `ml_offers`
+would not survive the week. But `ml_catalog` is the boot payload, paged 50 × 1000
+rows with `order=fetched_at.desc,external_id`, and adding a `left join` to it
+made the planner hash-join the whole table and sort 41 000 rows to disk:
+**1 115 ms** for the deepest page against 27 ms as an index scan, on every page.
+So the override's values are mirrored onto the offer row (`ov_name`, `ov_price`,
+`ov_clear_pre`, `ov_hidden`) by a pair of triggers — one that re-reads the
+override on every write to `ml_offers` (so a re-ingested row comes back
+corrected), one that pushes an edited override onto the rows it covers — and the
+views stay single-table projections. Measured after the change: **38 ms** warm
+for that same page.
+
+A corrected name re-groups the product, since `group_key` is derived from the
+name (`ml_group_key` server-side, `mlGroupKey()` client-side); a corrected price
+scales the feed's own `unit_price` with it, rather than quoting a kr/l that no
+longer divides out. A hidden product leaves `ml_catalog` **and** `ml_group_images`,
+so nothing reserves a photo frame for a product that isn't there.
+
+**The admin password** is the `ADMIN_PASSWORD` secret on the `ml-admin` Edge
+Function — set it before the panel can be used:
+
+```bash
+supabase secrets set ADMIN_PASSWORD='…' --project-ref jiaxeedguivvhixychcg
+# or: Dashboard → Project settings → Edge Functions → Secrets
+```
+
+Without it the function refuses every request, login included — there is no
+default password. Checking the password in `app.js` would guard nothing: the key
+the browser holds is *publishable*, and it is RLS, not the front end, that makes
+the catalogue read-only to it. So the password is compared server-side in
+constant time, a successful login returns a **signed, expiring token** (HMAC-SHA256,
+key derived from the password — changing the password invalidates every
+outstanding session, 12 h otherwise), failed logins are rate-limited per IP, and
+the service-role key that performs the edits never leaves the server. The token
+lives in `sessionStorage`, so closing the tab logs out.
 
 ## Implementation notes
 

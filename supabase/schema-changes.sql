@@ -226,3 +226,574 @@ from public.ml_offers o;
 -- 33 ms for the old order, measured warm on the production catalogue.
 create index if not exists ml_offers_fetched_idx
   on public.ml_offers (fetched_at desc, external_id);
+
+-- ─────────────────────────────────────────────────────────────────────────────
+-- Feilrapportering ("rapporter feil pris / feil produkt") + admin-overstyringer
+-- ─────────────────────────────────────────────────────────────────────────────
+--
+-- Two tables and one rule. A visitor reports what is wrong with a product;
+-- three reports on the same product FLAG it, and three that agree on the same
+-- correction APPLY it. An admin (see the ml-admin Edge Function) reviews the
+-- flagged rows and can edit, hide or restore any product by hand.
+--
+-- Corrections cannot live on the ml_offers row itself: the ingest owns that
+-- table and rewrites it weekly — ml-ingest-offers DELETEs its whole source and
+-- re-inserts it with fresh external_ids every Monday. So an override is keyed
+-- on (store_id, product_name), which survives that, and is mirrored onto the
+-- offer row (see ml_offer_apply_override below) rather than joined in.
+
+create table if not exists public.ml_price_reports (
+  id            uuid primary key default gen_random_uuid(),
+  created_at    timestamptz not null default now(),
+  kind          text not null,           -- 'pris' | 'produkt'
+  store_id      text not null,           -- the reported variant …
+  product_name  text not null,           -- … as it exists in ml_offers
+  group_key     text,                    -- client group key, for the admin's deep link
+  shown_price   numeric,                 -- what the site showed when it was reported
+  correct_price numeric,                 -- kind='pris': what it should be
+  correct_name  text,                    -- kind='produkt': what it should be called
+  comment       text,
+  reporter      text,                    -- client-side id (localStorage), for de-duping
+  reporter_ip   text,                    -- server-side only; no insert grant
+  status        text not null default 'ny',  -- ny | markert | behandlet | avvist
+  applied_at    timestamptz,
+  handled_at    timestamptz,
+  constraint ml_price_reports_kind_ck     check (kind in ('pris','produkt')),
+  constraint ml_price_reports_status_ck   check (status in ('ny','markert','behandlet','avvist')),
+  constraint ml_price_reports_price_ck    check (correct_price is null or (correct_price > 0 and correct_price <= 100000)),
+  constraint ml_price_reports_name_ck     check (correct_name is null or char_length(btrim(correct_name)) between 2 and 120),
+  constraint ml_price_reports_comment_ck  check (comment is null or char_length(comment) <= 500),
+  constraint ml_price_reports_reporter_ck check (reporter is null or char_length(reporter) <= 64),
+  constraint ml_price_reports_payload_ck  check (
+    (kind = 'pris'    and correct_price is not null) or
+    (kind = 'produkt' and correct_name  is not null)
+  )
+);
+create index if not exists ml_price_reports_target_idx  on public.ml_price_reports (store_id, product_name, status);
+create index if not exists ml_price_reports_created_idx on public.ml_price_reports (created_at desc);
+
+-- Anyone may report; nobody may read the reports back (they carry an IP) or set
+-- their own status. Supabase's default privileges grant ALL on a new table in
+-- `public` to anon, so the table-level grant is REVOKED first and only the
+-- reporter-supplied columns are granted back — otherwise a scripted insert
+-- could file itself as already 'behandlet', or forge reporter_ip.
+-- (Linter 0024 rls_policy_always_true flags the insert policy, as it does the
+-- one on ml_registrations: an open contribution endpoint is the point. What
+-- bounds it is the CHECK constraints, the column-level grant, and the
+-- rate-limiting trigger below — not a row predicate.)
+alter table public.ml_price_reports enable row level security;
+revoke all on public.ml_price_reports from anon, authenticated;
+drop policy if exists ml_price_reports_insert on public.ml_price_reports;
+create policy ml_price_reports_insert on public.ml_price_reports
+  for insert to anon, authenticated with check (true);
+grant insert (kind, store_id, product_name, group_key, shown_price, correct_price, correct_name, comment, reporter)
+  on public.ml_price_reports to anon, authenticated;
+
+create table if not exists public.ml_offer_overrides (
+  store_id        text not null,
+  product_name    text not null,         -- the name as the FEED writes it — the join key
+  new_name        text,
+  new_price       numeric,
+  clear_pre_price boolean not null default false,   -- kill a bogus "før"-price
+  hidden          boolean not null default false,   -- removed from the leksikon
+  flagged         boolean not null default false,   -- 3+ reports: needs a look
+  reports         int not null default 0,
+  admin_locked    boolean not null default false,   -- set by a hand edit; community rules never overwrite it
+  origin          text not null default 'community',
+  note            text,
+  auto_applied_at timestamptz,
+  created_at      timestamptz not null default now(),
+  updated_at      timestamptz not null default now(),
+  primary key (store_id, product_name),
+  constraint ml_offer_overrides_price_ck  check (new_price is null or (new_price > 0 and new_price <= 100000)),
+  constraint ml_offer_overrides_name_ck   check (new_name is null or char_length(btrim(new_name)) between 2 and 120),
+  constraint ml_offer_overrides_origin_ck check (origin in ('admin','community'))
+);
+-- Public reads it (nothing secret: it is what the leksikon shows), writes go
+-- through the ml-admin function's service role only.
+alter table public.ml_offer_overrides enable row level security;
+revoke all on public.ml_offer_overrides from anon, authenticated;
+drop policy if exists ml_offer_overrides_read on public.ml_offer_overrides;
+create policy ml_offer_overrides_read on public.ml_offer_overrides
+  for select to anon, authenticated using (true);
+grant select on public.ml_offer_overrides to anon, authenticated;
+
+-- Validate, stamp and rate-limit an incoming report.
+create or replace function public.ml_report_prepare() returns trigger
+language plpgsql security definer set search_path = public, pg_temp as $fn$
+declare
+  hdr  json := nullif(current_setting('request.headers', true), '')::json;
+  ip   text;
+  orig text;
+begin
+  ip := nullif(btrim(coalesce(
+    hdr ->> 'cf-connecting-ip',
+    hdr ->> 'x-real-ip',
+    split_part(coalesce(hdr ->> 'x-forwarded-for', ''), ',', 1)
+  )), '');
+
+  new.reporter_ip := ip;
+  new.status      := 'ny';
+  new.applied_at  := null;
+  new.handled_at  := null;
+
+  new.store_id     := btrim(new.store_id);
+  new.product_name := btrim(new.product_name);
+  new.correct_name := nullif(regexp_replace(btrim(coalesce(new.correct_name, '')), '\s+', ' ', 'g'), '');
+  new.comment      := nullif(btrim(coalesce(new.comment, '')), '');
+  new.reporter     := nullif(btrim(coalesce(new.reporter, '')), '');
+  if new.correct_price is not null then new.correct_price := round(new.correct_price, 2); end if;
+
+  -- A report has to point at a row that exists. The client sends the product as
+  -- the site DISPLAYS it, which is the override's new_name once one has been
+  -- applied — map that back to the ml_offers row it overrides, so corrections
+  -- keep accumulating on one key instead of forking after the first rename.
+  if not exists (select 1 from ml_offers o
+                  where o.store_id = new.store_id and o.product_name = new.product_name) then
+    select ov.product_name into orig from ml_offer_overrides ov
+      where ov.store_id = new.store_id and ov.new_name = new.product_name limit 1;
+    if orig is null then
+      raise exception 'Ukjent vare: % hos %', new.product_name, new.store_id
+        using errcode = 'check_violation';
+    end if;
+    new.product_name := orig;
+  end if;
+
+  -- Same guard as the scan flow: the anon key is public, so a scripted flood
+  -- must not be able to vote a fake price into the leksikon.
+  if not ml_scan_allow('rep:GLOBAL', 500, 3600) then
+    raise exception 'For mange rapporter akkurat nå. Prøv igjen om litt.'
+      using errcode = 'check_violation';
+  end if;
+  if ip is not null and not ml_scan_allow('rep:' || ip, 20, 3600) then
+    raise exception 'Du har sendt mange rapporter på kort tid. Prøv igjen senere.'
+      using errcode = 'check_violation';
+  end if;
+
+  return new;
+end;
+$fn$;
+
+-- THE RULE. Three reports on the same product flag it; three that agree on the
+-- SAME correction apply it, to the price and to the name alike. Agreement is
+-- counted per reporter (the localStorage id, falling back to the IP), so one
+-- person pressing the button three times is one report. A hand edit
+-- (admin_locked) is never overwritten — the ON CONFLICT ... WHERE simply
+-- matches no row, and the reports stay open for the admin instead.
+create or replace function public.ml_report_apply() returns trigger
+language plpgsql security definer set search_path = public, pg_temp as $fn$
+declare
+  win   interval := interval '180 days';
+  total int;
+  agree int;
+  n     int;
+begin
+  select count(distinct coalesce(p.reporter, 'ip:' || p.reporter_ip, 'row:' || p.id::text))
+    into total
+    from ml_price_reports p
+   where p.store_id = new.store_id and p.product_name = new.product_name
+     and p.status in ('ny', 'markert') and p.created_at > now() - win;
+
+  if total >= 3 then
+    insert into ml_offer_overrides (store_id, product_name, flagged, reports, origin)
+      values (new.store_id, new.product_name, true, total, 'community')
+    on conflict (store_id, product_name) do update
+      set flagged = true,
+          reports = greatest(ml_offer_overrides.reports, excluded.reports),
+          updated_at = now();
+    update ml_price_reports p set status = 'markert'
+     where p.store_id = new.store_id and p.product_name = new.product_name and p.status = 'ny';
+  end if;
+
+  if new.kind = 'pris' and new.correct_price is not null then
+    select count(distinct coalesce(p.reporter, 'ip:' || p.reporter_ip, 'row:' || p.id::text))
+      into agree
+      from ml_price_reports p
+     where p.store_id = new.store_id and p.product_name = new.product_name
+       and p.kind = 'pris' and p.status in ('ny', 'markert')
+       and p.created_at > now() - win
+       and round(p.correct_price, 2) = new.correct_price;
+    if agree >= 3 then
+      insert into ml_offer_overrides (store_id, product_name, new_price, origin, reports, flagged, auto_applied_at, note)
+        values (new.store_id, new.product_name, new.correct_price, 'community', agree, true, now(),
+                'Automatisk rettet: ' || agree || ' rapporter med samme pris')
+      on conflict (store_id, product_name) do update
+        set new_price = excluded.new_price, auto_applied_at = now(), flagged = true,
+            reports = greatest(ml_offer_overrides.reports, excluded.reports),
+            note = excluded.note, updated_at = now()
+        where ml_offer_overrides.admin_locked = false;
+      get diagnostics n = row_count;
+      if n > 0 then
+        update ml_price_reports p
+           set status = 'behandlet', applied_at = now(), handled_at = now()
+         where p.store_id = new.store_id and p.product_name = new.product_name
+           and p.kind = 'pris' and p.status in ('ny', 'markert')
+           and round(p.correct_price, 2) = new.correct_price;
+      end if;
+    end if;
+  end if;
+
+  if new.kind = 'produkt' and new.correct_name is not null then
+    select count(distinct coalesce(p.reporter, 'ip:' || p.reporter_ip, 'row:' || p.id::text))
+      into agree
+      from ml_price_reports p
+     where p.store_id = new.store_id and p.product_name = new.product_name
+       and p.kind = 'produkt' and p.status in ('ny', 'markert')
+       and p.created_at > now() - win
+       and lower(p.correct_name) = lower(new.correct_name);
+    if agree >= 3 then
+      insert into ml_offer_overrides (store_id, product_name, new_name, origin, reports, flagged, auto_applied_at, note)
+        values (new.store_id, new.product_name, new.correct_name, 'community', agree, true, now(),
+                'Automatisk rettet: ' || agree || ' rapporter med samme navn')
+      on conflict (store_id, product_name) do update
+        set new_name = excluded.new_name, auto_applied_at = now(), flagged = true,
+            reports = greatest(ml_offer_overrides.reports, excluded.reports),
+            note = excluded.note, updated_at = now()
+        where ml_offer_overrides.admin_locked = false;
+      get diagnostics n = row_count;
+      if n > 0 then
+        update ml_price_reports p
+           set status = 'behandlet', applied_at = now(), handled_at = now()
+         where p.store_id = new.store_id and p.product_name = new.product_name
+           and p.kind = 'produkt' and p.status in ('ny', 'markert')
+           and lower(p.correct_name) = lower(new.correct_name);
+      end if;
+    end if;
+  end if;
+
+  return null;
+end;
+$fn$;
+
+create or replace function public.ml_override_touch() returns trigger
+language plpgsql set search_path = public, pg_temp as $fn$
+begin
+  new.updated_at := now();
+  return new;
+end;
+$fn$;
+
+drop trigger if exists ml_report_prepare_trg on public.ml_price_reports;
+create trigger ml_report_prepare_trg before insert on public.ml_price_reports
+  for each row execute function public.ml_report_prepare();
+drop trigger if exists ml_report_apply_trg on public.ml_price_reports;
+create trigger ml_report_apply_trg after insert on public.ml_price_reports
+  for each row execute function public.ml_report_apply();
+drop trigger if exists ml_override_touch_trg on public.ml_offer_overrides;
+create trigger ml_override_touch_trg before update on public.ml_offer_overrides
+  for each row execute function public.ml_override_touch();
+
+revoke execute on function public.ml_report_prepare() from anon, authenticated, public;
+revoke execute on function public.ml_report_apply()   from anon, authenticated, public;
+revoke execute on function public.ml_override_touch() from anon, authenticated, public;
+
+-- Why the override is MIRRORED onto ml_offers instead of joined into the view:
+-- ml_catalog is the boot payload, paged 50 × 1000 rows with
+-- order=fetched_at.desc,external_id — an index scan on ml_offers_fetched_idx
+-- (27 ms for the deepest page). Adding `left join ml_offer_overrides` made the
+-- planner hash-join the whole table and sort 41 000 rows to disk instead:
+-- measured 1 115 ms for that same page, on every one of ~50 pages. The override
+-- table stays the source of truth; its values ride along on the offer row so
+-- ml_catalog stays a single-table projection.
+alter table public.ml_offers
+  add column if not exists ov_name      text,
+  add column if not exists ov_price     numeric,
+  add column if not exists ov_clear_pre boolean not null default false,
+  add column if not exists ov_hidden    boolean not null default false;
+
+-- Every write to an offer row re-reads its override, so a re-ingested row comes
+-- back corrected. Idempotent by construction: ml_override_sync() dirties the
+-- row, this fires BEFORE UPDATE, and both read the same override row.
+create or replace function public.ml_offer_apply_override() returns trigger
+language plpgsql security definer set search_path = public, pg_temp as $fn$
+declare ov public.ml_offer_overrides%rowtype;
+begin
+  select * into ov from public.ml_offer_overrides
+   where store_id = new.store_id and product_name = new.product_name;
+  new.ov_name      := ov.new_name;
+  new.ov_price     := ov.new_price;
+  new.ov_clear_pre := coalesce(ov.clear_pre_price, false);
+  new.ov_hidden    := coalesce(ov.hidden, false);
+  return new;
+end;
+$fn$;
+
+-- The other direction: editing or deleting an override pushes it onto the rows
+-- it covers (there can be several — one product name can arrive from two feeds).
+create or replace function public.ml_override_sync() returns trigger
+language plpgsql security definer set search_path = public, pg_temp as $fn$
+begin
+  if tg_op in ('UPDATE', 'DELETE') then
+    update public.ml_offers o set ov_name = null
+     where o.store_id = old.store_id and o.product_name = old.product_name;
+  end if;
+  if tg_op in ('INSERT', 'UPDATE') then
+    update public.ml_offers o set ov_name = null
+     where o.store_id = new.store_id and o.product_name = new.product_name;
+  end if;
+  return null;
+end;
+$fn$;
+comment on function public.ml_override_sync() is
+  'Sets ov_name = null only to dirty the row: ml_offer_apply_override() runs '
+  'BEFORE UPDATE and refills every ov_* column from ml_offer_overrides.';
+
+drop trigger if exists ml_offer_apply_override_trg on public.ml_offers;
+create trigger ml_offer_apply_override_trg before insert or update on public.ml_offers
+  for each row execute function public.ml_offer_apply_override();
+drop trigger if exists ml_override_sync_trg on public.ml_offer_overrides;
+create trigger ml_override_sync_trg after insert or update or delete on public.ml_offer_overrides
+  for each row execute function public.ml_override_sync();
+
+revoke execute on function public.ml_offer_apply_override() from anon, authenticated, public;
+revoke execute on function public.ml_override_sync()        from anon, authenticated, public;
+
+-- Both public views now read the corrected values. A hidden product drops out
+-- of the leksikon entirely (and out of the photo lookup, so nothing reserves a
+-- frame for it); a renamed one re-groups, since group_key is derived from the
+-- name — client-side by mlGroupKey(), and here by its SQL mirror.
+create or replace view public.ml_catalog
+with (security_invoker = on) as
+select
+  o.external_id,      -- not selected by the client, but it breaks ties in the paging order
+  o.store_id,
+  coalesce(o.ov_name, o.product_name) as product_name,
+  case when o.ov_name is not null then public.ml_group_key(o.ov_name) else o.group_key end as group_key,
+  coalesce(o.ov_price, o.price)::numeric(10,2) as price,
+  (case when o.ov_clear_pre then null else o.pre_price end)::numeric(10,2) as pre_price,
+  o.unit,
+  -- A corrected pack price makes the feed's own kr/l stale: scale it with the
+  -- correction rather than quote a unit price that no longer divides out.
+  case when o.ov_price is not null and o.unit_price is not null and o.price > 0
+       then round(o.unit_price * (o.ov_price / o.price), 4)
+       else o.unit_price end as unit_price,
+  o.unit_price_unit,
+  o.offer_days, o.valid_until,
+  (o.image_url is not null and o.group_key is not null) as has_image,
+  o.fetched_at        -- ordered by, never selected
+from public.ml_offers o
+where not o.ov_hidden;
+
+create or replace view public.ml_group_images
+with (security_invoker = on) as
+select
+  o.external_id,   -- ordered by, not selected: ties resolve as they do in the catalogue
+  case when o.ov_name is not null then public.ml_group_key(o.ov_name) else o.group_key end as group_key,
+  o.store_id,
+  coalesce(o.ov_name, o.product_name) as product_name,
+  o.unit,
+  case when o.ov_price is not null and o.unit_price is not null and o.price > 0
+       then round(o.unit_price * (o.ov_price / o.price), 4)
+       else o.unit_price end as unit_price,
+  o.unit_price_unit,
+  coalesce(o.ov_price, o.price)::numeric(10,2) as price,
+  o.image_url
+from public.ml_offers o
+where o.image_url is not null
+  and o.group_key is not null
+  and not o.ov_hidden;
+
+grant select on public.ml_catalog      to anon, authenticated;
+grant select on public.ml_group_images to anon, authenticated;
+
+-- The admin's own API. The ml-admin Edge Function reaches the database through
+-- these functions and never through PostgREST filter strings: product names are
+-- full of commas, dots and parentheses ("Birra Moretti 0,33l flaske"), all of
+-- which PostgREST reads as filter syntax. Arguments are typed, so there is
+-- nothing to quote and nothing to escape. Service role only.
+create or replace function public.ml_admin_search(p_q text default null, p_store text default null, p_limit int default 60)
+returns table (
+  store_id text, product_name text, display_name text, price numeric, pre_price numeric,
+  sources text, row_count int, image_url text,
+  ov_name text, ov_price numeric, clear_pre_price boolean, hidden boolean,
+  flagged boolean, admin_locked boolean, note text, origin text, open_reports bigint
+)
+language sql stable set search_path = public, pg_temp as $fn$
+  with hit as (
+    select o.store_id, o.product_name,
+           min(o.price) as price,
+           min(o.pre_price) as pre_price,
+           string_agg(distinct o.source, ', ') as sources,
+           count(*)::int as row_count,
+           (array_agg(o.image_url) filter (where o.image_url is not null))[1] as image_url
+      from ml_offers o
+     where (p_store is null or o.store_id = p_store)
+       and (p_q is null or btrim(p_q) = '' or o.product_name ilike '%' || btrim(p_q) || '%')
+     group by o.store_id, o.product_name
+     order by (o.product_name ilike btrim(coalesce(p_q, '')) || '%') desc,
+              length(o.product_name), o.product_name
+     limit greatest(1, least(coalesce(p_limit, 60), 200))
+  )
+  select h.store_id, h.product_name,
+         coalesce(ov.new_name, h.product_name) as display_name,
+         h.price, h.pre_price, h.sources, h.row_count, h.image_url,
+         ov.new_name, ov.new_price, coalesce(ov.clear_pre_price, false), coalesce(ov.hidden, false),
+         coalesce(ov.flagged, false), coalesce(ov.admin_locked, false), ov.note, ov.origin,
+         (select count(*) from ml_price_reports r
+           where r.store_id = h.store_id and r.product_name = h.product_name
+             and r.status in ('ny', 'markert'))
+    from hit h
+    left join ml_offer_overrides ov
+      on ov.store_id = h.store_id and ov.product_name = h.product_name
+   order by (ov.flagged is true) desc, h.product_name;
+$fn$;
+
+-- Every product the admin has touched, or that the community has flagged.
+create or replace function public.ml_admin_overrides(p_limit int default 200)
+returns table (
+  store_id text, product_name text, display_name text, price numeric, current_price numeric,
+  new_name text, new_price numeric, clear_pre_price boolean, hidden boolean, flagged boolean,
+  admin_locked boolean, origin text, note text, reports int, auto_applied_at timestamptz,
+  updated_at timestamptz, open_reports bigint
+)
+language sql stable set search_path = public, pg_temp as $fn$
+  select ov.store_id, ov.product_name,
+         coalesce(ov.new_name, ov.product_name),
+         (select min(o.price) from ml_offers o
+           where o.store_id = ov.store_id and o.product_name = ov.product_name) as price,
+         (select min(coalesce(o.ov_price, o.price)) from ml_offers o
+           where o.store_id = ov.store_id and o.product_name = ov.product_name) as current_price,
+         ov.new_name, ov.new_price, ov.clear_pre_price, ov.hidden, ov.flagged,
+         ov.admin_locked, ov.origin, ov.note, ov.reports, ov.auto_applied_at, ov.updated_at,
+         (select count(*) from ml_price_reports r
+           where r.store_id = ov.store_id and r.product_name = ov.product_name
+             and r.status in ('ny', 'markert'))
+    from ml_offer_overrides ov
+   order by ov.flagged desc, ov.updated_at desc
+   limit greatest(1, least(coalesce(p_limit, 200), 500));
+$fn$;
+
+-- The report queue. `agree` is how many DISTINCT reporters back this exact
+-- correction — the number the rule counts to three, so the admin sees how close
+-- a report is to applying itself.
+create or replace function public.ml_admin_reports(p_status text default 'open', p_limit int default 200)
+returns table (
+  id uuid, created_at timestamptz, kind text, store_id text, product_name text, display_name text,
+  group_key text, shown_price numeric, current_price numeric, correct_price numeric, correct_name text,
+  comment text, status text, agree bigint, open_reports bigint,
+  ov_name text, ov_price numeric, hidden boolean, flagged boolean, admin_locked boolean
+)
+language sql stable set search_path = public, pg_temp as $fn$
+  select r.id, r.created_at, r.kind, r.store_id, r.product_name,
+         coalesce(ov.new_name, r.product_name),
+         r.group_key, r.shown_price,
+         (select min(coalesce(o.ov_price, o.price)) from ml_offers o
+           where o.store_id = r.store_id and o.product_name = r.product_name),
+         r.correct_price, r.correct_name, r.comment, r.status,
+         (select count(distinct coalesce(p.reporter, 'ip:' || p.reporter_ip, 'row:' || p.id::text))
+            from ml_price_reports p
+           where p.store_id = r.store_id and p.product_name = r.product_name
+             and p.kind = r.kind and p.status in ('ny', 'markert')
+             and p.created_at > now() - interval '180 days'
+             and ((r.kind = 'pris'    and round(p.correct_price, 2) = round(r.correct_price, 2))
+               or (r.kind = 'produkt' and lower(p.correct_name) = lower(r.correct_name)))),
+         (select count(*) from ml_price_reports p2
+           where p2.store_id = r.store_id and p2.product_name = r.product_name
+             and p2.status in ('ny', 'markert')),
+         ov.new_name, ov.new_price, coalesce(ov.hidden, false),
+         coalesce(ov.flagged, false), coalesce(ov.admin_locked, false)
+    from ml_price_reports r
+    left join ml_offer_overrides ov
+      on ov.store_id = r.store_id and ov.product_name = r.product_name
+   where case
+           when p_status is null or p_status = 'alle'  then true
+           when p_status = 'open'                      then r.status in ('ny', 'markert')
+           else r.status = p_status
+         end
+   order by r.created_at desc
+   limit greatest(1, least(coalesce(p_limit, 200), 500));
+$fn$;
+
+-- A hand edit. It locks the product against the community rule (an admin has
+-- looked at it; three strangers should not undo that) and answers whatever
+-- reports were open on it.
+create or replace function public.ml_admin_save(
+  p_store text, p_name text, p_new_name text default null, p_new_price numeric default null,
+  p_clear_pre boolean default false, p_hidden boolean default false, p_note text default null)
+returns void language plpgsql volatile set search_path = public, pg_temp as $fn$
+begin
+  if not exists (select 1 from ml_offers o where o.store_id = p_store and o.product_name = p_name) then
+    raise exception 'Ukjent vare: % hos %', p_name, p_store using errcode = 'no_data_found';
+  end if;
+  insert into ml_offer_overrides (store_id, product_name, new_name, new_price, clear_pre_price,
+                                  hidden, note, origin, admin_locked, flagged)
+    values (p_store, p_name,
+            nullif(regexp_replace(btrim(coalesce(p_new_name, '')), '\s+', ' ', 'g'), ''),
+            p_new_price, coalesce(p_clear_pre, false), coalesce(p_hidden, false),
+            nullif(btrim(coalesce(p_note, '')), ''), 'admin', true, false)
+  on conflict (store_id, product_name) do update
+    set new_name = excluded.new_name, new_price = excluded.new_price,
+        clear_pre_price = excluded.clear_pre_price, hidden = excluded.hidden,
+        note = excluded.note, origin = 'admin', admin_locked = true, flagged = false,
+        auto_applied_at = null, updated_at = now();
+  update ml_price_reports set status = 'behandlet', handled_at = now()
+   where store_id = p_store and product_name = p_name and status in ('ny', 'markert');
+end;
+$fn$;
+
+-- Back to whatever the feed says, community rule included: the override row is
+-- gone, so the next report starts counting from one again.
+create or replace function public.ml_admin_reset(p_store text, p_name text)
+returns void language sql volatile set search_path = public, pg_temp as $fn$
+  delete from ml_offer_overrides where store_id = p_store and product_name = p_name;
+$fn$;
+
+create or replace function public.ml_admin_set_report(p_id uuid, p_status text)
+returns void language sql volatile set search_path = public, pg_temp as $fn$
+  update ml_price_reports
+     set status = p_status,
+         handled_at = case when p_status in ('behandlet', 'avvist') then now() else null end
+   where id = p_id and p_status in ('ny', 'markert', 'behandlet', 'avvist');
+$fn$;
+
+-- "Bruk denne" on a single report: apply that one correction as a hand edit,
+-- without waiting for two more people to agree.
+create or replace function public.ml_admin_apply_report(p_id uuid)
+returns void language plpgsql volatile set search_path = public, pg_temp as $fn$
+declare r ml_price_reports%rowtype;
+begin
+  select * into r from ml_price_reports where id = p_id;
+  if not found then raise exception 'Ukjent rapport' using errcode = 'no_data_found'; end if;
+  if r.kind = 'pris' then
+    perform ml_admin_save(r.store_id, r.product_name,
+      (select ov.new_name from ml_offer_overrides ov
+        where ov.store_id = r.store_id and ov.product_name = r.product_name),
+      r.correct_price, false, false, 'Godkjent rapport ' || to_char(r.created_at, 'DD.MM.YYYY'));
+  else
+    perform ml_admin_save(r.store_id, r.product_name, r.correct_name,
+      (select ov.new_price from ml_offer_overrides ov
+        where ov.store_id = r.store_id and ov.product_name = r.product_name),
+      false, false, 'Godkjent rapport ' || to_char(r.created_at, 'DD.MM.YYYY'));
+  end if;
+  update ml_price_reports set status = 'behandlet', applied_at = now(), handled_at = now() where id = p_id;
+end;
+$fn$;
+
+create or replace function public.ml_admin_stats()
+returns table (open_reports bigint, flagged bigint, overrides bigint, hidden bigint, products bigint)
+language sql stable set search_path = public, pg_temp as $fn$
+  -- Aliased throughout: `flagged`/`hidden` are also OUT parameter names here,
+  -- and an unqualified reference to one is ambiguous.
+  select (select count(*) from ml_price_reports r where r.status in ('ny', 'markert')),
+         (select count(*) from ml_offer_overrides v where v.flagged),
+         (select count(*) from ml_offer_overrides v),
+         (select count(*) from ml_offer_overrides v where v.hidden),
+         (select count(*) from ml_offers o);
+$fn$;
+
+revoke execute on function public.ml_admin_search(text, text, int)                             from anon, authenticated, public;
+revoke execute on function public.ml_admin_overrides(int)                                      from anon, authenticated, public;
+revoke execute on function public.ml_admin_reports(text, int)                                  from anon, authenticated, public;
+revoke execute on function public.ml_admin_save(text, text, text, numeric, boolean, boolean, text) from anon, authenticated, public;
+revoke execute on function public.ml_admin_reset(text, text)                                   from anon, authenticated, public;
+revoke execute on function public.ml_admin_set_report(uuid, text)                              from anon, authenticated, public;
+revoke execute on function public.ml_admin_apply_report(uuid)                                  from anon, authenticated, public;
+revoke execute on function public.ml_admin_stats()                                             from anon, authenticated, public;
+grant execute on function public.ml_admin_search(text, text, int)                              to service_role;
+grant execute on function public.ml_admin_overrides(int)                                       to service_role;
+grant execute on function public.ml_admin_reports(text, int)                                   to service_role;
+grant execute on function public.ml_admin_save(text, text, text, numeric, boolean, boolean, text)  to service_role;
+grant execute on function public.ml_admin_reset(text, text)                                    to service_role;
+grant execute on function public.ml_admin_set_report(uuid, text)                               to service_role;
+grant execute on function public.ml_admin_apply_report(uuid)                                   to service_role;
+grant execute on function public.ml_admin_stats()                                              to service_role;
