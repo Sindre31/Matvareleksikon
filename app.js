@@ -3561,7 +3561,18 @@
   // never touches browser globals.
   if (typeof window !== 'undefined' && typeof document !== 'undefined') {
     va('beforeSend', analyticsBeforeSend);
-    window.addEventListener('hashchange', function () { route(); trackView(); });
+    // A dialog belongs to the screen it was opened from. Navigating away — the
+    // back button most of all, since both dialogs are the kind of thing you
+    // press it to escape — used to leave it floating over whatever came next,
+    // still describing a product no longer on screen, closable only by finding
+    // its own Avbryt. Closing them here rather than in route() is deliberate:
+    // route() also runs when the background catalogue refresh lands, and that
+    // must not shut a dialog the visitor is in the middle of typing into.
+    window.addEventListener('hashchange', function () {
+      if (state.report || state.sizePicker) { state.report = null; state.sizePicker = null; }
+      route();
+      trackView();
+    });
     document.addEventListener('paste', function (e) {
       if (state.phase !== 'ready' || state.view !== 'scan' || state.scanPhase !== 'idle') return;
       var items = (e.clipboardData && e.clipboardData.items) || [];
