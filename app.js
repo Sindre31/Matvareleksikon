@@ -121,6 +121,39 @@
       .replace(/\s+/g, ' ').trim();
   }
 
+  // ⚠ MIRROR OF A DATABASE FUNCTION — public.ml_group_key(text) in Postgres.
+  //
+  // group_key is what the price-history and photo lookups are keyed on, and it
+  // used to be shipped on every catalogue row. It is a pure IMMUTABLE transform
+  // of product_name, so sending it as well was 372 kB of the 1208 kB boot
+  // payload (31 %) spent on something the client can derive. It is derived here
+  // instead and no longer selected.
+  //
+  // The cost of that is this invariant: **if ml_group_key changes in SQL, this
+  // must change with it.** Nothing fails loudly when they drift — the lookups
+  // just quietly return nothing, and charts and photos go missing. The SQL
+  // carries the same warning, and test/group-key.test.js pins this against 164
+  // (name → key) pairs taken verbatim from production.
+  //
+  // Postgres → JS: \y (word boundary) is \b; the fallback branch deliberately
+  // starts from lower(p) WITHOUT the ø/æ/å folding, so those letters fall
+  // through its [^a-z0-9]+ class as separators.
+  var ML_GROUP_BRANDS = /\b(rema|kiwi|coop|extra|meny|spar|first ?price|x-?tra|xtra|eldorado|prima|folkets|anglamark|q|tine|gilde|synnove|nordfjord|prior|stange|jacobs)\b/g;
+  function mlGroupKey(name) {
+    var src = String(name == null ? '' : name);
+    var s = src.toLowerCase()
+      .replace(/ø/g, 'o').replace(/æ/g, 'ae').replace(/å/g, 'a')
+      .replace(/\d+([.,]\d+)?\s*(kg|hg|g|ml|cl|dl|l|stk|pk|pakk|pack|kop)\b/g, ' ')
+      .replace(/\d+([.,]\d+)?\s*%/g, ' ')
+      .replace(ML_GROUP_BRANDS, ' ')
+      .replace(/[^a-z0-9 ]/g, ' ')
+      .replace(/\s+/g, ' ').trim();
+    if (s !== '') return s;
+    // Everything was stripped (a name that is nothing but sizes and brands):
+    // fall back to a plain fold of the original, as the SQL does.
+    return src.toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
+  }
+
   // Category grouping: some products must group by a *variety* (raw mince by
   // meat type), not by brand. Others (branded sauces) keep their brand. The
   // mince rule below keys "kjøttdeig"/"karbonadedeig" by meat type — svin,
@@ -224,7 +257,12 @@
     return {
       storeId: st, storeName: STORE_NAME[st] || st,
       color: (STORE_STYLE[st] || {}).color || 'var(--color-accent)', dash: (STORE_STYLE[st] || {}).dash || '',
-      rawName: o.product_name, name: cleanName(o.product_name), serverKey: o.group_key || ckey(o.product_name),
+      rawName: o.product_name, name: cleanName(o.product_name),
+      // Derived, not shipped — see mlGroupKey. The `o.group_key ||` arm is not
+      // dead: rows restored from a snapshot written before the column was
+      // dropped still carry one, and using it keeps those visits identical
+      // rather than forcing the 12 h cache to be invalidated.
+      serverKey: o.group_key || mlGroupKey(o.product_name) || ckey(o.product_name),
       price: price, prePrice: o.pre_price != null ? Number(o.pre_price) : null,
       // The photo itself is not in the boot payload — see the image loader.
       // hasImage says one exists, which is what reserves its frame.
@@ -2449,7 +2487,9 @@
   // of the bytes and are fetched per screen instead (see the image loader).
   // has_image survives so the frame can be reserved before the URL lands.
   var OFFER_SRC = '/ml_catalog';
-  var OFFER_COLS = 'store_id,product_name,group_key,price,pre_price,unit,unit_price,unit_price_unit,offer_days,valid_until,has_image';
+  // group_key is deliberately absent: it is derived from product_name by
+  // mlGroupKey() rather than shipped, which is 372 kB (31 %) off this payload.
+  var OFFER_COLS = 'store_id,product_name,price,pre_price,unit,unit_price,unit_price_unit,offer_days,valid_until,has_image';
   var OFFER_PAGE = 1000;
   // How many offer pages are in flight at once. The catalogue is ~50 pages, and
   // fetching them one after another meant ~50 *serialised* round trips before
@@ -2691,7 +2731,7 @@
   // is a no-op in the browser (no `module`), so it never affects the app.
   if (typeof module !== 'undefined' && module.exports) {
     module.exports = {
-      cleanName: cleanName, pctOff: pctOff, baseAmount: baseAmount,
+      cleanName: cleanName, pctOff: pctOff, baseAmount: baseAmount, mlGroupKey: mlGroupKey,
       parseAmount: parseAmount, normUnit: normUnit, foldName: foldName,
       minceKey: minceKey, ckey: ckey, canonLabel: canonLabel,
       buildStores: buildStores, buildGroups: buildGroups, searchRank: searchRank,
