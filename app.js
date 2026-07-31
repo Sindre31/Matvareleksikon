@@ -15,6 +15,11 @@
 
   var SUPABASE_URL = 'https://jiaxeedguivvhixychcg.supabase.co';
   var SUPABASE_KEY = 'sb_publishable_trP_tgjyaPU-2eJ7n9JX4w_Q7kIvDPC';
+  // Forwarding-only address (see readme.md): mail sent here lands in a personal
+  // inbox. Replying *as* this address would need an SMTP relay, which the free
+  // forwarding tier does not include — so don't promise a reply from it.
+  // It is also duplicated in index.html's JSON-LD; change both together.
+  var SUPPORT_EMAIL = 'support@prisboka.no';
   function sb(path, opts) {
     opts = opts || {};
     opts.headers = Object.assign({ apikey: SUPABASE_KEY, Authorization: 'Bearer ' + SUPABASE_KEY }, opts.headers || {});
@@ -2300,7 +2305,18 @@
       ])
     ]);
 
-    return h('section', { 'data-screen-label': 'Om' }, [head, what, sources, privacy]);
+    var contact = aboutSection('Kontakt', '04', [
+      h('p', { style: P }, [
+        'Feil pris, en vare som er gruppert rart, eller noe annet som skurrer — send en e-post til ',
+        h('a', { href: 'mailto:' + SUPPORT_EMAIL, text: SUPPORT_EMAIL }),
+        '. Prisboka er et hobbyprosjekt, så svaret kan ta noen dager.'
+      ]),
+      h('p', { style: 'margin: 14px 0 0; font-size: 14px; line-height: 22px; color: ' + MUTED60 + '; max-width: 68ch;' }, [
+        'Produktbildene er hentet fra kjedenes egne bildetjenester og kan være beskyttet av opphavsrett. Er du rettighetshaver og vil ha et bilde fjernet, si fra på samme adresse, så tar vi det ned.'
+      ])
+    ]);
+
+    return h('section', { 'data-screen-label': 'Om' }, [head, what, sources, privacy, contact]);
   }
 
   // Site footer — attribution + links, on every screen.
@@ -2311,7 +2327,8 @@
         h('span', { style: 'display: flex; flex-wrap: wrap; gap: 4px; align-items: baseline;' }, [
           h('a', { href: '#/om', onClick: nav('om'), text: 'Om' }), sep(),
           h('a', { href: '#/om', onClick: nav('om'), text: 'Kilder' }), sep(),
-          h('a', { href: '#/om', onClick: nav('om'), text: 'Personvern' })
+          h('a', { href: '#/om', onClick: nav('om'), text: 'Personvern' }), sep(),
+          h('a', { href: 'mailto:' + SUPPORT_EMAIL, text: 'Kontakt' })
         ]),
         h('span', { style: 'color: ' + MUTED60 + '; max-width: 62ch;', text: 'Ekte priser fra ' + storeListText() + '. Uavhengig prosjekt — ikke tilknyttet kjedene. Sjekk prisen i butikk.' })
       ])

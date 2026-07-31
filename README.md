@@ -587,9 +587,10 @@ Attaching it takes two sides, neither of which lives in this repo:
 both `prisboka.no` and `www.prisboka.no`, make `prisboka.no` the production
 domain, and set `www.prisboka.no` to redirect (301) to it.
 
-**2. DNS at the registrar** — `prisboka.no` is registered outside Vercel, so
-the records are set wherever the nameservers point (today: a Norwegian
-registrar, not Vercel DNS):
+**2. DNS** — `prisboka.no` is registered outside Vercel, but its nameservers now
+point at **Vercel DNS** (`ns1.vercel-dns.com` / `ns2.vercel-dns.com`, verified
+against two public resolvers), so the records live in Vercel's DNS panel rather
+than at the registrar:
 
 | Name | Type | Value |
 | --- | --- | --- |
@@ -643,6 +644,57 @@ Preview deployments are unaffected: their hostnames carry a
 they never match the `matvareleksikon.vercel.app` host — worth re-checking if
 the project is ever renamed, since a rule that swallowed preview hosts would
 redirect every preview to production and make previews impossible to review.
+
+### Support email
+
+`support@prisboka.no` — shown in the footer ("Kontakt") and in section 04 of the
+Om page, and duplicated in `index.html`'s JSON-LD `Organization.email`. It is
+defined once as `SUPPORT_EMAIL` in `app.js`; change all three together.
+
+The address is **forwarding-only**: mail sent to it lands in a personal inbox,
+and nothing is hosted at the domain. Two consequences worth keeping in mind:
+
+- **You cannot reply *as* `support@prisboka.no`** on a free forwarding tier —
+  sending requires an SMTP relay, which is the paid part of every one of these
+  services. A reply will come from whatever inbox the mail forwarded into,
+  unless that is set up separately. The Om page therefore promises a response,
+  not a response *from this address*.
+- **Forwarding breaks SPF for the original sender.** That is inherent to
+  forwarding, not a misconfiguration; the SPF record below covers it for mail
+  the forwarder re-sends.
+
+**DNS.** The nameservers are Vercel's, so these go in Vercel's DNS panel — not
+at the registrar, and not in `vercel.json` (which only sets HTTP headers and
+redirects; it cannot express DNS). The domain had **no MX records at all**
+before this, so nothing is being replaced.
+
+Set up with [Forward Email](https://forwardemail.net) — free, open source,
+unlimited inbound, and, decisively here, it needs **only records** rather than a
+nameserver move. (Cloudflare Email Routing is an equally good free option but
+requires moving the nameservers off Vercel, which would mean re-creating the
+apex `A` and `www` `CNAME` there too. ImprovMX is the other obvious pick and is
+already in use elsewhere.)
+
+| Name | Type | Priority | Value |
+| --- | --- | --- | --- |
+| `@` | `MX` | 10 | `mx1.forwardemail.net` |
+| `@` | `MX` | 10 | `mx2.forwardemail.net` |
+| `@` | `TXT` | — | `v=spf1 a include:spf.forwardemail.net -all` |
+| `@` | `TXT` | — | `forward-email=support:<din-personlige-adresse>` |
+
+Both MX records carry the *same* priority — they are equal peers, not a primary
+and a backup. Use the values Forward Email prints in its own dashboard over
+these if the two ever disagree.
+
+Verify once the records have propagated:
+
+```bash
+dig +short MX prisboka.no          # expect the two forwardemail hosts
+dig +short TXT prisboka.no         # expect the spf1 and forward-email lines
+```
+
+Then send a real message to `support@prisboka.no` and confirm it arrives — the
+records resolving is not proof that delivery works.
 
 **Response headers** are set in `vercel.json` for every path:
 
