@@ -185,6 +185,32 @@ test('buildGroups — offer flags come from a before-price above the price', () 
   assert.equal(melk.bestOff, 25);
 });
 
+test('buildGroups — addedRank is the group\'s newest row, so it sorts newest first', () => {
+  lib.buildStores(STORES);
+  // Rows arrive newest-first (order=fetched_at.desc), so position IS recency.
+  const groups = lib.buildGroups([
+    offer('kiwi', 'Kaffe 500 g', 59),      // newest product in the catalogue
+    offer('rema', 'Lettmelk 1 l', 17.9),
+    offer('kiwi', 'Lettmelk 1 l', 18.9),   // an older row of an already-seen product
+    offer('rema', 'Brød 750 g', 29)        // oldest
+  ]);
+  assert.equal(byKey(groups, 'kaffe').addedRank, 0);
+  assert.equal(byKey(groups, 'lettmelk').addedRank, 1, 'the newest row of the group wins');
+  assert.equal(byKey(groups, 'brod').addedRank, 3);
+  const order = groups.slice().sort((a, b) => a.addedRank - b.addedRank).map((g) => g.key);
+  assert.deepEqual(order, ['kaffe', 'lettmelk', 'brod']);
+});
+
+test('buildGroups — a row too junk to group does not consume a rank slot it needs', () => {
+  lib.buildStores(STORES);
+  const groups = lib.buildGroups([
+    offer('kiwi', 'Ødelagt rad', 0),       // no real price → skipped entirely
+    offer('rema', 'Kaffe 500 g', 59)
+  ]);
+  assert.equal(groups.length, 1);
+  assert.equal(byKey(groups, 'kaffe').addedRank, 1, 'rank is the row index, gaps and all');
+});
+
 test('buildGroups — expired offers are dropped while any live offer remains', () => {
   lib.buildStores(STORES);
   const groups = lib.buildGroups([
