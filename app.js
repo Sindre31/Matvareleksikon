@@ -2264,24 +2264,84 @@
   // Only the columns the client actually reads (valid_from and the offer-level
   // source column were fetched but never used — dropped to trim the payload).
   var OFFER_COLS = 'store_id,product_name,group_key,price,pre_price,unit,unit_price,unit_price_unit,offer_days,image_url,valid_until';
-  function fetchAllOffers() {
+  var OFFER_PAGE = 1000;
+  // How many offer pages are in flight at once. The catalogue is ~50 pages, and
+  // fetching them one after another meant ~50 *serialised* round trips before
+  // anything could paint — pure latency, seconds of it on mobile. A handful of
+  // lanes fills the connection without hammering the API.
+  var OFFER_LANES = 6;
+
+  function offersPage(offset, opts) {
+    return sb('/ml_offers?select=' + OFFER_COLS + '&order=external_id&limit=' + OFFER_PAGE + '&offset=' + offset, opts)
+      .then(function (r) { if (!r.ok) throw new Error('offers ' + r.status); return r; });
+  }
+
+  // Row count from PostgREST's Content-Range ("0-999/49584"), which it only
+  // sends when asked with `Prefer: count=exact`. Null when the header is
+  // missing or unparseable — then we page the old serial way instead.
+  function totalFromRange(res) {
+    var h = (res.headers && typeof res.headers.get === 'function') ? res.headers.get('Content-Range') : null;
+    var m = h && /\/(\d+)\s*$/.exec(h);
+    var n = m ? Number(m[1]) : NaN;
+    return isFinite(n) ? n : null;
+  }
+
+  // Serial fallback: keep asking for the next page until a short one comes back.
+  function pageOffersFrom(all, offset) {
+    return offersPage(offset).then(function (r) { return r.json(); }).then(function (rows) {
+      rows = rows || [];
+      pushAll(all, rows);
+      if (rows.length < OFFER_PAGE) return all;
+      return pageOffersFrom(all, offset + OFFER_PAGE);
+    });
+  }
+
+  function pushAll(dst, src) { for (var i = 0; i < src.length; i++) dst.push(src[i]); return dst; }
+
+  // Run thunks `lanes` at a time, preserving result order. Rejects on the first
+  // failure — a half-downloaded catalogue is not one we want to show.
+  function pooled(jobs, lanes) {
     return new Promise(function (resolve, reject) {
-      var all = [];
-      (function page(offset) {
-        sb('/ml_offers?select=' + OFFER_COLS + '&order=external_id&limit=1000&offset=' + offset)
-          .then(function (r) { if (!r.ok) throw new Error('offers ' + r.status); return r.json(); })
-          .then(function (rows) {
-            rows = rows || [];
-            all = all.concat(rows);
-          
-            if (rows.length < 1000) {
-              resolve(all);
-            } else {
-              page(offset + 1000);
-            }
-          })
-          .catch(reject);
-      })(0);
+      var out = new Array(jobs.length), next = 0, done = 0, failed = false;
+      if (!jobs.length) { resolve(out); return; }
+      function start() {
+        if (failed || next >= jobs.length) return;
+        var i = next++;
+        jobs[i]().then(function (v) {
+          if (failed) return;
+          out[i] = v;
+          if (++done === jobs.length) resolve(out); else start();
+        }, function (e) { if (!failed) { failed = true; reject(e); } });
+      }
+      for (var k = 0; k < lanes && k < jobs.length; k++) start();
+    });
+  }
+
+  function fetchAllOffers() {
+    // The first page doubles as the count probe, so knowing the total costs no
+    // extra round trip. Everything after it goes out in parallel.
+    return offersPage(0, { headers: { Prefer: 'count=exact' } }).then(function (res) {
+      var total = totalFromRange(res);
+      return res.json().then(function (first) {
+        var all = pushAll([], first || []);
+        if (all.length < OFFER_PAGE) return all;
+        if (total == null) return pageOffersFrom(all, OFFER_PAGE);
+
+        var jobs = [];
+        for (var off = OFFER_PAGE; off < total; off += OFFER_PAGE) {
+          jobs.push(function (o) {
+            return function () { return offersPage(o).then(function (r) { return r.json(); }); };
+          }(off));
+        }
+        return pooled(jobs, OFFER_LANES).then(function (pages) {
+          var last = null;
+          for (var i = 0; i < pages.length; i++) { last = pages[i] || []; pushAll(all, last); }
+          // Rows can be appended between the count and the last page. If the
+          // final page came back full there may be more behind it — mop up.
+          if (last && last.length === OFFER_PAGE) return pageOffersFrom(all, OFFER_PAGE * (pages.length + 1));
+          return all;
+        });
+      });
     });
   }
 
