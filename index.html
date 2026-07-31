@@ -90,6 +90,26 @@
     .nav-cart-icon { display: none; }
     .nav-cart-count { font-size: 12px; font-feature-settings: 'tnum' 1; }
 
+    /* "Selges hos": store, offer tag, price, and the report button. Four
+       columns fit a desktop and crush a phone — the product name is the one
+       that gives, and it is the one thing on the row you have to be able to
+       read. Names run to 50 characters ("Sjokolade Mørk 70% Karamell/Mandel/
+       Havsalt 100g Ja"), so below 560 px the name takes the full width and the
+       other three sit under it on a line of their own. */
+    .store-row { display: grid; grid-template-columns: 1fr auto auto auto; gap: 12px; align-items: center; }
+    .store-row > :first-child { min-width: 0; }   /* below its longest word, so the name wraps instead of widening the row */
+    @media (max-width: 560px) {
+      .store-row {
+        grid-template-columns: 1fr auto auto;
+        grid-template-areas: "name name name" "tag price report";
+        row-gap: 10px;
+      }
+      .store-row > :nth-child(1) { grid-area: name; }
+      .store-row > :nth-child(2) { grid-area: tag; justify-self: start; }
+      .store-row > :nth-child(3) { grid-area: price; justify-self: end; }
+      .store-row > :nth-child(4) { grid-area: report; justify-self: end; }
+    }
+
     /* Small screens: let the top bar wrap instead of overflowing. */
     @media (max-width: 640px) {
       .nav { flex-wrap: wrap; row-gap: 10px; column-gap: clamp(8px, 2.6vw, 10px); }

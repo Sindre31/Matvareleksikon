@@ -1211,8 +1211,23 @@
   var NAME_STYLE = 'font-family: var(--font-heading); font-weight: 600; font-size: 18px; letter-spacing: 0.02em; text-transform: uppercase;';
   // Same weight, but never upper-cased: "1,75 l" must not read as "1,75 L".
   var SIZE_NAME_STYLE = 'font-family: var(--font-heading); font-weight: 600; font-size: 18px; letter-spacing: 0.02em;';
-  var H1 = 'margin: -0.052em 0 0; font-size: clamp(36px, 5vw, 60px); line-height: 1.04; letter-spacing: 0.01em; text-transform: uppercase;';
+  // min-width: 0 because the product title is a flex item, and a flex item is
+  // sized by its longest word unless told otherwise — "SMOOTHIE GULROT/MANGO/
+  // EPLE/INGEFÆR" has no break opportunity in it and is 655 px at this size, so
+  // without this the title set the width of the whole page on a phone.
+  var H1 = 'margin: -0.052em 0 0; font-size: clamp(36px, 5vw, 60px); line-height: 1.04; letter-spacing: 0.01em; text-transform: uppercase; min-width: 0;';
   function offerTag() { return h('span', { cls: 'tag tag-accent', style: 'background: var(--color-accent-900); color: var(--color-bg);', text: 'På tilbud' }); }
+
+  // A break opportunity where the name already has a seam. Chain names are
+  // slash- and ampersand-joined ("SMOOTHIE GULROT/MANGO/EPLE/INGEFÆR",
+  // "Laksefilet m/Skinn m/Hasselnøtt&Paprikapesto"), and neither character is a
+  // break opportunity in CSS — so a title that doesn't fit gets broken mid-word
+  // ("…EPLE/IN GEFÆR") by overflow-wrap, which is the last resort, not this.
+  // U+200B is invisible, doesn't affect search (this is display only) and is
+  // what <wbr> compiles to anyway.
+  function softBreaks(s) {
+    return String(s == null ? '' : s).replace(/([\/&])(?!\s|​)/g, '$1​');
+  }
 
   function dateDM(d) {
     d = String(d || '');
@@ -1339,7 +1354,7 @@
     }, corners().concat([
       h('div', { style: 'padding: 20px 16px 12px;' }, [
         h('span', { style: KICKER + ' margin-bottom: 6px;', text: editing ? 'Endre størrelse' : 'Velg størrelse' }),
-        h('span', { style: 'display: block; font-family: var(--font-heading); font-weight: 600; font-size: 22px; letter-spacing: 0.02em; text-transform: uppercase;', text: g.name }),
+        h('span', { style: 'display: block; font-family: var(--font-heading); font-weight: 600; font-size: 22px; letter-spacing: 0.02em; text-transform: uppercase;', text: softBreaks(g.name) }),
         h('p', { style: 'margin: 8px 0 0; font-size: 14px; line-height: 20px; color: ' + MUTED70 + ';', text: (editing ? 'Hvilken pakning skal lista regne med? Varen blir liggende der den er i lista.' : 'Hvilken pakning skal i handlelisten?') + ' Butikksummene regnes ut fra den, så sammenligningen gjelder samme vare.' })
       ]),
       h('div', {}, rows),
@@ -1538,7 +1553,10 @@
           })
         ]),
         d.error ? h('p', { role: 'alert', style: 'margin: 14px 0 0; font-size: 14px; line-height: 20px; color: var(--color-accent-900);', text: d.error }) : null,
-        h('div', { style: 'display: flex; flex-wrap: wrap; gap: 10px; margin-top: 18px;' }, [
+        // Sticky: on a phone the card is taller than 85vh and scrolls, and the
+        // button that sends the report would otherwise sit below the fold of a
+        // container the visitor may not realise scrolls.
+        h('div', { style: 'display: flex; flex-wrap: wrap; gap: 10px; margin-top: 18px; position: sticky; bottom: 0; background: var(--color-bg); padding: 12px 0 4px;' }, [
           h('button', { type: 'button', cls: 'btn btn-primary', disabled: sending ? 'disabled' : false, onClick: submitReport, text: sending ? 'Sender …' : 'Send rapport' }),
           h('button', { type: 'button', cls: 'btn btn-ghost', onClick: close, text: 'Avbryt' })
         ]),
@@ -1553,7 +1571,7 @@
     }, corners().concat([
       h('div', { style: 'padding: 20px 16px 12px;' }, [
         h('span', { style: KICKER + ' margin-bottom: 6px;', text: 'Rapporter feil' }),
-        h('span', { style: 'display: block; font-family: var(--font-heading); font-weight: 600; font-size: 22px; letter-spacing: 0.02em; text-transform: uppercase;', text: d.name }),
+        h('span', { style: 'display: block; font-family: var(--font-heading); font-weight: 600; font-size: 22px; letter-spacing: 0.02em; text-transform: uppercase;', text: softBreaks(d.name) }),
         h('p', { style: 'margin: 8px 0 0; font-size: 14px; line-height: 20px; color: ' + MUTED70 + ';', text: d.storeName + ' · ' + d.rawName + ' · ' + nf(d.price) })
       ]),
       body
@@ -1735,7 +1753,7 @@
                 h('span', { cls: 'tag tag-outline', text: v.storeName }),
                 h('span', { style: 'font-family: var(--font-heading); font-weight: 600; font-size: 15px; color: var(--color-accent-900);', text: '−' + pctOff(v) + ' %' })
               ]),
-              h('span', { style: NAME_STYLE, text: v.name }),
+              h('span', { style: NAME_STYLE, text: softBreaks(v.name) }),
               h('div', { style: 'display: flex; align-items: baseline; gap: 8px;' }, [
                 h('span', { style: "font-family: var(--font-heading); font-weight: 600; font-size: 24px; font-feature-settings: 'tnum' 1;", text: nf(v.price) }),
                 v.prePrice ? h('span', { style: "font-size: 13px; color: " + MUTED60 + "; text-decoration: line-through; font-feature-settings: 'tnum' 1;", text: nf(v.prePrice) }) : null
@@ -1790,7 +1808,7 @@
           h('div', { style: 'display: flex; gap: 8px; align-items: center; min-height: 20px;' }, [
             g.onOffer ? offerTag() : h('span', { style: 'font-size: 12px; letter-spacing: 0.08em; text-transform: uppercase; font-weight: 600; color: ' + MUTED60 + ';', text: whereTxt })
           ]),
-          h('span', { style: 'font-family: var(--font-heading); font-weight: 600; font-size: 22px; line-height: 1.1; letter-spacing: 0.02em; text-transform: uppercase;', text: g.name }),
+          h('span', { style: 'font-family: var(--font-heading); font-weight: 600; font-size: 22px; line-height: 1.1; letter-spacing: 0.02em; text-transform: uppercase;', text: softBreaks(g.name) }),
           h('div', { style: 'display: flex; align-items: baseline; gap: 10px; margin-top: 6px;' }, [
             h('span', { style: "font-family: var(--font-heading); font-weight: 600; font-size: 24px; font-feature-settings: 'tnum' 1;", text: priceTxt })
           ]),
@@ -1835,7 +1853,7 @@
           copyLinkBtn()
         ]),
         h('div', { style: 'display: flex; flex-wrap: wrap; align-items: baseline; gap: 16px; margin-top: 20px;' }, [
-          h('h1', { style: H1, text: g.name }),
+          h('h1', { style: H1, text: softBreaks(g.name) }),
           g.onOffer ? offerTag() : null
         ]),
         h('p', { style: 'margin: 12px 0 0; font-size: 15px; color: ' + MUTED70 + ';', text: g.storeCount > 1 ? ('Selges hos ' + g.storeCount + ' butikker · billigst ' + (g.compDim ? nfUnit(g.minUnit, g.compDim) : nf(g.minPrice))) : ('Selges hos ' + g.variants[0].storeName + ' · ' + nf(g.minPrice)) }),
@@ -1885,18 +1903,25 @@
       var vd = v.offerDays ? 'Gjelder ' + v.offerDays : '';
       var nSizes = gsize === 'alle' ? sizesFor(g, v.storeId).length : 1;
       var sub = v.rawName + (vd ? ' · ' + vd : '') + (vu ? ' · ' + vu : '') + (nSizes > 1 ? ' · ' + nSizes + ' størrelser' : '');
-      return h('div', Object.assign({ cls: 'row-hover', style: 'display: grid; grid-template-columns: 1fr auto auto auto; gap: 12px; align-items: center; cursor: pointer; padding: 14px 20px; border-bottom: 1px solid color-mix(in srgb, var(--color-text) 8%, transparent);' }, activate(openVariant(g.key, v.storeId), v.storeName + ', ' + nf(v.price) + (nSizes > 1 ? ', ' + nSizes + ' størrelser' : '') + ', se prishistorikk')), [
-        h('span', { style: 'display: flex; align-items: center; gap: 12px;' }, [
+      // The four columns (name, tag, price, report) and how they restack on a
+      // phone live in index.html's .store-row — a media query can't be written
+      // inline, and this row needs one.
+      return h('div', Object.assign({ cls: 'row-hover store-row', style: 'cursor: pointer; padding: 14px 20px; border-bottom: 1px solid color-mix(in srgb, var(--color-text) 8%, transparent);' }, activate(openVariant(g.key, v.storeId), v.storeName + ', ' + nf(v.price) + (nSizes > 1 ? ', ' + nSizes + ' størrelser' : '') + ', se prishistorikk')), [
+        h('span', { style: 'display: flex; align-items: center; gap: 12px; min-width: 0;' }, [
           storeLine(v.color, v.dash, 18),
-          h('span', {}, [
+          h('span', { style: 'min-width: 0;' }, [
             h('span', { style: NAME_STYLE, text: v.storeName }),
-            h('span', { style: 'display: block; font-size: 13px; color: ' + MUTED60 + ';', text: sub })
+            h('span', { style: 'display: block; font-size: 13px; color: ' + MUTED60 + ';', text: softBreaks(sub) })
           ])
         ]),
         v.isOffer ? h('span', { cls: 'tag tag-outline', text: '−' + pctOff(v) + ' %' }) : h('span'),
         h('span', { style: 'display: flex; flex-direction: column; align-items: flex-end; gap: 2px;' }, [
-          h('span', { style: 'display: flex; align-items: baseline; gap: 8px; justify-content: flex-end;' }, [
-            v.prePrice ? h('span', { style: "font-size: 13px; color: " + MUTED60 + "; text-decoration: line-through; font-feature-settings: 'tnum' 1;", text: nf(v.prePrice) }) : null,
+          // flex-wrap so the struck-out before-price drops onto its own line
+          // rather than holding the column at the width of both prices — that
+          // pair alone is 165 px, which does not fit beside the tag and the
+          // report button on a 320 px phone.
+          h('span', { style: 'display: flex; align-items: baseline; gap: 8px; justify-content: flex-end; flex-wrap: wrap;' }, [
+            v.prePrice ? h('span', { style: "font-size: 13px; color: " + MUTED60 + "; text-decoration: line-through; font-feature-settings: 'tnum' 1; white-space: nowrap;", text: nf(v.prePrice) }) : null,
             h('span', { style: "font-family: var(--font-heading); font-weight: 600; font-size: 22px; font-feature-settings: 'tnum' 1; white-space: nowrap;", text: nf(v.price) })
           ]),
           (v.perUnit != null) ? h('span', { style: 'font-size: 12px; color: ' + MUTED60 + "; font-feature-settings: 'tnum' 1; white-space: nowrap;", text: nfUnit(v.perUnit, v.unitDim) }) : null
@@ -2105,14 +2130,14 @@
     var head = h('div', { style: 'padding: 40px 0 24px; display: flex; flex-wrap: wrap; gap: 28px; align-items: flex-start;' }, [
       h('div', { style: 'flex: 1; min-width: 260px;' }, [
         h('div', { style: 'display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 12px;' }, [
-          h('a', { href: '#/gruppe/' + encodeURIComponent(g.key), onClick: function (e) { e.preventDefault(); openGroup(g.key)(); }, style: 'font-size: 13px; letter-spacing: 0.08em; text-transform: uppercase; font-weight: 600;', text: '← ' + g.name }),
+          h('a', { href: '#/gruppe/' + encodeURIComponent(g.key), onClick: function (e) { e.preventDefault(); openGroup(g.key)(); }, style: 'font-size: 13px; letter-spacing: 0.08em; text-transform: uppercase; font-weight: 600;', text: '← ' + softBreaks(g.name) }),
           copyLinkBtn()
         ]),
         h('div', { style: 'display: flex; flex-wrap: wrap; align-items: baseline; gap: 16px; margin-top: 20px;' }, [
           h('h1', { style: H1, text: v.storeName }),
           v.isOffer ? offerTag() : null
         ]),
-        h('p', { style: 'margin: 12px 0 0; font-size: 15px; color: ' + MUTED70 + ';', text: v.rawName + (v.offerDays ? ' · gjelder ' + v.offerDays : '') + (v.validUntil ? ' · gyldig til ' + v.validUntil.slice(8, 10) + '.' + v.validUntil.slice(5, 7) : '') }),
+        h('p', { style: 'margin: 12px 0 0; font-size: 15px; color: ' + MUTED70 + ';', text: softBreaks(v.rawName) + (v.offerDays ? ' · gjelder ' + v.offerDays : '') + (v.validUntil ? ' · gyldig til ' + v.validUntil.slice(8, 10) + '.' + v.validUntil.slice(5, 7) : '') }),
         h('div', { style: 'display: flex; align-items: baseline; gap: 12px; margin-top: 14px;' }, [
           h('span', { style: "font-family: var(--font-heading); font-weight: 600; font-size: 40px; font-feature-settings: 'tnum' 1;", text: nf(v.price) }),
           v.prePrice ? h('span', { style: "font-size: 16px; color: " + MUTED60 + "; text-decoration: line-through; font-feature-settings: 'tnum' 1;", text: nf(v.prePrice) }) : null,
@@ -3009,7 +3034,7 @@
           r.admin_locked ? adminBadge('låst') : null,
           r.hidden ? adminBadge('skjult') : null
         ]),
-        h('span', { style: NAME_STYLE + ' display: block; margin-top: 8px;', text: r.display_name || r.product_name }),
+        h('span', { style: NAME_STYLE + ' display: block; margin-top: 8px;', text: softBreaks(r.display_name || r.product_name) }),
         h('p', { style: 'margin: 6px 0 0; font-size: 14px; line-height: 20px;' }, [
           h('span', { style: 'color: ' + MUTED70 + ';', text: (isPrice ? 'Står nå: ' : 'Heter nå: ') + now + ' → ' }),
           h('strong', { text: suggestion })
@@ -3072,7 +3097,7 @@
           changed && !p.hidden ? adminBadge(p.origin === 'admin' ? 'endret' : 'rettet av brukere') : null,
           p.open_reports ? adminBadge(p.open_reports + ' rapport' + (p.open_reports === 1 ? '' : 'er'), true) : null
         ]),
-        h('span', { style: NAME_STYLE + ' display: block; margin-top: 8px;', text: p.display_name }),
+        h('span', { style: NAME_STYLE + ' display: block; margin-top: 8px;', text: softBreaks(p.display_name) }),
         h('span', { style: 'display: block; margin-top: 4px; font-size: 12px; color: ' + MUTED60 + ';', text: (p.ov_name ? 'Kjedens navn: ' + p.product_name + ' · ' : '') + (p.sources ? 'kilde: ' + p.sources : (p.updated_at ? 'endret ' + dateDM(String(p.updated_at).slice(0, 10)) : '')) + (p.note ? ' · ' + p.note : '') })
       ]),
       h('div', { style: 'display: flex; align-items: baseline; gap: 10px;' }, [
