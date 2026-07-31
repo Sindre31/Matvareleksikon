@@ -174,3 +174,23 @@ where o.image_url is not null
 
 grant select on public.ml_catalog      to anon, authenticated;
 grant select on public.ml_group_images to anon, authenticated;
+
+-- group_key dropped from the client payload. It is a pure IMMUTABLE function of
+-- product_name, so shipping it too cost 372 kB of the 1208 kB gzipped catalogue
+-- (31 %) for a value the client can derive; mlGroupKey() in app.js now does.
+--
+-- This makes ml_group_key a contract across two languages, and a silent one:
+-- group_key is what the price-history and photo lookups join on, so a change on
+-- one side alone makes them return nothing rather than fail. The warning lives
+-- on the function itself so it surfaces in \df+ and the dashboard, not only
+-- here. test/group-key.test.js pins the JS against 164 (name -> key) pairs
+-- captured from this function; regenerate that fixture whenever it changes, and
+-- expect existing shopping lists (keyed on the current scheme) to shift.
+comment on function public.ml_group_key(text) is
+  'MIRRORED CLIENT-SIDE: mlGroupKey() in app.js reimplements this exactly, and '
+  'the catalogue no longer ships group_key. Changing this function WITHOUT '
+  'changing app.js breaks the price-history and photo lookups silently — they '
+  'key on group_key and will simply return nothing. test/group-key.test.js pins '
+  'the JS against 164 (product_name -> group_key) pairs captured from this '
+  'function; regenerate that fixture whenever this changes. Note also that '
+  'existing shopping lists are keyed on the current scheme and will shift.';

@@ -37,7 +37,7 @@ python3 -m http.server 8000
 | `icon-192.png`, `icon-512.png` | PWA/app icons (rasterised from the favicon) |
 | `og.png` | 1200×630 social preview card |
 | `robots.txt`, `sitemap.xml` | Crawler hints (single canonical URL — the app is hash-routed) |
-| `test/` | Unit tests (`node --test`): the pure price/grouping helpers, the cold-start offer paging, and the on-demand photo loader |
+| `test/` | Unit tests (`node --test`): the pure price/grouping helpers, the cold-start offer paging, the on-demand photo loader, and the client mirror of `ml_group_key` |
 | `design/` | The imported Claude Design source, kept for provenance |
 
 ## Screens (deep-linkable)
@@ -326,6 +326,47 @@ A screen shows at most 58 products against ~47 700 photos, so boot pages through
 the **`ml_catalog`** view — the catalogue minus the photos — and the URLs come
 from **`ml_group_images`** for the groups on screen, one round trip per render
 (chunked 40 group keys at a time). Boot drops **1697 kB → 1208 kB (−29 %)**.
+
+**`group_key` is derived, not shipped.** With the photos gone, the payload was
+`product_name` (42 %), `group_key` (31 %) and `price` (14 %) — measured by
+dropping one column at a time and re-reading the gzipped stream, not by adding
+up raw bytes, which is a different and misleading number. `group_key` is
+`ml_group_key(product_name)`: a pure `IMMUTABLE` text transform. So 372 kB of
+every cold start was spent shipping something the client can compute.
+`mlGroupKey()` in `app.js` computes it. Boot drops another **1208 kB → 837 kB
+(−31 %)**, and **1710 kB → 837 kB (−51 %)** since the beginning.
+
+That buys the payload at the cost of an invariant across two languages, and a
+quiet one: `group_key` is what the price-history and photo lookups join on, so
+if the SQL and the JS drift the lookups return nothing rather than fail. Three
+things hold it together:
+
+- **`test/group-key.test.js`** pins the JS against 164 `(product_name →
+  group_key)` pairs captured verbatim from the database — the SQL function's own
+  output, not this code's — chosen to cover every rule: each unit token, each
+  brand word, percentages, Norwegian letters, punctuation, bare digits, decimal
+  commas, spacing. Rules the catalogue happens not to contain (`hg`, `kop`,
+  `x-tra`, `anglamark`, `synnove`) are pinned by hand so they cannot rot unused.
+- **The warning lives on the SQL function itself** (`comment on function`), so
+  it surfaces in `\df+` and in the dashboard for whoever edits it next, rather
+  than only in this file.
+- Verified across the whole catalogue: rebuilding all **37 703 groups** from
+  rows with the column stripped produces the identical set of `serverKeys` for
+  every group — 0 missing, 0 added, 0 differing.
+
+The `o.group_key ||` arm in `buildVariant` is not dead code: a snapshot written
+before the column was dropped still carries one, so honouring it keeps those
+visits identical instead of forcing the 12 h cache to be invalidated.
+
+Two things measured and *not* done:
+
+- **Filtering out rows the client discards.** There are none — all five chains
+  clear `MIN_STORE_PRICES` (meny 40 555, kiwi 5 783, rema 1 868, oda 1 246,
+  extra 132), so nothing is downloaded and thrown away.
+- **Brotli.** Supabase serves it, and it would take 1208 kB → 1128 kB (7 %). But
+  when a browser offers `br, gzip` the server picks gzip, and `fetch()` cannot
+  override `Accept-Encoding` — it is a forbidden header name. Not reachable from
+  the client.
 
 Three things keep that invisible:
 - **`has_image` travels with the row**, so the image frame is reserved before
@@ -749,7 +790,7 @@ with no policies — it is the rate limiter's own table, reached only through
   does not own the rights to them ("Bilder kan være beskyttet av opphavsrett"),
   so treat a takedown request as expected maintenance rather than a surprise.
 - **Egress.** A cold visit downloads the whole catalogue (~16 MB uncompressed,
-  ~1.2 MB gzipped over the wire since the photos moved out), which is why the
+  ~840 kB gzipped over the wire since the photos and group_key moved out), which is why the
   12 h snapshot cache exists. Watch Supabase egress if traffic grows; the lever
   is the TTL and the column list in `OFFER_COLS` / the `ml_catalog` view.
 - **The cron jobs are scheduled and active** (`select jobname, schedule, active
