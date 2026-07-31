@@ -44,10 +44,20 @@ python3 -m http.server 8000
 
 - **Leksikon (home)** `#/` — hero + live search, **"Ukas tilbud"**, and the
   product grid. The offer row is picked the way a tilbudsavis fills its front
-  page (`pickWeeklyOffers`): the categories a household buys every week (ost,
-  kjøttdeig, kaffe, kylling …) come first and the deepest cut wins *inside* a
-  category, one card per product and at most two per category, with offers
-  outside those categories filling whatever slots are left. Ranking on markdown
+  page (`pickWeeklyOffers`), in three tiers: a **real tilbudsavis offer** first
+  (only that feed dates its offers, so a `valid_until` marks one — everything
+  else is an offer *inferred* from a price history, and a junk-high history
+  value reads as a markdown: the ingest caps the implied cut at 50 %, and
+  **1 018 of Meny's 2 211 "offers" sit at exactly −50 %**); then the
+  categories a household buys every week (ost, kjøttdeig, kaffe, kylling …);
+  then the deepest cut *inside* a category. One card per product, at most two
+  per category, and whatever is left fills the remaining slots, so a week with
+  no tilbudsavis data still gets a row. Category terms are matched against the
+  group key with compound-aware rules — 5+ letters match anywhere in a word
+  (`kyllingfilet`, `orretfilet`), 4 letters only as the compound head
+  (`havrebrod` is bread, `melkesjokolade` is *not* milk, `chocolate` is not
+  cola), 1–3 whole-word only — and baby food and pet food are held out of the
+  staples, so "Pasta&laks 1-3år" does not headline as fish. Ranking on markdown
   alone filled the row with whatever obscure line a chain dumped that week.
   Search is
   **relevance-ranked** (`searchRank`): the closest product floats to the top —
