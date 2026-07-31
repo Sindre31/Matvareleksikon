@@ -85,10 +85,23 @@
     .card-hover { transition: background 0.12s ease; }
     .card-hover:hover { background: color-mix(in srgb, var(--color-accent) 6%, transparent); }
 
+    /* The shopping-list link carries both a label and a cart glyph; the wide
+       bar has room for the words, so the glyph stays out of the layout. */
+    .nav-cart-icon { display: none; }
+    .nav-cart-count { font-size: 12px; font-feature-settings: 'tnum' 1; }
+
     /* Small screens: let the top bar wrap instead of overflowing. */
     @media (max-width: 640px) {
       .nav { flex-wrap: wrap; row-gap: 8px; }
       .nav > span[style*="tnum"] { order: 3; flex-basis: 100%; }
+      /* One line for Prisboka · Leksikon · Bidra med priser · cart: the list
+         label collapses to the glyph and moves to the end of the row, and what
+         doesn't fit drops out — "Om" lives in the footer of every screen, and
+         "Skann kvittering" is where "Bidra med priser" already leads. */
+      .nav-wide-only { display: none; }
+      .nav-cart { order: 1; }
+      .nav-cart-text { display: none; }
+      .nav-cart-icon { display: inline-flex; align-items: center; gap: 3px; }
     }
   </style>
 </head>

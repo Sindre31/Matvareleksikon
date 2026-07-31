@@ -37,13 +37,19 @@ python3 -m http.server 8000
 | `icon-192.png`, `icon-512.png` | PWA/app icons (rasterised from the favicon) |
 | `og.png` | 1200×630 social preview card |
 | `robots.txt`, `sitemap.xml` | Crawler hints (single canonical URL — the app is hash-routed) |
-| `test/` | Unit tests (`node --test`): the pure price/grouping helpers, the cold-start offer paging, the on-demand photo loader, and the client mirror of `ml_group_key` |
+| `test/` | Unit tests (`node --test`): the pure price/grouping helpers, the "Ukas tilbud" selection, the cold-start offer paging, the on-demand photo loader, and the client mirror of `ml_group_key` |
 | `design/` | The imported Claude Design source, kept for provenance |
 
 ## Screens (deep-linkable)
 
-- **Leksikon (home)** `#/` — hero + live search, **"Ukas beste tilbud"** (the
-  biggest real markdowns this week), and the product grid. Search is
+- **Leksikon (home)** `#/` — hero + live search, **"Ukas tilbud"**, and the
+  product grid. The offer row is picked the way a tilbudsavis fills its front
+  page (`pickWeeklyOffers`): the categories a household buys every week (ost,
+  kjøttdeig, kaffe, kylling …) come first and the deepest cut wins *inside* a
+  category, one card per product and at most two per category, with offers
+  outside those categories filling whatever slots are left. Ranking on markdown
+  alone filled the row with whatever obscure line a chain dumped that week.
+  Search is
   **relevance-ranked** (`searchRank`): the closest product floats to the top —
   a name that *is* the query or a compound *ending* in it ("helmelk", "lettmelk"
   for "melk") outranks one that starts with it ("melkesjokolade") or only
@@ -57,7 +63,11 @@ python3 -m http.server 8000
   (the pack price) — the toggle drives both the card display and the
   billigst/dyrest sort. Every card carries a **star** to add the item to the
   shopping list. The top bar shows how fresh the data is ("sist oppdatert" =
-  the latest recorded price point).
+  the latest recorded price point). On a phone it fits on one line: the
+  Handleliste label collapses to a **cart glyph** (with the item count as a
+  badge) and moves last, and the two items that don't fit drop out — "Om" is in
+  the footer of every screen, and "Skann kvittering" is where "Bidra med priser"
+  already leads.
 - **Handleliste** `#/liste` — the products you've starred, kept in
   `localStorage` (no account). An entry is `<group key>@<size id>[*<qty>]`: adding a
   product **asks which pack size** you buy (a one-size product skips the
@@ -156,9 +166,13 @@ python3 -m http.server 8000
   markdown from the first time the offer is seen.
 - **Skann kvittering** `#/skann` — upload a photo, use the phone camera, or
   **drag-and-drop / paste** an image → the image is sent to a **Supabase Edge
-  Function that runs Google Gemini vision** → the parsed line items and detected store are pre-filled for
+  Function that runs Google Gemini vision** → the parsed line items and detected store are shown for
   review (pick the chain and confirm the **receipt date**) → submit **persists**
-  the prices to Supabase. A trigger then feeds each scanned line into the
+  the prices to Supabase. The scanned **name and price are read-only**: a
+  contributor removes a misread line with ✕, but cannot retype it, so a made-up
+  price can't be entered by hand into a public catalogue. There is no manual
+  entry — a scan that fails or finds nothing returns to the upload screen with
+  an error instead of an empty row to type into. A trigger then feeds each scanned line into the
   **leksikon** (`ml_offers`, `source=scan`) and the **price history**
   (`ml_price_history`, dated to the receipt), so contributed prices show up in
   the catalogue and on the product's chart — weight items keep their kr/kg. The
@@ -452,7 +466,8 @@ properties:
   (`ml_scan_allow` RPC, 30/hour) **and a global daily cap** (500 scans/day,
   checked only for a valid request about to hit Gemini) so a shared link can't
   run up the vision-API bill, plus size and MIME checks.
-- If Gemini is unavailable or finds nothing, the flow degrades to manual entry.
+- If Gemini is unavailable or finds nothing, the flow returns to the upload
+  screen with an error — there is no hand-typed fallback (see above).
 
 **Required secret.** Set a Gemini API key ([aistudio.google.com/apikey](https://aistudio.google.com/apikey))
 as an Edge Function secret named `GEMINI_API_KEY`:
