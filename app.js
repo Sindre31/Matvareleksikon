@@ -206,6 +206,66 @@
     return null;
   }
 
+  // Which offers a tilbudsavis puts up front: the categories a household buys
+  // every week, not whatever happens to carry the steepest markdown. Weight 2 is
+  // the front page (ost, kjøttdeig, kaffe …), weight 1 the rest of the everyday
+  // basket, and anything unmatched is weight 0 — still shown, just after these.
+  // The patterns are matched against a *group key*: lowercased, ø/æ/å folded to
+  // o/ae/a, sizes and brands stripped, words sorted. So they must be spelled
+  // folded ("polse", "brod", "flote") and anchored on word boundaries, or "ost"
+  // starts matching "kompost" and "ris" matches "pris".
+  var POPULAR = [
+    { w: 2, family: 'ost', re: /\b(ost|brunost|gulost|hvitost|norvegia|jarlsberg|cheddar|mozzarella)\b/ },
+    { w: 2, family: 'kjott', re: /\b(kjottdeig|karbonadedeig|ribbe|koteletter|entrecote|indrefilet|ytrefilet|biff|svinestek)\b/ },
+    { w: 2, family: 'kylling', re: /\b(kylling|kyllingfilet|kyllinglar|kyllingvinger)\b/ },
+    { w: 2, family: 'kaffe', re: /\b(kaffe|kaffekapsler|espresso)\b/ },
+    { w: 2, family: 'fisk', re: /\b(laks|torsk|reker|sei|orret|fiskekaker)\b/ },
+    { w: 2, family: 'pizza', re: /\b(pizza|grandiosa)\b/ },
+    { w: 2, family: 'drikke', re: /\b(brus|cola|pepsi|solo|farris|urge|battery|monster|energidrikk)\b/ },
+    { w: 1, family: 'meieri', re: /\b(melk|flote|romme|fraiche|smor|margarin|yoghurt|skyr|egg)\b/ },
+    { w: 1, family: 'palegg', re: /\b(bacon|polse|polser|skinke|servelat|leverpostei|makrell|kaviar)\b/ },
+    { w: 1, family: 'bakeri', re: /\b(brod|rundstykker|lomper|lefse|knekkebrod|boller)\b/ },
+    { w: 1, family: 'snacks', re: /\b(sjokolade|chips|iskrem|smagodt|godteri|kjeks|potetgull|snacks)\b/ },
+    { w: 1, family: 'middag', re: /\b(taco|lasagne|fiskepinner|kjottkaker|pasta|spaghetti|ris|wok|gryte)\b/ },
+    { w: 1, family: 'frukt', re: /\b(bananer|epler|jordbaer|tomater|agurk|poteter|clementiner|druer|appelsiner|salat|gulrot|gulrotter)\b/ }
+  ];
+  function popularityOf(key) {
+    for (var i = 0; i < POPULAR.length; i++) if (POPULAR[i].re.test(key)) return POPULAR[i];
+    return null;
+  }
+
+  // The cards for "Ukas tilbud". The front page of a tilbudsavis is not a list
+  // of the steepest markdowns — it is the staples a household buys every week
+  // (ost, kjøttdeig, kaffe …) at a good price, so that is what leads here too:
+  // popular categories first, deepest cut inside a category, one card per
+  // product (not the same cheese from three chains) and at most `perFamily`
+  // from any one category, so the row reads like a week's offers rather than
+  // eight cheeses. Offers outside the categories fill whatever slots are left.
+  function pickWeeklyOffers(groups, limit, perFamily) {
+    limit = limit || 8;
+    perFamily = perFamily || 2;
+    var cands = [];
+    (groups || []).forEach(function (g) {
+      var best = null;
+      (g.variants || []).forEach(function (v) { if (v.isOffer && (!best || pctOff(v) > pctOff(best))) best = v; });
+      if (!best) return;
+      var pop = popularityOf(g.key);
+      cands.push({ g: g, v: best, pop: pop ? pop.w : 0, family: pop ? pop.family : null });
+    });
+    cands.sort(function (a, b) { return (b.pop - a.pop) || (pctOff(b.v) - pctOff(a.v)); });
+    var out = [], taken = {};
+    for (var i = 0; i < cands.length && out.length < limit; i++) {
+      var c = cands[i];
+      if (c.family) {
+        var n = taken[c.family] || 0;
+        if (n >= perFamily) continue;
+        taken[c.family] = n + 1;
+      }
+      out.push(c);
+    }
+    return out;
+  }
+
   // Make a non-native clickable element keyboard-operable (Enter/Space) and
   // announced as a button. Merge the returned props into the element.
   function activate(handler, label) {
@@ -619,7 +679,10 @@
   function onScanFile(file) {
     if (!file) return;
     if (!/^image\//.test(file.type)) {
-      setState({ scanPhase: 'review', scanItems: [{ name: '', price: '' }], scanNote: 'Filen ser ikke ut som et bilde. Skriv inn varelinjene manuelt.', scanError: null });
+      // Every price in the leksikon has to come off a receipt the scanner
+      // actually read, so a file we can't read leaves nothing to review —
+      // there is no hand-typed fallback to fall back to.
+      setState({ scanPhase: 'idle', scanItems: [], scanNote: null, scanError: 'Filen ser ikke ut som et bilde. Velg et foto av kvitteringen.' });
       return;
     }
     if (state.scanImageUrl) URL.revokeObjectURL(state.scanImageUrl);
@@ -639,30 +702,27 @@
       .then(function (res) { return res.json().then(function (b) { return { ok: res.ok, body: b }; }, function () { return { ok: res.ok, body: {} }; }); })
       .then(function (r) {
         if (!r.ok) {
-          setState({ scanPhase: 'review', scanItems: [{ name: '', price: '' }], scanNote: null, scanError: (r.body && r.body.error) || 'Kunne ikke lese kvitteringen. Prøv igjen eller skriv inn manuelt.' });
+          setState({ scanPhase: 'idle', scanItems: [], scanNote: null, scanError: (r.body && r.body.error) || 'Kunne ikke lese kvitteringen. Prøv igjen med et tydeligere bilde.' });
           return;
         }
         var data = r.body || {};
         var items = (data.items || []).map(function (it) {
           return { name: it.name || '', price: (it.price != null ? String(it.price) : ''), unit: it.unit || null, quantity: (it.quantity != null ? it.quantity : null), lineTotal: (it.lineTotal != null ? it.lineTotal : null) };
         });
-        var patch = { scanPhase: 'review', scanError: null };
+        if (!items.length) {
+          setState({ scanPhase: 'idle', scanItems: [], scanNote: null, scanError: 'Fant ingen varelinjer på bildet. Prøv et tydeligere bilde av hele kvitteringen.' });
+          return;
+        }
+        var patch = { scanPhase: 'review', scanError: null, scanItems: items };
         patch.scanDate = (data.purchaseDate && /^\d{4}-\d{2}-\d{2}$/.test(data.purchaseDate)) ? data.purchaseDate : new Date().toISOString().slice(0, 10);
         if (data.store) patch.scanStore = data.store;
-        if (items.length) {
-          patch.scanItems = items;
-          patch.scanNote = 'Fant ' + items.length + ' varelinjer' + (data.storeName ? ' fra ' + data.storeName : '') + '. Kontroller dem før du lagrer.';
-        } else {
-          patch.scanItems = [{ name: '', price: '' }];
-          patch.scanNote = 'Fant ingen varelinjer på bildet — skriv dem inn manuelt, eller prøv et tydeligere bilde av hele kvitteringen.';
-        }
+        patch.scanNote = 'Fant ' + items.length + ' varelinjer' + (data.storeName ? ' fra ' + data.storeName : '') + '. Se over dem før du lagrer.';
         setState(patch);
       })
       .catch(function () {
-        setState({ scanPhase: 'review', scanItems: [{ name: '', price: '' }], scanError: 'Kunne ikke lese bildet nå. Sjekk nettforbindelsen og prøv igjen, eller skriv inn manuelt.' });
+        setState({ scanPhase: 'idle', scanItems: [], scanNote: null, scanError: 'Kunne ikke lese bildet nå. Sjekk nettforbindelsen og prøv igjen.' });
       });
   }
-  function addScanRow() { setState({ scanItems: state.scanItems.concat([{ name: '', price: '' }]) }); }
   function resetScan() {
     if (state.scanImageUrl) URL.revokeObjectURL(state.scanImageUrl);
     setState({ scanPhase: 'idle', scanItems: [], scanImageUrl: null, scanNote: null, scanError: null });
@@ -1255,14 +1315,37 @@
   }
   function staleDays() { return staleDaysFor(state.lastUpdated, Date.now()); }
 
+  // The shopping-list link. A phone's top bar only fits the brand plus three
+  // items on one line, so there the label gives way to a cart glyph (with the
+  // count riding along as a badge) — see the .nav-cart rules in index.html.
+  // Both spellings are always in the DOM; CSS decides which one is shown.
+  function navCartLink() {
+    var n = listCount();
+    var label = 'Handleliste' + (n ? ' (' + n + ')' : '');
+    return h('a', { cls: 'nav-cart', href: '#/liste', onClick: nav('liste'), 'aria-label': label, title: label }, [
+      h('span', { cls: 'nav-cart-text', text: label }),
+      h('span', { cls: 'nav-cart-icon' }, [
+        h('svg', { width: '20', height: '20', viewBox: '0 0 20 20', fill: 'none', 'aria-hidden': 'true' }, [
+          h('path', {
+            d: 'M1.6 2.6h2.2l2.3 8.2a1.4 1.4 0 0 0 1.35 1.05h6.6a1.4 1.4 0 0 0 1.35-1.05L17.1 5.3H4.5',
+            stroke: 'currentColor', 'stroke-width': '1.4', 'stroke-linecap': 'round', 'stroke-linejoin': 'round'
+          }),
+          h('circle', { cx: '8', cy: '16.4', r: '1.3', fill: 'currentColor' }),
+          h('circle', { cx: '14.4', cy: '16.4', r: '1.3', fill: 'currentColor' })
+        ]),
+        n ? h('span', { cls: 'nav-cart-count', 'aria-hidden': 'true', text: String(n) }) : null
+      ])
+    ]);
+  }
+
   function renderNav() {
     return h('nav', { cls: 'nav', 'data-screen-label': 'Topplinje', style: 'padding-inline: max(24px, calc((100% - 1160px) / 2 + 24px));' }, [
       h('span', Object.assign({ cls: 'nav-brand', style: 'cursor: pointer;', text: 'Prisboka' }, activate(nav('home'), 'Prisboka — til forsiden'))),
       h('a', { href: '#/', onClick: nav('home'), text: 'Leksikon' }),
-      h('a', { href: '#/liste', onClick: nav('liste'), text: 'Handleliste' + (listCount() ? ' (' + listCount() + ')' : '') }),
+      navCartLink(),
       h('a', { href: '#/skann', onClick: nav('scan'), text: 'Bidra med priser' }),
-      h('a', { href: '#/om', onClick: nav('om'), text: 'Om' }),
-      h('span', { style: 'flex: 1;' }),
+      h('a', { cls: 'nav-wide-only', href: '#/om', onClick: nav('om'), text: 'Om' }),
+      h('span', { cls: 'nav-wide-only', style: 'flex: 1;' }),
       h('span', {
         style: 'font-size: 13px; letter-spacing: 0.06em; text-transform: uppercase; '
           + "font-feature-settings: 'tnum' 1; color: " + (staleDays() ? 'var(--color-accent-700)' : MUTED70) + ';',
@@ -1271,7 +1354,7 @@
           + (state.lastUpdated ? 'sist oppdatert ' + dateDM(state.lastUpdated) : 'oppdatert ukentlig')
           + (staleDays() ? ' · kan være utdatert' : '')
       }),
-      h('button', { type: 'button', cls: 'btn btn-primary', onClick: nav('scan'), text: 'Skann kvittering' })
+      h('button', { type: 'button', cls: 'btn btn-primary nav-wide-only', onClick: nav('scan'), text: 'Skann kvittering' })
     ]);
   }
 
@@ -1336,17 +1419,14 @@
       ])
     ]);
 
-    // Ukas beste tilbud
-    var offers = [];
-    GROUPS.forEach(function (g) { g.variants.forEach(function (v) { if (v.isOffer) offers.push({ g: g, v: v }); }); });
-    offers.sort(function (a, b) { return pctOff(b.v) - pctOff(a.v); });
+    var picked = pickWeeklyOffers(GROUPS, 8, 2);
     var bestSection = null;
-    if (!q && offers.length) {
-      offers.slice(0, 8).forEach(function (o) { wantImages(o.g); });
+    if (!q && picked.length) {
+      picked.forEach(function (o) { wantImages(o.g); });
       bestSection = h('div', { style: 'padding-bottom: 48px;' }, [
-        h('span', { style: KICKER, text: '01 · Ukas beste tilbud' }),
+        h('span', { style: KICKER, text: '01 · Ukas tilbud' }),
         h('hr', { style: RULE }),
-        h('div', { style: 'display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 28px;' }, offers.slice(0, 8).map(function (o) {
+        h('div', { style: 'display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 28px;' }, picked.map(function (o) {
           var v = o.v;
           return h('div', Object.assign({ cls: 'blueprint card-hover', style: 'padding: 0; cursor: pointer; display: flex; flex-direction: column;' }, activate(openGroup(o.g.key), o.g.name + ', tilbud hos ' + v.storeName + ', ' + nf(v.price))), corners().concat([
             cardStar(o.g.key),
@@ -1820,7 +1900,7 @@
   function renderScan() {
     var head = h('div', { style: 'padding: 56px 0 40px;' }, [
       h('h1', { style: H1, text: 'Skann en kvittering' }),
-      h('p', { style: 'margin: 16px 0 0; max-width: 60ch; font-size: 16px; line-height: 24px;', text: 'Bidra med ekte priser: last opp eller ta bilde av en kvittering. Vi leser varelinjene med AI, du kontrollerer dem, og prisene lagres.' })
+      h('p', { style: 'margin: 16px 0 0; max-width: 60ch; font-size: 16px; line-height: 24px;', text: 'Bidra med ekte priser: last opp eller ta bilde av en kvittering. Vi leser varelinjene med AI, du fjerner det som er feillest, og prisene lagres slik de står på kvitteringen.' })
     ]);
     var body;
     if (state.scanPhase === 'idle') {
@@ -1848,7 +1928,10 @@
         h('p', { style: 'margin: 0 0 20px; font-size: 14px; color: ' + MUTED70 + ';', text: 'Dra og slipp et bilde av kvitteringen her — eller lim det inn (Ctrl/⌘+V), eller bruk knappene under.' }),
         grid
       ]);
-      body = h('div', { style: 'max-width: 820px;' }, [dropZone]);
+      body = h('div', { style: 'max-width: 820px;' }, [
+        state.scanError ? h('p', { style: 'margin: 0 0 16px; font-size: 14px; line-height: 20px; color: var(--color-accent-800);', text: state.scanError }) : null,
+        dropZone
+      ]);
     } else if (state.scanPhase === 'scanning') {
       var preview = state.scanImageUrl ? h('div', { style: 'position: relative; aspect-ratio: 3 / 4; max-height: 320px; background: var(--color-accent-900); overflow: hidden; margin-bottom: 16px;' }, [
         h('img', { src: state.scanImageUrl, alt: 'Kvittering under lesing', style: 'width: 100%; height: 100%; object-fit: contain; opacity: 0.9;' }),
@@ -1873,28 +1956,37 @@
           h('input', { cls: 'input', type: 'date', 'data-focus-id': 'scan-date', style: 'min-height: 38px; min-width: 160px;', value: state.scanDate || '', max: new Date().toISOString().slice(0, 10), onInput: function (e) { setState({ scanDate: e.target.value }); } })
         ])
       ]);
+      // The lines stand exactly as the scanner read them off the receipt. A
+      // contributor can drop one that was misread, but not rewrite its name or
+      // its price: an editable field makes every price in the leksikon only as
+      // trustworthy as whoever typed last, and a single absurd number is enough
+      // to wreck a product's history. Removal is the whole correction budget.
       var rows = h('div', { style: 'display: flex; flex-direction: column; gap: 10px;' }, state.scanItems.map(function (it, i) {
         var hint = (it.unit && it.quantity) ? (String(it.quantity).replace('.', ',') + ' ' + it.unit + ' · pris per ' + it.unit + (it.lineTotal ? ' (betalt ' + nf(Number(it.lineTotal)) + ')' : '')) : null;
+        var raw = String(it.price == null ? '' : it.price).replace(',', '.').trim();
+        var priceNum = raw === '' ? NaN : Number(raw);
+        var name = it.name || 'Uten navn';
         return h('div', { style: 'display: flex; flex-direction: column; gap: 4px;' }, [
-          h('div', { style: 'display: grid; grid-template-columns: 1fr 120px 38px; gap: 10px; align-items: center;' }, [
-            h('input', { cls: 'input', 'aria-label': 'Varenavn', 'data-focus-id': 'scan-name-' + i, style: 'min-height: 38px;', value: it.name, onInput: function (e) { var items = state.scanItems.slice(); items[i] = Object.assign({}, items[i], { name: e.target.value }); setState({ scanItems: items }); } }),
-            h('input', { cls: 'input', type: 'number', step: '0.1', 'aria-label': 'Pris i kroner', 'data-focus-id': 'scan-price-' + i, style: "min-height: 38px; text-align: right; font-feature-settings: 'tnum' 1;", value: it.price, onInput: function (e) { var items = state.scanItems.slice(); items[i] = Object.assign({}, items[i], { price: e.target.value }); setState({ scanItems: items }); } }),
-            h('button', { type: 'button', cls: 'btn btn-ghost btn-icon', 'aria-label': 'Fjern varelinje', style: 'min-height: 38px;', onClick: function () { setState({ scanItems: state.scanItems.filter(function (x, j) { return j !== i; }) }); }, text: '✕' })
+          h('div', { style: 'display: grid; grid-template-columns: 1fr auto 38px; gap: 10px; align-items: baseline;' }, [
+            h('span', { style: 'font-size: 15px; line-height: 22px; overflow-wrap: anywhere;', text: name }),
+            h('span', { style: "font-size: 15px; line-height: 22px; text-align: right; font-feature-settings: 'tnum' 1;", text: isFinite(priceNum) ? nf(priceNum) : '—' }),
+            h('button', { type: 'button', cls: 'btn btn-ghost btn-icon', 'aria-label': 'Fjern ' + name + ' fra kvitteringen', title: 'Fjern varelinjen', 'data-focus-id': 'scan-remove-' + i, style: 'min-height: 38px;', onClick: function () { setState({ scanItems: state.scanItems.filter(function (x, j) { return j !== i; }) }); }, text: '✕' })
           ]),
           hint ? h('span', { style: 'font-size: 12px; color: ' + MUTED60 + '; padding-left: 2px;', text: hint }) : null
         ]);
       }));
-      var addRowBtn = h('button', { type: 'button', cls: 'btn btn-ghost', onClick: addScanRow, style: 'align-self: flex-start;', text: '+ Legg til varelinje' });
+      var empty = !state.scanItems.length;
       var actions = h('div', { style: 'display: flex; gap: 10px; align-items: center; flex-wrap: wrap;' }, [
-        h('button', { type: 'button', cls: 'btn btn-primary', onClick: submitScan, disabled: state.scanSubmitting ? 'disabled' : false, text: state.scanSubmitting ? 'Lagrer …' : 'Legg til ' + state.scanItems.length + ' priser i databasen' }),
+        h('button', { type: 'button', cls: 'btn btn-primary', onClick: submitScan, disabled: (state.scanSubmitting || empty) ? 'disabled' : false, text: state.scanSubmitting ? 'Lagrer …' : (empty ? 'Ingen varelinjer igjen' : 'Legg til ' + state.scanItems.length + ' priser i databasen') }),
         h('button', { type: 'button', cls: 'btn btn-ghost', onClick: resetScan, text: 'Forkast' }),
         state.scanError ? h('span', { style: 'font-size: 13px; color: var(--color-accent-800);', text: state.scanError }) : null
       ]);
       body = h('div', { style: 'max-width: 820px;' }, [
-        h('span', { style: KICKER, text: 'Kontroller varelinjene' }),
+        h('span', { style: KICKER, text: 'Se over varelinjene' }),
         h('hr', { style: RULE }),
-        state.scanNote ? h('p', { style: 'margin: 0 0 16px; font-size: 14px; line-height: 20px; color: ' + MUTED70 + ';', text: state.scanNote }) : null,
-        h('div', { cls: 'blueprint', style: 'padding: 24px; display: flex; flex-direction: column; gap: 16px;' }, corners().concat([controls, rows, addRowBtn, actions]))
+        state.scanNote ? h('p', { style: 'margin: 0 0 4px; font-size: 14px; line-height: 20px; color: ' + MUTED70 + ';', text: state.scanNote }) : null,
+        h('p', { style: 'margin: 0 0 16px; font-size: 14px; line-height: 20px; color: ' + MUTED70 + ';', text: 'Navn og pris kommer fra kvitteringen og kan ikke endres — det holder prisene ekte. Er en linje feillest, fjerner du den med ✕.' }),
+        h('div', { cls: 'blueprint', style: 'padding: 24px; display: flex; flex-direction: column; gap: 16px;' }, corners().concat([controls, rows, actions]))
       ]);
     } else if (state.scanPhase === 'done') {
       var dd = state.scanDate ? (state.scanDate.slice(8, 10) + '.' + state.scanDate.slice(5, 7) + '.' + state.scanDate.slice(0, 4)) : '';
@@ -2735,6 +2827,7 @@
       parseAmount: parseAmount, normUnit: normUnit, foldName: foldName,
       minceKey: minceKey, ckey: ckey, canonLabel: canonLabel,
       buildStores: buildStores, buildGroups: buildGroups, searchRank: searchRank,
+      popularityOf: popularityOf, pickWeeklyOffers: pickWeeklyOffers,
       coveredStores: coveredStores, staleDaysFor: staleDaysFor,
       sizeIdOf: sizeIdOf, sizeLabel: sizeLabel, sizeOptions: sizeOptions, bestPerStore: bestPerStore,
       entryId: entryId, parseEntry: parseEntry, moveEntry: moveEntry, swapEntry: swapEntry,
