@@ -55,6 +55,20 @@
   }
   </script>
 
+  <!-- Warm up the three cross-origin connections the first paint waits on, so
+       the DNS + TLS handshakes overlap the HTML parse instead of following it.
+       Supabase matters most: app.js starts fetching the catalogue the moment it
+       parses, and a cold handshake is a few hundred ms of that wait on mobile.
+       The font stylesheet is *also* @import-ed from styles.css (the design
+       system owns that file), but an @import can only be discovered after
+       styles.css has downloaded and parsed — linking it here starts the very
+       same request a full round trip earlier, and the browser coalesces the
+       two into one fetch. -->
+  <link rel="preconnect" href="https://jiaxeedguivvhixychcg.supabase.co" crossorigin>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Barlow:wght@400;500;700&family=Barlow+Condensed:wght@400;600&display=swap">
+
   <link rel="stylesheet" href="styles.css">
   <style>
     body { margin: 0; background: var(--color-bg); color: var(--color-text); font-family: var(--font-body); text-wrap: pretty; }

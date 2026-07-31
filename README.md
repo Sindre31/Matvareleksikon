@@ -37,6 +37,7 @@ python3 -m http.server 8000
 | `icon-192.png`, `icon-512.png` | PWA/app icons (rasterised from the favicon) |
 | `og.png` | 1200×630 social preview card |
 | `robots.txt`, `sitemap.xml` | Crawler hints (single canonical URL — the app is hash-routed) |
+| `test/` | Unit tests (`node --test`): the pure price/grouping helpers, the cold-start offer paging, and the on-demand photo loader |
 | `design/` | The imported Claude Design source, kept for provenance |
 
 ## Screens (deep-linkable)
@@ -282,11 +283,12 @@ root. The site is an installable PWA: `manifest.webmanifest` + a service worker
 strategy (a deploy is picked up on the next load), while every cross-origin
 Supabase request stays network-only so prices are never served stale.
 
-**Cold-start, offline data & egress.** The catalogue is ~6 MB, so re-downloading
-it on every visit is slow on mobile and burns Supabase egress. It is snapshotted
-into the **Cache Storage API** (`prisboka-catalog-v1` — the big offers blob, which
+**Cold-start, offline data & egress.** The catalogue is ~49 500 offer rows —
+~16 MB of JSON, ~2 MB over the wire once gzipped — so re-downloading it on every
+visit is slow on mobile and burns Supabase egress. It is snapshotted
+into the **Cache Storage API** (`prisboka-catalog-v3` — the big offers blob, which
 would blow the ~5 MB `localStorage` cap) with a small meta record in
-`localStorage` (`prisboka_catalog_meta_v2`: timestamp, the tiny stores list,
+`localStorage` (`prisboka_catalog_meta_v4`: timestamp, the tiny stores list,
 freshness stamp). Boot:
 - **Within `CATALOG_TTL` (12 h)** a return visit trusts the snapshot and makes
   **zero network calls** — instant paint, no egress. Data refreshes weekly, so a
@@ -301,6 +303,62 @@ data). The service worker's cache cleanup preserves `prisboka-catalog-*` — it 
 prunes its own old shell caches — so it never wipes the freshly written snapshot.
 Only the columns the client reads are fetched (dropped the unused `valid_from` /
 offer-level `source`).
+
+**Paging the catalogue in parallel.** PostgREST caps a response at 1000 rows, so
+the catalogue takes ~50 requests. They used to be *chained* — each page waited
+for the one before it, making a cold start ~50 serialised round trips of pure
+latency before anything could paint. Now the first page doubles as a count probe
+(`Prefer: count=exact` → `Content-Range: 0-999/49584`, which Supabase exposes to
+the browser via `Access-Control-Expose-Headers`), and the remaining ~49 pages go
+out `OFFER_LANES` (6) at a time. Same bytes, a fraction of the wall clock:
+measured against the live API, 16 s → 6 s even on a fast datacentre link, and the
+gap widens the worse the round-trip time gets. If the count header is ever
+missing the old serial paging still runs as a fallback, and because rows can be
+appended between the count and the last page, a final full page triggers a
+mop-up rather than being trusted as the end.
+
+**Product photos load per screen.** `image_url` was 498 kB of the 1697 kB
+gzipped catalogue — 29 % of the cold start — and it cannot be compressed away:
+gzip already collapses the shared `bilder.ngdata.no` prefix, and what remains is
+EAN entropy. (Hand-packing the URLs into a compact token was built, measured at
+**0.8 %**, and thrown away again.) So the bytes are *moved* rather than shrunk.
+A screen shows at most 58 products against ~47 700 photos, so boot pages through
+the **`ml_catalog`** view — the catalogue minus the photos — and the URLs come
+from **`ml_group_images`** for the groups on screen, one round trip per render
+(chunked 40 group keys at a time). Boot drops **1697 kB → 1208 kB (−29 %)**.
+
+Three things keep that invisible:
+- **`has_image` travels with the row**, so the image frame is reserved before
+  the URL lands. Nothing shifts when photos arrive, and the 1 830 products with
+  no photo still get no frame — as before.
+- **The lookup ranks packs exactly as the catalogue does**, reading a pack's
+  size out of its *name* and only then falling back to the `unit_price` column.
+  That is not pedantry: one product can arrive from two feeds under the same
+  name and price with different photos (kassalapp `…/large.jpg`, ngdata
+  `…/medium.png` for one EAN) where only one feed fills `unit_price`. Ranking on
+  the column alone showed the other pack's photo for 209 of 37 703 groups.
+- **Photos seen once are kept in `localStorage`**, so a return visit paints them
+  immediately and they survive offline. The cap bounds what is *persisted*, never
+  the live map — trimming the map itself blanked photos on screens that were
+  showing them.
+
+Verified against the full catalogue rather than a sample: rebuilding all 37 703
+groups and 43 193 variants through the lookup reproduces the photo the inline
+column gave, for every single one, with zero frame-reservation mismatches. (A
+1000-row slice cannot show this — the photo lookup spans the whole table while
+the slice does not, so a slice reports differences that do not exist in the app.)
+
+**Connection warm-up.** `index.html` `preconnect`s to Supabase and the two Google
+Fonts origins, so those DNS + TLS handshakes overlap the HTML parse instead of
+following it. The font stylesheet is also `<link>`ed from the head even though
+`styles.css` `@import`s it — the design system owns that file, and an `@import`
+can only be discovered *after* `styles.css` has downloaded and parsed, so linking
+it starts the identical request a round trip earlier (the browser coalesces the
+two). `vercel.json` gives `app.js` / `styles.css` / the manifest
+`max-age=0, stale-while-revalidate=86400`: the filenames are unhashed so they
+must not be cached outright, but Vercel's default `must-revalidate` made every
+load pay a blocking conditional request per asset. Now the browser paints from
+cache and revalidates behind it.
 
 **CI.** `.github/workflows/ci.yml` runs on every push: `node --check` on the
 front end, `node --test` for the unit tests, and `deno check` on each Supabase
@@ -630,10 +688,10 @@ with no policies — it is the rate limiter's own table, reached only through
 - **Product images are hotlinked** from the chains' CDNs. Kassalapp states it
   does not own the rights to them ("Bilder kan være beskyttet av opphavsrett"),
   so treat a takedown request as expected maintenance rather than a surprise.
-- **Egress.** A cold visit downloads the whole catalogue (~6 MB uncompressed,
-  far less over the wire), which is why the 12 h snapshot cache exists. Watch
-  Supabase egress if traffic grows; the lever is the TTL and the column list in
-  `OFFER_COLS`.
+- **Egress.** A cold visit downloads the whole catalogue (~16 MB uncompressed,
+  ~1.2 MB gzipped over the wire since the photos moved out), which is why the
+  12 h snapshot cache exists. Watch Supabase egress if traffic grows; the lever
+  is the TTL and the column list in `OFFER_COLS` / the `ml_catalog` view.
 - **The cron jobs are scheduled and active** (`select jobname, schedule, active
   from cron.job`), and the `pg_net` → Edge Function path is proven by the 200s
   in `net._http_response`. `cron.job_run_details` is empty only because the

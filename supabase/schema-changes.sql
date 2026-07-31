@@ -114,3 +114,63 @@ create table if not exists ml_sweep_state (
 );
 alter table ml_sweep_state enable row level security;  -- service-role only, no policies
 insert into ml_sweep_state (name) values ('kassalapp') on conflict (name) do nothing;
+
+-- Cold-start payload split into two views, so the boot download stops carrying
+-- the product photos. image_url was 498 kB of the 1697 kB gzipped catalogue
+-- (29 %) and cannot be compressed away — gzip already collapses the shared host
+-- prefix and the rest is EAN entropy, so hand-packing the URLs into a compact
+-- token was measured at 0.8 % and thrown away again. It can only be MOVED, and
+-- a screen shows at most 58 products (CAP 50 + 8 offer cards) against ~47 700
+-- photos, so the URLs are now fetched per screen.
+--
+-- Both views are security_invoker, so the querying role's RLS on ml_offers
+-- still applies: anon reads through ml_offers_read exactly as it did against
+-- the table.
+--
+-- ml_catalog — what boot pages through (order=external_id, 1000 rows at a time).
+-- has_image lets the client reserve a product's image frame before the URL
+-- lands, so nothing shifts when photos arrive, and no empty frame appears on
+-- the 1 830 products that have no photo. It requires group_key as well, since a
+-- photo that ml_group_images cannot be keyed by would reserve a frame that
+-- never fills.
+create or replace view public.ml_catalog
+with (security_invoker = on) as
+select
+  o.external_id,      -- not selected by the client, but it pages with order=external_id
+  o.store_id, o.product_name, o.group_key,
+  o.price, o.pre_price, o.unit, o.unit_price, o.unit_price_unit,
+  o.offer_days, o.valid_until,
+  (o.image_url is not null and o.group_key is not null) as has_image
+from public.ml_offers o;
+
+-- ml_group_images — the photos, fetched per screen with group_key=in.(...).
+-- Deliberately a plain projection, not DISTINCT ON: a DISTINCT ON view cannot
+-- have the client's filter pushed into it, and Postgres materialised all 42 474
+-- distinct rows before semi-joining — 108 ms to return 58 rows, on every screen.
+-- As a projection the filter reaches ml_offers_group_idx: 1.7 ms.
+--
+-- Every column the client needs to rank packs the way the CATALOGUE ranks them
+-- rides along. That matters: the client reads a pack's size out of its NAME
+-- ("...400g Sætre") and only falls back to the unit_price column. One product
+-- can arrive from two feeds under the same name and price with different photos
+-- (kassalapp .../large.jpg, ngdata .../medium.png for one EAN) where only one
+-- feed fills unit_price; ranking on that column alone returned the other pack's
+-- photo for 209 of 37 703 groups. external_id is ordered by, never selected, so
+-- equal ranks resolve to the same row the catalogue's own reduce keeps.
+--
+-- Verified against the full catalogue: rebuilding all 37 703 groups and 43 193
+-- variants through the lookup reproduces the photo the inline column gave, for
+-- every one, with no frame-reservation mismatches.
+create or replace view public.ml_group_images
+with (security_invoker = on) as
+select
+  o.external_id,   -- ordered by, not selected: ties resolve as they do in the catalogue
+  o.group_key, o.store_id, o.product_name,
+  o.unit, o.unit_price, o.unit_price_unit, o.price,
+  o.image_url
+from public.ml_offers o
+where o.image_url is not null
+  and o.group_key is not null;
+
+grant select on public.ml_catalog      to anon, authenticated;
+grant select on public.ml_group_images to anon, authenticated;
