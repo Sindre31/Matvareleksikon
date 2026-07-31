@@ -37,7 +37,7 @@ python3 -m http.server 8000
 | `icon-192.png`, `icon-512.png` | PWA/app icons (rasterised from the favicon) |
 | `og.png` | 1200×630 social preview card |
 | `robots.txt`, `sitemap.xml` | Crawler hints (single canonical URL — the app is hash-routed) |
-| `test/` | Unit tests (`node --test`): the pure price/grouping helpers, and the cold-start offer paging |
+| `test/` | Unit tests (`node --test`): the pure price/grouping helpers, the cold-start offer paging, and the on-demand photo loader |
 | `design/` | The imported Claude Design source, kept for provenance |
 
 ## Screens (deep-linkable)
@@ -286,9 +286,9 @@ Supabase request stays network-only so prices are never served stale.
 **Cold-start, offline data & egress.** The catalogue is ~49 500 offer rows —
 ~16 MB of JSON, ~2 MB over the wire once gzipped — so re-downloading it on every
 visit is slow on mobile and burns Supabase egress. It is snapshotted
-into the **Cache Storage API** (`prisboka-catalog-v2` — the big offers blob, which
+into the **Cache Storage API** (`prisboka-catalog-v3` — the big offers blob, which
 would blow the ~5 MB `localStorage` cap) with a small meta record in
-`localStorage` (`prisboka_catalog_meta_v3`: timestamp, the tiny stores list,
+`localStorage` (`prisboka_catalog_meta_v4`: timestamp, the tiny stores list,
 freshness stamp). Boot:
 - **Within `CATALOG_TTL` (12 h)** a return visit trusts the snapshot and makes
   **zero network calls** — instant paint, no egress. Data refreshes weekly, so a
@@ -316,6 +316,37 @@ gap widens the worse the round-trip time gets. If the count header is ever
 missing the old serial paging still runs as a fallback, and because rows can be
 appended between the count and the last page, a final full page triggers a
 mop-up rather than being trusted as the end.
+
+**Product photos load per screen.** `image_url` was 498 kB of the 1697 kB
+gzipped catalogue — 29 % of the cold start — and it cannot be compressed away:
+gzip already collapses the shared `bilder.ngdata.no` prefix, and what remains is
+EAN entropy. (Hand-packing the URLs into a compact token was built, measured at
+**0.8 %**, and thrown away again.) So the bytes are *moved* rather than shrunk.
+A screen shows at most 58 products against ~47 700 photos, so boot pages through
+the **`ml_catalog`** view — the catalogue minus the photos — and the URLs come
+from **`ml_group_images`** for the groups on screen, one round trip per render
+(chunked 40 group keys at a time). Boot drops **1697 kB → 1208 kB (−29 %)**.
+
+Three things keep that invisible:
+- **`has_image` travels with the row**, so the image frame is reserved before
+  the URL lands. Nothing shifts when photos arrive, and the 1 830 products with
+  no photo still get no frame — as before.
+- **The lookup ranks packs exactly as the catalogue does**, reading a pack's
+  size out of its *name* and only then falling back to the `unit_price` column.
+  That is not pedantry: one product can arrive from two feeds under the same
+  name and price with different photos (kassalapp `…/large.jpg`, ngdata
+  `…/medium.png` for one EAN) where only one feed fills `unit_price`. Ranking on
+  the column alone showed the other pack's photo for 209 of 37 703 groups.
+- **Photos seen once are kept in `localStorage`**, so a return visit paints them
+  immediately and they survive offline. The cap bounds what is *persisted*, never
+  the live map — trimming the map itself blanked photos on screens that were
+  showing them.
+
+Verified against the full catalogue rather than a sample: rebuilding all 37 703
+groups and 43 193 variants through the lookup reproduces the photo the inline
+column gave, for every single one, with zero frame-reservation mismatches. (A
+1000-row slice cannot show this — the photo lookup spans the whole table while
+the slice does not, so a slice reports differences that do not exist in the app.)
 
 **Connection warm-up.** `index.html` `preconnect`s to Supabase and the two Google
 Fonts origins, so those DNS + TLS handshakes overlap the HTML parse instead of
@@ -658,12 +689,9 @@ with no policies — it is the rate limiter's own table, reached only through
   does not own the rights to them ("Bilder kan være beskyttet av opphavsrett"),
   so treat a takedown request as expected maintenance rather than a surprise.
 - **Egress.** A cold visit downloads the whole catalogue (~16 MB uncompressed,
-  ~2 MB gzipped over the wire), which is why the 12 h snapshot cache exists.
-  Watch Supabase egress if traffic grows; the lever is the TTL and the column
-  list in `OFFER_COLS`. `image_url` alone is ~40 % of the compressed payload, so
-  serving the images from a separate per-group lookup instead of on every offer
-  row is the single biggest remaining saving — it needs a database view, since
-  the client picks a group's image from its first variant that has one.
+  ~1.2 MB gzipped over the wire since the photos moved out), which is why the
+  12 h snapshot cache exists. Watch Supabase egress if traffic grows; the lever
+  is the TTL and the column list in `OFFER_COLS` / the `ml_catalog` view.
 - **The cron jobs are scheduled and active** (`select jobname, schedule, active
   from cron.job`), and the `pg_net` → Edge Function path is proven by the 200s
   in `net._http_response`. `cron.job_run_details` is empty only because the

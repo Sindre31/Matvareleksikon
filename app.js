@@ -221,7 +221,9 @@
       color: (STORE_STYLE[st] || {}).color || 'var(--color-accent)', dash: (STORE_STYLE[st] || {}).dash || '',
       rawName: o.product_name, name: cleanName(o.product_name), serverKey: o.group_key || ckey(o.product_name),
       price: price, prePrice: o.pre_price != null ? Number(o.pre_price) : null,
-      unit: o.unit || null, image: o.image_url || null, validUntil: o.valid_until || null,
+      // The photo itself is not in the boot payload — see the image loader.
+      // hasImage says one exists, which is what reserves its frame.
+      unit: o.unit || null, hasImage: !!o.has_image, validUntil: o.valid_until || null,
       offerDays: o.offer_days || null,
       isOffer: o.pre_price != null && Number(o.pre_price) > price,
       unitDim: unitDim, perUnit: perUnit,
@@ -347,13 +349,13 @@
         return a.price - b.price;
       });
       var comparable = variants.length >= 2 && variants.every(function (v) { return v.perUnit != null && v.unitDim === variants[0].unitDim; });
-      var img = null; for (var i = 0; i < variants.length; i++) { if (variants[i].image) { img = variants[i].image; break; } }
+      var anyImage = variants.some(function (v) { return v.hasImage; });
       // Cheapest unit price across the group (variants are sorted unit-price
       // first, so variants[0] carries it when any variant has one).
       var cheapUnit = (variants[0] && variants[0].perUnit != null) ? variants[0].perUnit : null;
       var cheapUnitDim = cheapUnit != null ? variants[0].unitDim : null;
       return {
-        key: key, name: canonLabel(key) || (variants[0] ? variants[0].name : key), variants: variants, image: img,
+        key: key, name: canonLabel(key) || (variants[0] ? variants[0].name : key), variants: variants, hasImage: anyImage,
         allByStore: byStore, serverKeys: Object.keys(map[key].serverKeys),
         minPrice: variants.reduce(function (m, v) { return Math.min(m, v.price); }, Infinity),
         storeCount: variants.length,
@@ -676,10 +678,19 @@
     return h('svg', { width: w, height: '6', 'aria-hidden': 'true' },
       h('line', { x1: '0', y1: '3', x2: String(w), y2: '3', stroke: color, 'stroke-width': '2.5', 'stroke-dasharray': dash }));
   }
-  function imgBox(src, alt, height) {
-    return src ? h('div', { style: 'height: ' + height + '; background: #fff; display: flex; align-items: center; justify-content: center; overflow: hidden; border-bottom: 1px solid var(--color-divider);' }, [
-      h('img', { src: src, alt: alt, loading: 'lazy', style: 'max-width: 90%; max-height: 100%; object-fit: contain; mix-blend-mode: multiply;' })
-    ]) : null;
+  // `reserve` keeps the frame for a product whose photo is known to exist but
+  // hasn't arrived yet, so the card doesn't grow under the shopper when it does.
+  // Products with no photo at all still get no frame, exactly as before.
+  function imgBox(src, alt, height, reserve) {
+    if (!src && !reserve) return null;
+    return h('div', { style: 'height: ' + height + '; background: #fff; display: flex; align-items: center; justify-content: center; overflow: hidden; border-bottom: 1px solid var(--color-divider);' },
+      src ? [h('img', { src: src, alt: alt, loading: 'lazy', style: 'max-width: 90%; max-height: 100%; object-fit: contain; mix-blend-mode: multiply;' })] : []);
+  }
+  // The 190 px square on the group and variant headers, same deal.
+  function heroImgBox(src, alt, reserve) {
+    if (!src && !reserve) return null;
+    return h('div', { cls: 'blueprint', style: 'flex: none; width: 190px; height: 190px; background: #fff; display: flex; align-items: center; justify-content: center; overflow: hidden;' },
+      corners().concat(src ? [h('img', { src: src, alt: alt, style: 'max-width: 82%; max-height: 82%; object-fit: contain; mix-blend-mode: multiply;' })] : []));
   }
 
   // ── Routing ──────────────────────────────────────────────────────────────
@@ -869,6 +880,156 @@
         })
         .catch(finish);
     }
+  }
+
+  // ── Product photos (loaded on demand) ────────────────────────────────────
+  // The image URLs are 29 % of the catalogue over the wire (498 kB of 1697 kB
+  // gzipped) and they do not compress — they are mostly EANs. A screen shows at
+  // most 58 products, so they are fetched per screen from ml_group_images
+  // instead of shipped with the catalogue. `hasImage` rides along on the boot
+  // payload, so the frame is reserved before the URL lands and nothing shifts.
+  //
+  // Photos seen once are kept in localStorage: a return visit paints them
+  // immediately, and they stay available offline.
+  var IMAGES = {};        // see the two key shapes below -> url
+  var IMG_ASKED = {};     // server group key -> 1, so each key is requested once
+  var IMG_QUEUE = {};     // server group keys waiting for the next flush
+  var IMG_KEY = 'prisboka_images_v1';
+  var IMG_MAX = 6000;     // ~450 kB of URLs, well inside the localStorage budget
+
+  // Two keys per store, both NUL-joined so a group key or a product name can
+  // never run into the next field. The exact key names the pack the catalogue
+  // already picked to represent that store, so the photo is the one that used to
+  // ship inline -- needed because the client derives a pack's unit price from
+  // the product NAME when the row carries no unit_price, which the server cannot
+  // do. For 3.4 % of (group, store) pairs the two would otherwise rank a
+  // different, equally valid, pack's photo first. The loose key is the fallback.
+  function imgKey(serverKey, storeId) { return serverKey + '\u0000' + storeId; }
+  function imgKeyExact(serverKey, storeId, rawName) {
+    return serverKey + '\u0000' + storeId + '\u0000' + (rawName || '');
+  }
+
+  try {
+    var savedImgs = JSON.parse(localStorage.getItem(IMG_KEY) || 'null');
+    if (savedImgs && typeof savedImgs === 'object') {
+      IMAGES = savedImgs;
+      // A saved URL means the group was already answered for; don't re-ask.
+      Object.keys(IMAGES).forEach(function (k) { IMG_ASKED[k.split('\u0000')[0]] = 1; });
+    }
+  } catch (e) { /* corrupt or full — start empty */ }
+
+  function saveImages() {
+    try {
+      var keys = Object.keys(IMAGES);
+      var toSave = IMAGES;
+      // The cap bounds what is PERSISTED, never the live map: trimming IMAGES
+      // itself would blank photos the screen is currently showing. Oldest-first
+      // eviction isn't worth a timestamp per entry, so keep the most recently
+      // inserted — the screens the shopper actually reached.
+      if (keys.length > IMG_MAX) {
+        toSave = {};
+        keys.slice(keys.length - IMG_MAX).forEach(function (k) { toSave[k] = IMAGES[k]; });
+      }
+      localStorage.setItem(IMG_KEY, JSON.stringify(toSave));
+    } catch (e) { /* quota — the in-memory map still works this session */ }
+  }
+
+  // The photo for one variant, once its group has been fetched.
+  function imageOf(v) {
+    if (!v || !v.hasImage) return null;
+    return IMAGES[imgKeyExact(v.serverKey, v.storeId, v.rawName)]
+        || IMAGES[imgKey(v.serverKey, v.storeId)]
+        || null;
+  }
+  // A group is represented by the first of its variants (they are ordered by
+  // unit price) that has a photo — the same rule as when image_url shipped with
+  // every row.
+  function groupImage(g) {
+    if (!g || !g.hasImage) return null;
+    for (var i = 0; i < g.variants.length; i++) {
+      var u = imageOf(g.variants[i]);
+      if (u) return u;
+    }
+    return null;
+  }
+
+  // Queue a group's photos. Called while building a screen; the fetch itself is
+  // flushed once, after the render, so one screen costs one round trip.
+  function wantImages(g) {
+    if (!g || !g.hasImage || !g.serverKeys) return;
+    g.serverKeys.forEach(function (sk) {
+      if (sk && !IMG_ASKED[sk]) IMG_QUEUE[sk] = 1;
+    });
+  }
+
+  function flushImages() {
+    var keys = Object.keys(IMG_QUEUE);
+    if (!keys.length) return;
+    IMG_QUEUE = {};
+    keys.forEach(function (sk) { IMG_ASKED[sk] = 1; }); // before the request, so a
+    // re-render while it is in flight doesn't ask again.
+
+    var CHUNK = 40, done = 0, chunks = Math.ceil(keys.length / CHUNK), landed = false;
+    var finish = function () {
+      if (++done < chunks) return;
+      if (landed) { saveImages(); render(); }
+    };
+    for (var i = 0; i < keys.length; i += CHUNK) {
+      var part = keys.slice(i, i + CHUNK).map(function (k) { return '"' + String(k).replace(/"/g, '') + '"'; }).join(',');
+      sb('/ml_group_images?select=group_key,store_id,product_name,unit,unit_price,unit_price_unit,price,image_url&group_key=in.(' + encodeURIComponent(part) + ')&order=external_id')
+        .then(function (r) { return r.ok ? r.json() : []; })
+        .then(function (rows) {
+          // A store can list several pack sizes under one group_key; keep the
+          // cheapest per unit, which is the variant the client already promotes.
+          // Two chains, or two feeds for one chain, can list the same pack under
+          // the same name with different photos, so the exact key has to rank
+          // its candidates too rather than let the last row win.
+          var pick = {};
+          (rows || []).forEach(function (r) {
+            if (!r || !r.image_url || !r.group_key || r.store_id == null) return;
+            // Exact pack first — one product can reach us from two feeds
+            // (kassalapp .../large.jpg and ngdata .../medium.png for one EAN)
+            // and only one of them fills unit_price, which is why rankImg reads
+            // the size out of the shared name before trusting that column.
+            keep(pick, imgKeyExact(r.group_key, r.store_id, r.product_name), r);
+            // Store-level fallback, used when the name no longer matches.
+            keep(pick, imgKey(r.group_key, r.store_id), r);
+          });
+          Object.keys(pick).forEach(function (k) {
+            var url = pick[k].image_url;
+            if (IMAGES[k] !== url) { IMAGES[k] = url; landed = true; }
+          });
+          finish();
+        })
+        .catch(finish);
+    }
+  }
+  // Strictly less-than, so on an equal rank the first row wins. The rows arrive
+  // ordered by external_id, the same order the catalogue pages in and resolves
+  // its own ties by, so the photo matches the pack the leksikon settled on.
+  function keep(into, key, row) {
+    var cur = into[key];
+    if (!cur || rankImg(row) < rankImg(cur)) into[key] = row;
+  }
+  // Rank a photo row exactly as buildVariant/buildGroups rank a variant: by the
+  // unit price read out of the pack NAME, else the row's own unit_price, else
+  // the pack price. Ranking on unit_price alone picks a different pack's photo
+  // than the one on screen whenever only one of two feeds fills that column.
+  function imgPerUnit(r) {
+    var price = Number(r.price);
+    var amt = parseAmount(r.product_name);
+    if (amt && isFinite(price)) return price / amt.value;
+    if (r.unit_price != null) {
+      var nd = normUnit(r.unit_price_unit || r.unit), up = Number(r.unit_price);
+      if (nd && up > 0) return up;
+    }
+    return null;
+  }
+  function rankImg(r) {
+    var pu = imgPerUnit(r);
+    if (pu != null && isFinite(pu)) return pu;   // comparable packs first…
+    var p = Number(r.price);
+    return isFinite(p) ? 1e9 + p : Infinity;     // …then simply the cheapest pack
   }
 
   // ── Shared style bits ────────────────────────────────────────────────────
@@ -1119,6 +1280,7 @@
     else filtered.sort(function (a, b) { return (b.onOffer - a.onOffer) || byName(a, b); });
     var CAP = 50;
     var shown = filtered.slice(0, CAP);
+    shown.forEach(wantImages);
 
     var hero = h('div', { style: 'padding: 64px 0 40px;' }, [
       h('h1', { style: 'margin: -0.052em 0 0; font-size: clamp(44px, 6vw, 76px); line-height: 1.04; letter-spacing: 0.01em; text-transform: uppercase;' }, ['Matvareleksikonet', h('br'), 'med ekte priser']),
@@ -1137,6 +1299,7 @@
     offers.sort(function (a, b) { return pctOff(b.v) - pctOff(a.v); });
     var bestSection = null;
     if (!q && offers.length) {
+      offers.slice(0, 8).forEach(function (o) { wantImages(o.g); });
       bestSection = h('div', { style: 'padding-bottom: 48px;' }, [
         h('span', { style: KICKER, text: '01 · Ukas beste tilbud' }),
         h('hr', { style: RULE }),
@@ -1144,9 +1307,9 @@
           var v = o.v;
           return h('div', Object.assign({ cls: 'blueprint card-hover', style: 'padding: 0; cursor: pointer; display: flex; flex-direction: column;' }, activate(openGroup(o.g.key), o.g.name + ', tilbud hos ' + v.storeName + ', ' + nf(v.price))), corners().concat([
             cardStar(o.g.key),
-            imgBox(v.image, v.name, '150px'),
+            imgBox(imageOf(v), v.name, '150px', v.hasImage),
             h('div', { style: 'padding: 14px 16px; display: flex; flex-direction: column; gap: 6px;' }, [
-              h('div', { style: 'display: flex; justify-content: space-between; align-items: center; gap: 8px;' + (v.image ? '' : ' padding-right: 32px;') }, [
+              h('div', { style: 'display: flex; justify-content: space-between; align-items: center; gap: 8px;' + (v.hasImage ? '' : ' padding-right: 32px;') }, [
                 h('span', { cls: 'tag tag-outline', text: v.storeName }),
                 h('span', { style: 'font-family: var(--font-heading); font-weight: 600; font-size: 15px; color: var(--color-accent-900);', text: '−' + pctOff(v) + ' %' })
               ]),
@@ -1200,7 +1363,7 @@
       }
       return h('div', Object.assign({ cls: 'blueprint card-hover', style: 'padding: 0; cursor: pointer; display: flex; flex-direction: column;' }, activate(openGroup(g.key), g.name + ', ' + priceTxt + ' ' + whereTxt)), corners().concat([
         cardStar(g.key),
-        imgBox(g.image, g.name, '150px'),
+        imgBox(groupImage(g), g.name, '150px', g.hasImage),
         h('div', { style: 'padding: 16px 18px 18px; display: flex; flex-direction: column; gap: 6px;' }, [
           h('div', { style: 'display: flex; gap: 8px; align-items: center; min-height: 20px;' }, [
             g.onOffer ? offerTag() : h('span', { style: 'font-size: 12px; letter-spacing: 0.08em; text-transform: uppercase; font-weight: 600; color: ' + MUTED60 + ';', text: whereTxt })
@@ -1242,6 +1405,7 @@
   function renderGroup() {
     var g = GROUP_BY_KEY[state.groupKey];
     if (!g) return notFoundView('Denne varen finnes ikke i leksikonet lenger — den kan ha gått ut av ukas sortiment. Søk den opp på nytt fra forsiden.');
+    wantImages(g);
     var head = h('div', { style: 'padding: 40px 0 24px; display: flex; flex-wrap: wrap; gap: 28px; align-items: flex-start;' }, [
       h('div', { style: 'flex: 1; min-width: 260px;' }, [
         h('div', { style: 'display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 12px;' }, [
@@ -1256,9 +1420,7 @@
         g.compDim ? h('p', { style: 'margin: 6px 0 0; font-size: 13px; color: ' + MUTED60 + ';', text: 'Sammenlignet per ' + g.compDim + ' siden pakningsstørrelsene er ulike.' }) : null,
         h('div', { style: 'margin-top: 18px;' }, [listToggleBtn(g.key)])
       ]),
-      g.image ? h('div', { cls: 'blueprint', style: 'flex: none; width: 190px; height: 190px; background: #fff; display: flex; align-items: center; justify-content: center; overflow: hidden;' }, corners().concat([
-        h('img', { src: g.image, alt: g.name, style: 'max-width: 82%; max-height: 82%; object-fit: contain; mix-blend-mode: multiply;' })
-      ])) : null
+      heroImgBox(groupImage(g), g.name, g.hasImage)
     ]);
 
     // Controls shared by both sections below: which stores to look at, which
@@ -1515,6 +1677,7 @@
     var g = GROUP_BY_KEY[state.groupKey];
     if (!g) return notFoundView('Denne varen finnes ikke i leksikonet lenger — den kan ha gått ut av ukas sortiment. Søk den opp på nytt fra forsiden.');
     var v = g.variants.filter(function (x) { return x.storeId === state.storeId; })[0] || g.variants[0];
+    wantImages(g);
 
     var head = h('div', { style: 'padding: 40px 0 24px; display: flex; flex-wrap: wrap; gap: 28px; align-items: flex-start;' }, [
       h('div', { style: 'flex: 1; min-width: 260px;' }, [
@@ -1534,9 +1697,7 @@
         ]),
         h('div', { style: 'margin-top: 18px;' }, [listToggleBtn(g.key)])
       ]),
-      g.image ? h('div', { cls: 'blueprint', style: 'flex: none; width: 190px; height: 190px; background: #fff; display: flex; align-items: center; justify-content: center; overflow: hidden;' }, corners().concat([
-        h('img', { src: v.image || g.image, alt: v.name, style: 'max-width: 82%; max-height: 82%; object-fit: contain; mix-blend-mode: multiply;' })
-      ])) : null
+      heroImgBox(imageOf(v) || groupImage(g), v.name, g.hasImage)
     ]);
 
     var hist = state.history[g.key];
@@ -2257,13 +2418,21 @@
       if (typeof console !== 'undefined' && console.error) console.error('render failed:', e);
       try { root.textContent = ''; root.appendChild(renderCrash()); } catch (e2) { /* leave the DOM as-is */ }
     }
+    // The screen just built queued the photos it needs; fetch them in one round
+    // trip. Outside the try so a crashed render still can't wedge the loader,
+    // and safe to re-enter: once a group is asked for it is never queued again,
+    // so the render this triggers on arrival flushes nothing.
+    flushImages();
   }
 
   // ── Boot ─────────────────────────────────────────────────────────────────
   // PostgREST caps a response at 1000 rows, so page through all offers.
-  // Only the columns the client actually reads (valid_from and the offer-level
-  // source column were fetched but never used — dropped to trim the payload).
-  var OFFER_COLS = 'store_id,product_name,group_key,price,pre_price,unit,unit_price,unit_price_unit,offer_days,image_url,valid_until';
+  // ml_catalog is the view that defines this payload: ml_offers minus the
+  // columns the client never reads, and minus image_url — the photos were 29 %
+  // of the bytes and are fetched per screen instead (see the image loader).
+  // has_image survives so the frame can be reserved before the URL lands.
+  var OFFER_SRC = '/ml_catalog';
+  var OFFER_COLS = 'store_id,product_name,group_key,price,pre_price,unit,unit_price,unit_price_unit,offer_days,valid_until,has_image';
   var OFFER_PAGE = 1000;
   // How many offer pages are in flight at once. The catalogue is ~50 pages, and
   // fetching them one after another meant ~50 *serialised* round trips before
@@ -2272,7 +2441,7 @@
   var OFFER_LANES = 6;
 
   function offersPage(offset, opts) {
-    return sb('/ml_offers?select=' + OFFER_COLS + '&order=external_id&limit=' + OFFER_PAGE + '&offset=' + offset, opts)
+    return sb(OFFER_SRC + '?select=' + OFFER_COLS + '&order=external_id&limit=' + OFFER_PAGE + '&offset=' + offset, opts)
       .then(function (r) { if (!r.ok) throw new Error('offers ' + r.status); return r; });
   }
 
@@ -2357,13 +2526,34 @@
   //     background (stale-while-revalidate).
   //   • No Cache API (insecure context) → always revalidate, as before.
   var CATALOG_TTL = 12 * 60 * 60 * 1000; // 12 h
-  var CAT_CACHE = 'prisboka-catalog-v2';
-  var CAT_OFFERS_URL = '/__prisboka-offers-cache-v2'; // synthetic same-origin Cache key (never fetched)
-  var CAT_META_KEY = 'prisboka_catalog_meta_v3';
+  // v3: the snapshot's row shape changed with ml_catalog (image_url out,
+  // has_image in). A v2 snapshot would restore rows whose has_image is
+  // undefined, i.e. a leksikon with every photo silently missing, so it must not
+  // be reused — hence new names rather than a migration.
+  var CAT_CACHE = 'prisboka-catalog-v3';
+  var CAT_OFFERS_URL = '/__prisboka-offers-cache-v3'; // synthetic same-origin Cache key (never fetched)
+  var CAT_META_KEY = 'prisboka_catalog_meta_v4';
   var hasCaches = (typeof caches !== 'undefined' && caches && typeof caches.open === 'function');
 
-  // Retire the old localStorage cache keys (superseded by the Cache API blob).
-  try { localStorage.removeItem('prisboka_catalog_v1'); localStorage.removeItem('prisboka_catalog_meta'); } catch (e) { /* noop */ }
+  // Retire superseded caches: the old localStorage blob, and the previous
+  // snapshot generations. The service worker deliberately leaves every
+  // 'prisboka-catalog-*' alone, so nothing else would ever reclaim the ~6 MB an
+  // outdated snapshot holds.
+  try {
+    localStorage.removeItem('prisboka_catalog_v1');
+    localStorage.removeItem('prisboka_catalog_meta');
+    localStorage.removeItem('prisboka_catalog_meta_v2');
+    localStorage.removeItem('prisboka_catalog_meta_v3');
+  } catch (e) { /* noop */ }
+  if (hasCaches) {
+    try {
+      caches.keys().then(function (keys) {
+        keys.forEach(function (k) {
+          if (k.indexOf('prisboka-catalog-') === 0 && k !== CAT_CACHE) caches.delete(k);
+        });
+      }).catch(function () { /* best-effort */ });
+    } catch (e) { /* noop */ }
+  }
 
   function readCatMeta() { try { return JSON.parse(localStorage.getItem(CAT_META_KEY) || 'null'); } catch (e) { return null; } }
   function writeCatMeta(o) { try { localStorage.setItem(CAT_META_KEY, JSON.stringify(o)); } catch (e) { /* best-effort */ } }

@@ -14,7 +14,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 
 const SRC = fs.readFileSync(path.join(__dirname, '..', 'app.js'), 'utf8');
-const START = '  var OFFER_COLS = ';
+const START = '  var OFFER_SRC = ';
 const END = '\n  // ── Cold-start cache';
 
 function pagingSource() {
