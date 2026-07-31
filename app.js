@@ -703,10 +703,17 @@
     list: [], copiedFor: null, lastUpdated: '', fromCache: false, sharedList: null, listShareCopied: false,
     listPriceMode: 'kilo', listOnlyUnit: false, listOpenStore: null, sizePicker: null,
     groupStore: 'Alle', groupSize: 'alle', groupSort: 'billigst', histMode: 'enhet',
+    report: null,   // the feilrapport dialog's draft, see reportOverlay
+    // Adminpanelet (#/admin). The session token lives in sessionStorage, so it
+    // dies with the tab; nothing here is readable without the password.
+    adminSession: null, adminPw: '', adminBusy: false, adminError: '', adminMsg: '',
+    adminTab: 'rapporter', adminStatus: 'open', adminQuery: '', adminStore: '',
+    adminReports: null, adminProducts: null, adminStats: null, adminEdit: null,
     history: {},    // key -> 'loading' | [rows] — full rows, per product page
     listHistory: {} // key -> 'loading' | [rows] — trimmed rows for the list chart
   };
   state.list = loadList();
+  state.adminSession = readAdminToken();   // an admin session survives a reload, not a closed tab
   function setState(patch) { Object.assign(state, patch); render(); }
 
   function nf(v) { return 'kr ' + Number(v).toFixed(2).replace('.', ','); }
@@ -861,6 +868,7 @@
     }
     if (hn === '/skann') return { view: 'scan' };
     if (hn === '/om') return { view: 'om' };
+    if (hn === '/admin') return { view: 'admin' };
     if (hn.indexOf('/liste') === 0) {
       var shared = null, qi = hn.indexOf('?');
       if (qi > -1) {
@@ -894,6 +902,10 @@
       loadListHistory();
     } else if (r.view === 'om') {
       state.view = 'om';
+    } else if (r.view === 'admin') {
+      state.view = 'admin';
+      // A session that survived a reload still has to fetch what it shows.
+      if (state.adminSession && state.adminReports == null && state.adminProducts == null) adminLoad();
     } else {
       state.view = 'home';
     }
@@ -1342,6 +1354,233 @@
     }, [card]);
   }
 
+  // ── Feilrapportering ─────────────────────────────────────────────────────
+  // Every price here comes from a feed or a receipt, and both get things wrong:
+  // a chain publishes an old price, a scan reads "1L" as "11", a product ends up
+  // under a name it doesn't have. A shopper standing in the shop with the shelf
+  // in front of them knows better than either — so the product pages carry a
+  // report button, and what it collects is not free text but the two things
+  // that can be acted on: the right price, or the right product name.
+  //
+  // Three reports on the same product flag it for the admin; three that agree on
+  // the SAME correction apply it by themselves (ml_report_apply in
+  // schema-changes.sql). One person cannot do that alone: agreement is counted
+  // per reporter id, which is what this file keeps in localStorage.
+  var REPORTER_KEY = 'prisboka_reporter';
+  function reporterId() {
+    try {
+      var v = localStorage.getItem(REPORTER_KEY);
+      if (!v) {
+        v = 'r' + Date.now().toString(36) + Math.random().toString(36).slice(2, 10);
+        localStorage.setItem(REPORTER_KEY, v);
+      }
+      return v;
+    } catch (e) { return null; }   // private mode: the IP is the fallback, server-side
+  }
+
+  // "24,90", "24.90", "kr 24,90", "24" — anything a phone keyboard produces for
+  // a price. Anything else is null, and the dialog says so rather than sending
+  // a number nobody typed.
+  function parsePrice(raw) {
+    var s = String(raw == null ? '' : raw).replace(/kr/gi, '').replace(/\s/g, '').replace(',', '.');
+    if (!/^\d{1,6}(\.\d{1,2})?$/.test(s)) return null;
+    var n = Number(s);
+    return isFinite(n) && n > 0 ? n : null;
+  }
+
+  // Turn the dialog's draft into the row that gets inserted, or into the reason
+  // it can't be. Pure — the checks are the same ones the table's CHECK
+  // constraints enforce, so a rejected report never reaches the network.
+  function reportPayload(d) {
+    d = d || {};
+    var kind = d.kind === 'produkt' ? 'produkt' : 'pris';
+    if (!d.storeId || !d.rawName) return { error: 'Mangler produktinfo. Last siden på nytt og prøv igjen.' };
+    var row = {
+      kind: kind, store_id: d.storeId, product_name: d.rawName,
+      group_key: d.groupKey || null,
+      shown_price: (d.price != null && isFinite(d.price)) ? Number(d.price) : null,
+      correct_price: null, correct_name: null,
+      comment: String(d.comment == null ? '' : d.comment).trim().slice(0, 500) || null,
+      reporter: d.reporter || null
+    };
+    if (kind === 'pris') {
+      var p = parsePrice(d.priceValue);
+      if (p == null) return { error: 'Skriv riktig pris — for eksempel 24,90.' };
+      if (p > 100000) return { error: 'Prisen må være under 100 000 kr.' };
+      if (row.shown_price != null && Math.abs(p - row.shown_price) < 0.005) {
+        return { error: 'Det er prisen som står der nå. Skriv prisen du så i butikken.' };
+      }
+      row.correct_price = Math.round(p * 100) / 100;
+    } else {
+      var n = String(d.nameValue == null ? '' : d.nameValue).replace(/\s+/g, ' ').trim();
+      if (n.length < 2) return { error: 'Skriv hva varen faktisk heter.' };
+      if (n.length > 120) return { error: 'Navnet kan være maks 120 tegn.' };
+      if (n.toLowerCase() === String(d.rawName).toLowerCase()) {
+        return { error: 'Det er navnet som står der nå. Skriv navnet slik det står i butikken.' };
+      }
+      row.correct_name = n;
+    }
+    return { payload: row };
+  }
+
+  var reportFocused = true;   // one-shot: focus the dialog when it opens, not on every keystroke
+  function openReport(g, v) {
+    return function (e) {
+      if (e && e.stopPropagation) e.stopPropagation();
+      if (e && e.preventDefault) e.preventDefault();
+      reportFocused = false;
+      setState({ report: {
+        groupKey: g ? g.key : null, storeId: v.storeId, storeName: v.storeName,
+        rawName: v.rawName, name: v.name, price: v.price,
+        kind: 'pris', priceValue: '', nameValue: v.rawName, comment: '',
+        phase: 'form', error: null
+      } });
+    };
+  }
+  function patchReport(patch) {
+    if (!state.report) return;
+    setState({ report: Object.assign({}, state.report, patch) });
+  }
+  function submitReport() {
+    var d = state.report;
+    if (!d || d.phase === 'sending') return;
+    var built = reportPayload(Object.assign({}, d, { reporter: reporterId() }));
+    if (built.error) { patchReport({ error: built.error }); return; }
+    patchReport({ phase: 'sending', error: null });
+    sb('/ml_price_reports', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(built.payload)
+    })
+      .then(function (res) {
+        if (res.ok) return null;
+        // The rate limiter and the "unknown product" guard raise real messages;
+        // everything else gets a plain one rather than a Postgres error code.
+        return res.json().then(function (b) { throw new Error((b && b.message) || ''); }, function () { throw new Error(''); });
+      })
+      .then(function () { patchReport({ phase: 'done', error: null }); })
+      .catch(function (err) {
+        // The three guards in ml_report_prepare raise Norwegian prose meant for
+        // the reporter; anything else is a Postgres code they can't act on.
+        var msg = String((err && err.message) || '');
+        var ours = /^(For mange|Du har sendt|Ukjent vare)/.test(msg);
+        patchReport({ phase: 'form', error: ours ? msg : 'Kunne ikke sende rapporten nå. Sjekk nettforbindelsen og prøv igjen.' });
+      });
+  }
+
+  // The report dialog. Two kinds, because those are the two the leksikon can
+  // act on: a wrong price, or a wrong product. The comment is free text but
+  // optional — nothing is applied from it, it is there for the admin to read.
+  function reportOverlay() {
+    var d = state.report;
+    if (!d) return null;
+    var close = function () { setState({ report: null }); };
+    var sending = d.phase === 'sending';
+    var priceKind = d.kind !== 'produkt';
+
+    var kindBtn = function (id, label, hint) {
+      var on = (id === 'pris') === priceKind;
+      return h('button', {
+        type: 'button', 'aria-pressed': on ? 'true' : 'false',
+        style: 'flex: 1; min-width: 140px; text-align: left; padding: 12px 14px; cursor: pointer; font: inherit; border: 1px solid '
+          + (on ? 'var(--color-accent)' : 'var(--color-divider)') + ';'
+          + (on ? ' background: color-mix(in srgb, var(--color-accent) 10%, transparent);' : ' background: transparent;')
+          + ' color: inherit;',
+        onClick: function () { patchReport({ kind: id, error: null }); }
+      }, [
+        h('span', { style: 'display: block; font-family: var(--font-heading); font-weight: 600; font-size: 15px; letter-spacing: 0.02em; text-transform: uppercase;', text: label }),
+        h('span', { style: 'display: block; margin-top: 4px; font-size: 12px; color: ' + MUTED70 + ';', text: hint })
+      ]);
+    };
+
+    var body;
+    if (d.phase === 'done') {
+      body = h('div', { style: 'padding: 20px 16px;' }, [
+        h('p', { style: 'margin: 0; font-size: 15px; line-height: 22px;' }, ['Takk — rapporten er sendt.']),
+        h('p', { style: 'margin: 12px 0 0; font-size: 14px; line-height: 21px; color: ' + MUTED70 + ';' }, [
+          'Når tre personer melder inn den samme rettelsen, oppdateres varen automatisk. Fram til det ligger rapporten til gjennomgang.'
+        ]),
+        h('div', { style: 'margin-top: 18px;' }, [
+          h('button', { type: 'button', cls: 'btn btn-primary', 'data-focus-id': 'report-close', onClick: close, text: 'Lukk' })
+        ])
+      ]);
+    } else {
+      body = h('div', { style: 'padding: 16px;' }, [
+        h('div', { style: 'display: flex; flex-wrap: wrap; gap: 10px;' }, [
+          kindBtn('pris', 'Feil pris', 'Prisen i butikken er en annen'),
+          kindBtn('produkt', 'Feil produkt', 'Navnet eller varen stemmer ikke')
+        ]),
+        priceKind
+          ? h('label', { style: 'display: block; margin-top: 18px;' }, [
+              h('span', { style: 'display: block; font-size: 12px; letter-spacing: 0.08em; text-transform: uppercase; font-weight: 600; color: ' + MUTED70 + '; margin-bottom: 6px;', text: 'Riktig pris' }),
+              h('input', {
+                cls: 'input', type: 'text', inputmode: 'decimal', placeholder: 'f.eks. 24,90',
+                value: d.priceValue, 'data-focus-id': 'report-price', style: 'width: 100%; min-height: 40px; font-size: 16px;',
+                onInput: function (e) { patchReport({ priceValue: e.target.value }); }
+              }),
+              h('span', { style: 'display: block; margin-top: 6px; font-size: 12px; color: ' + MUTED60 + ';', text: 'Prisen slik den står på hylla hos ' + d.storeName + ' — står det nå ' + nf(d.price) + '.' })
+            ])
+          : h('label', { style: 'display: block; margin-top: 18px;' }, [
+              h('span', { style: 'display: block; font-size: 12px; letter-spacing: 0.08em; text-transform: uppercase; font-weight: 600; color: ' + MUTED70 + '; margin-bottom: 6px;', text: 'Riktig produkt' }),
+              h('input', {
+                cls: 'input', type: 'text', maxlength: '120', placeholder: 'Varenavnet slik det står i butikken',
+                value: d.nameValue, 'data-focus-id': 'report-name', style: 'width: 100%; min-height: 40px; font-size: 16px;',
+                onInput: function (e) { patchReport({ nameValue: e.target.value }); }
+              }),
+              h('span', { style: 'display: block; margin-top: 6px; font-size: 12px; color: ' + MUTED60 + ';', text: 'Står nå som «' + d.rawName + '».' })
+            ]),
+        h('label', { style: 'display: block; margin-top: 16px;' }, [
+          h('span', { style: 'display: block; font-size: 12px; letter-spacing: 0.08em; text-transform: uppercase; font-weight: 600; color: ' + MUTED70 + '; margin-bottom: 6px;', text: 'Kommentar (valgfritt)' }),
+          h('textarea', {
+            cls: 'input', rows: '2', maxlength: '500', placeholder: 'Noe mer vi bør vite?',
+            value: d.comment, 'data-focus-id': 'report-comment', style: 'width: 100%; font-size: 15px; font-family: inherit;',
+            onInput: function (e) { patchReport({ comment: e.target.value }); }
+          })
+        ]),
+        d.error ? h('p', { role: 'alert', style: 'margin: 14px 0 0; font-size: 14px; line-height: 20px; color: var(--color-accent-900);', text: d.error }) : null,
+        h('div', { style: 'display: flex; flex-wrap: wrap; gap: 10px; margin-top: 18px;' }, [
+          h('button', { type: 'button', cls: 'btn btn-primary', disabled: sending ? 'disabled' : false, onClick: submitReport, text: sending ? 'Sender …' : 'Send rapport' }),
+          h('button', { type: 'button', cls: 'btn btn-ghost', onClick: close, text: 'Avbryt' })
+        ]),
+        h('p', { style: 'margin: 14px 0 0; font-size: 12px; line-height: 18px; color: ' + MUTED60 + ';', text: 'Rapporten er anonym. Vi lagrer ikke annet enn det du skriver her — og IP-adressen din en kort stund, for å stoppe søppelrapporter.' })
+      ]);
+    }
+
+    var card = h('div', {
+      cls: 'blueprint', role: 'dialog', 'aria-modal': 'true', 'aria-label': 'Rapporter feil for ' + d.name,
+      style: 'width: min(520px, 100%); max-height: 85vh; overflow: auto; background: var(--color-bg); padding: 0;',
+      onClick: function (e) { e.stopPropagation(); }
+    }, corners().concat([
+      h('div', { style: 'padding: 20px 16px 12px;' }, [
+        h('span', { style: KICKER + ' margin-bottom: 6px;', text: 'Rapporter feil' }),
+        h('span', { style: 'display: block; font-family: var(--font-heading); font-weight: 600; font-size: 22px; letter-spacing: 0.02em; text-transform: uppercase;', text: d.name }),
+        h('p', { style: 'margin: 8px 0 0; font-size: 14px; line-height: 20px; color: ' + MUTED70 + ';', text: d.storeName + ' · ' + d.rawName + ' · ' + nf(d.price) })
+      ]),
+      body
+    ]));
+    return h('div', {
+      style: 'position: fixed; inset: 0; z-index: 50; background: color-mix(in srgb, var(--color-text) 45%, transparent); display: flex; align-items: center; justify-content: center; padding: 20px;',
+      onClick: close,
+      onKeydown: function (e) { if (e.key === 'Escape') close(); }
+    }, [card]);
+  }
+
+  // The button itself: a full one on the product page, a compact glyph in the
+  // "selges hos" table (whose rows are themselves buttons — hence the
+  // stopPropagation, so reporting a price doesn't also navigate away).
+  function reportBtn(g, v) {
+    return h('button', { type: 'button', cls: 'btn btn-ghost', onClick: openReport(g, v), text: '⚠ Rapporter feil' });
+  }
+  function reportIconBtn(g, v) {
+    var label = 'Rapporter feil pris eller feil produkt for ' + v.storeName + ', ' + v.rawName;
+    return h('button', {
+      type: 'button', cls: 'blueprint', title: 'Rapporter feil', 'aria-label': label,
+      style: 'width: 32px; height: 32px; padding: 0; cursor: pointer; display: flex; align-items: center; justify-content: center; font-size: 14px; line-height: 1; background: transparent; color: ' + MUTED60 + ';',
+      onClick: openReport(g, v),
+      onKeydown: function (e) { if (e.key === 'Enter' || e.key === ' ' || e.key === 'Spacebar') e.stopPropagation(); }
+    }, '⚠');
+  }
+
   // "Copy link" button with transient confirmation, keyed on the current hash.
   function copyLinkBtn() {
     var done = state.copiedFor === (location.hash || '#/');
@@ -1646,7 +1885,7 @@
       var vd = v.offerDays ? 'Gjelder ' + v.offerDays : '';
       var nSizes = gsize === 'alle' ? sizesFor(g, v.storeId).length : 1;
       var sub = v.rawName + (vd ? ' · ' + vd : '') + (vu ? ' · ' + vu : '') + (nSizes > 1 ? ' · ' + nSizes + ' størrelser' : '');
-      return h('div', Object.assign({ cls: 'row-hover', style: 'display: grid; grid-template-columns: 1fr auto auto; gap: 12px; align-items: center; cursor: pointer; padding: 14px 20px; border-bottom: 1px solid color-mix(in srgb, var(--color-text) 8%, transparent);' }, activate(openVariant(g.key, v.storeId), v.storeName + ', ' + nf(v.price) + (nSizes > 1 ? ', ' + nSizes + ' størrelser' : '') + ', se prishistorikk')), [
+      return h('div', Object.assign({ cls: 'row-hover', style: 'display: grid; grid-template-columns: 1fr auto auto auto; gap: 12px; align-items: center; cursor: pointer; padding: 14px 20px; border-bottom: 1px solid color-mix(in srgb, var(--color-text) 8%, transparent);' }, activate(openVariant(g.key, v.storeId), v.storeName + ', ' + nf(v.price) + (nSizes > 1 ? ', ' + nSizes + ' størrelser' : '') + ', se prishistorikk')), [
         h('span', { style: 'display: flex; align-items: center; gap: 12px;' }, [
           storeLine(v.color, v.dash, 18),
           h('span', {}, [
@@ -1661,7 +1900,8 @@
             h('span', { style: "font-family: var(--font-heading); font-weight: 600; font-size: 22px; font-feature-settings: 'tnum' 1; white-space: nowrap;", text: nf(v.price) })
           ]),
           (v.perUnit != null) ? h('span', { style: 'font-size: 12px; color: ' + MUTED60 + "; font-feature-settings: 'tnum' 1; white-space: nowrap;", text: nfUnit(v.perUnit, v.unitDim) }) : null
-        ])
+        ]),
+        reportIconBtn(g, v)
       ]);
     });
 
@@ -1672,7 +1912,7 @@
       h('div', { cls: 'blueprint', style: 'padding: 0;' }, corners().concat(rows.length ? rows : [
         h('p', { style: 'margin: 0; padding: 20px; font-size: 14px; color: ' + MUTED60 + ';', text: 'Ingen butikker fører denne varen i valgt størrelse.' })
       ])),
-      h('p', { style: 'margin: 16px 0 0; font-size: 13px; color: ' + MUTED60 + ';', text: 'Prisene sammenlignes per liter/kilo. Trykk på en butikk for å se størrelsene den har og alle registreringene.' })
+      h('p', { style: 'margin: 16px 0 0; font-size: 13px; color: ' + MUTED60 + ';', text: 'Prisene sammenlignes per liter/kilo. Trykk på en butikk for å se størrelsene den har og alle registreringene — eller på ⚠ for å melde fra om feil pris eller feil produkt.' })
     ]);
 
     // ── Prishistorikk, right on the product page ───────────────────────────
@@ -1878,7 +2118,7 @@
           v.prePrice ? h('span', { style: "font-size: 16px; color: " + MUTED60 + "; text-decoration: line-through; font-feature-settings: 'tnum' 1;", text: nf(v.prePrice) }) : null,
           (v.perUnit != null) ? h('span', { style: 'font-size: 15px; color: ' + MUTED70 + "; font-feature-settings: 'tnum' 1;", text: nfUnit(v.perUnit, v.unitDim) }) : null
         ]),
-        h('div', { style: 'margin-top: 18px;' }, [listToggleBtn(g.key)])
+        h('div', { style: 'margin-top: 18px; display: flex; flex-wrap: wrap; gap: 10px;' }, [listToggleBtn(g.key), reportBtn(g, v)])
       ]),
       heroImgBox(imageOf(v) || groupImage(g), v.name, g.hasImage)
     ]);
@@ -2480,7 +2720,8 @@
       h('p', { style: P, text: 'Prisene hentes automatisk hver uke, og suppleres med priser fellesskapet bidrar med:' }),
       h('ul', { style: UL }, [
         bullet('Tilbudsaviser', '— ukens tilbud fra kjedenes egne tilbudsaviser.'),
-        bullet('Kvitteringsskann', '— priser fellesskapet bidrar med fra kvitteringene sine, merket «Skannet» i prishistorikken.')
+        bullet('Kvitteringsskann', '— priser fellesskapet bidrar med fra kvitteringene sine, merket «Skannet» i prishistorikken.'),
+        bullet('Rettelser', '— feil pris eller feil produkt kan meldes inn med ⚠-knappen på hver vare. Melder tre personer inn den samme rettelsen, oppdateres varen automatisk; ellers går den til manuell gjennomgang.')
       ]),
       h('p', { style: 'margin: 14px 0 0; font-size: 14px; line-height: 22px; color: ' + MUTED60 + '; max-width: 68ch;', text: 'En butikk vises først når den har nok priser til at en sammenligning betyr noe — noen kjeder samles inn, men ligger foreløpig under grensen. Coop-kjedene (Extra, Prix, Mega, Obs) mangler helt fordi Coop ikke publiserer hyllepriser noe sted — de finnes bare i ukens kundeavis. Skanner du en kvittering derfra, blir prisene lagret og teller mot grensen, så kjeden dukker opp av seg selv når den er stor nok.' }),
       h('p', { style: 'margin: 14px 0 0; font-size: 14px; line-height: 22px; color: ' + MUTED60 + '; max-width: 68ch;', text: 'Prisene kan være unøyaktige eller utdaterte, og kan variere mellom butikker i samme kjede. Sjekk alltid prisen i butikken før du handler.' })
@@ -2491,13 +2732,16 @@
         bullet('Ingen konto og ingen sporing.', 'Vi bruker ikke informasjonskapsler for annonser eller analyse, og selger ikke data.'),
         bullet('Handlelisten din', 'lagres bare lokalt i nettleseren din (localStorage) — den sendes aldri til oss. En delt liste ligger kun i lenken du selv deler.'),
         bullet('Kvitteringsskanning:', 'bildet sendes til Google Gemini for tekstgjenkjenning og lagres ikke hos oss. IP-adressen din lagres midlertidig for å hindre misbruk (rate-limiting).'),
+        bullet('Feilrapporter:', 'det du skriver i skjemaet lagres sammen med varen det gjelder, og IP-adressen din lagres med rapporten for å hindre at én person stemmer fram en pris alene. Rapportene er ikke offentlige.'),
         bullet('Priser du bidrar med', 'blir en del av det offentlige leksikonet. Ikke skann kvitteringer med personlig informasjon du ikke vil dele — ta bare med varelinjene.')
       ])
     ]);
 
     var contact = aboutSection('Kontakt', '04', [
       h('p', { style: P }, [
-        'Feil pris, en vare som er gruppert rart, eller noe annet som skurrer — send en e-post til ',
+        'Feil pris eller feil produkt? Bruk ',
+        h('strong', { text: '⚠ Rapporter feil' }),
+        ' på varen det gjelder — det er den raskeste veien, og rettelsen kan tas i bruk automatisk. Er det noe annet som skurrer, send en e-post til ',
         h('a', { href: 'mailto:' + SUPPORT_EMAIL, text: SUPPORT_EMAIL }),
         '. Prisboka er et hobbyprosjekt, så svaret kan ta noen dager.'
       ]),
@@ -2523,6 +2767,427 @@
         h('span', { style: 'color: ' + MUTED60 + '; max-width: 62ch;', text: 'Ekte priser fra ' + storeListText() + '. Uavhengig prosjekt — ikke tilknyttet kjedene. Sjekk prisen i butikk.' })
       ])
     ]);
+  }
+
+  // ── Adminpanel (#/admin) ─────────────────────────────────────────────────
+  // Unlisted on purpose: no link in the nav or the footer, and nothing here is
+  // readable without the password.
+  //
+  // The password is checked SERVER-SIDE, in the ml-admin Edge Function, and so
+  // are the edits themselves. That is not belt and braces: the key this file
+  // talks to Supabase with is publishable, and RLS lets it insert a
+  // registration or a report and nothing else — no updates, no deletes. A
+  // password checked in this file would guard a door that isn't there. What
+  // comes back from a successful login is a signed, expiring token; every
+  // action carries it, and the service-role key never leaves the server.
+  var ADMIN_FN_URL = SUPABASE_URL + '/functions/v1/ml-admin';
+  var ADMIN_TOKEN_KEY = 'prisboka_admin';
+  function readAdminToken() { try { return sessionStorage.getItem(ADMIN_TOKEN_KEY) || null; } catch (e) { return null; } }
+  function writeAdminToken(t) {
+    try { if (t) sessionStorage.setItem(ADMIN_TOKEN_KEY, t); else sessionStorage.removeItem(ADMIN_TOKEN_KEY); }
+    catch (e) { /* private mode: the session simply doesn't survive a reload */ }
+  }
+
+  function adminCall(action, args) {
+    var body = Object.assign({ action: action, token: state.adminSession }, args || {});
+    return fetch(ADMIN_FN_URL, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', apikey: SUPABASE_KEY, Authorization: 'Bearer ' + SUPABASE_KEY },
+      body: JSON.stringify(body)
+    })
+      .then(function (res) {
+        return res.json().then(
+          function (b) { return { ok: res.ok, status: res.status, body: b || {} }; },
+          function () { return { ok: res.ok, status: res.status, body: {} }; }
+        );
+      })
+      .then(function (r) {
+        if (!r.ok) {
+          // An expired token drops straight back to the password screen rather
+          // than leaving a panel whose buttons all fail.
+          if (r.status === 401 && action !== 'login') { state.adminSession = null; writeAdminToken(null); }
+          throw new Error(r.body.error || 'Noe gikk galt. Prøv igjen.');
+        }
+        return r.body;
+      });
+  }
+
+  function adminLogin() {
+    if (state.adminBusy) return;
+    if (!state.adminPw) { setState({ adminError: 'Skriv passordet.' }); return; }
+    setState({ adminBusy: true, adminError: '' });
+    adminCall('login', { password: state.adminPw })
+      .then(function (b) {
+        writeAdminToken(b.token);
+        state.adminSession = b.token;
+        setState({ adminBusy: false, adminPw: '', adminError: '', adminMsg: '' });
+        adminLoad();
+      })
+      .catch(function (e) { setState({ adminBusy: false, adminError: e.message }); });
+  }
+  function adminLogout() {
+    writeAdminToken(null);
+    setState({
+      adminSession: null, adminReports: null, adminProducts: null, adminStats: null,
+      adminEdit: null, adminMsg: '', adminError: '', adminPw: ''
+    });
+  }
+
+  // The two product listings come from different RPCs and name the override
+  // columns differently; one shape from here on.
+  function normAdminProduct(r) {
+    r = r || {};
+    return {
+      store_id: r.store_id, product_name: r.product_name,
+      display_name: r.display_name || r.product_name,
+      price: r.price != null ? Number(r.price) : null,
+      pre_price: r.pre_price != null ? Number(r.pre_price) : null,
+      ov_name: r.ov_name != null ? r.ov_name : (r.new_name != null ? r.new_name : null),
+      ov_price: (r.ov_price != null ? Number(r.ov_price) : (r.new_price != null ? Number(r.new_price) : null)),
+      clear_pre_price: !!r.clear_pre_price, hidden: !!r.hidden, flagged: !!r.flagged,
+      admin_locked: !!r.admin_locked, origin: r.origin || null, note: r.note || null,
+      sources: r.sources || null, row_count: r.row_count != null ? r.row_count : null,
+      open_reports: Number(r.open_reports || 0),
+      auto_applied_at: r.auto_applied_at || null, updated_at: r.updated_at || null
+    };
+  }
+
+  function adminLoad() {
+    if (!state.adminSession) return;
+    adminCall('stats', {}).then(function (b) { setState({ adminStats: b.stats || null }); }).catch(function () { /* the counters are decoration */ });
+    var fail = function (e) { setState({ adminBusy: false, adminError: e.message }); };
+    setState({ adminBusy: true, adminError: '' });
+    if (state.adminTab === 'rapporter') {
+      adminCall('reports', { status: state.adminStatus })
+        .then(function (b) { setState({ adminBusy: false, adminReports: b.reports || [] }); })
+        .catch(fail);
+    } else if (state.adminTab === 'produkter') {
+      adminCall('search', { q: state.adminQuery || null, store: state.adminStore || null })
+        .then(function (b) { setState({ adminBusy: false, adminProducts: (b.products || []).map(normAdminProduct) }); })
+        .catch(fail);
+    } else {
+      adminCall('overrides', {})
+        .then(function (b) { setState({ adminBusy: false, adminProducts: (b.products || []).map(normAdminProduct) }); })
+        .catch(fail);
+    }
+  }
+  function adminTab(tab) {
+    return function () {
+      state.adminTab = tab;
+      state.adminEdit = null; state.adminMsg = ''; state.adminError = '';
+      if (tab === 'rapporter') state.adminReports = null; else state.adminProducts = null;
+      adminLoad();
+    };
+  }
+
+  // An edit sends the WHOLE override, so an empty field means "no override" —
+  // clearing the name box puts the chain's own name back.
+  function adminSave() {
+    var e = state.adminEdit;
+    if (!e || state.adminBusy) return;
+    var price = null;
+    if (String(e.price == null ? '' : e.price).trim()) {
+      price = parsePrice(e.price);
+      if (price == null || price > 100000) {
+        setState({ adminError: 'Ugyldig pris. Skriv f.eks. 24,90 — eller la feltet stå tomt for å beholde kjedens egen pris.' });
+        return;
+      }
+    }
+    var name = String(e.name == null ? '' : e.name).replace(/\s+/g, ' ').trim();
+    if (name && (name.length < 2 || name.length > 120)) {
+      setState({ adminError: 'Navnet må være mellom 2 og 120 tegn.' });
+      return;
+    }
+    setState({ adminBusy: true, adminError: '', adminMsg: '' });
+    adminCall('save', {
+      store_id: e.store_id, product_name: e.product_name,
+      new_name: name || null, new_price: price,
+      clear_pre_price: !!e.clearPre, hidden: !!e.hidden,
+      note: String(e.note == null ? '' : e.note).trim() || null
+    })
+      .then(function () {
+        setState({ adminBusy: false, adminEdit: null, adminMsg: 'Lagret «' + (name || e.product_name) + '».' });
+        adminLoad();
+      })
+      .catch(function (err) { setState({ adminBusy: false, adminError: err.message }); });
+  }
+  // Hide / restore keeps whatever else the product has been corrected to.
+  function adminSetHidden(p, hidden) {
+    if (state.adminBusy) return;
+    setState({ adminBusy: true, adminError: '', adminMsg: '' });
+    adminCall('save', {
+      store_id: p.store_id, product_name: p.product_name,
+      new_name: p.ov_name, new_price: p.ov_price,
+      clear_pre_price: p.clear_pre_price, hidden: !!hidden, note: p.note
+    })
+      .then(function () {
+        setState({ adminBusy: false, adminMsg: (hidden ? 'Fjernet «' : 'Hentet tilbake «') + p.display_name + '».' });
+        adminLoad();
+      })
+      .catch(function (err) { setState({ adminBusy: false, adminError: err.message }); });
+  }
+  function adminReset(p) {
+    if (state.adminBusy) return;
+    setState({ adminBusy: true, adminError: '', adminMsg: '' });
+    adminCall('reset', { store_id: p.store_id, product_name: p.product_name })
+      .then(function () {
+        setState({ adminBusy: false, adminEdit: null, adminMsg: 'Tilbakestilte «' + p.display_name + '» til kjedens egne data.' });
+        adminLoad();
+      })
+      .catch(function (err) { setState({ adminBusy: false, adminError: err.message }); });
+  }
+  function adminReportAction(r, action, status) {
+    if (state.adminBusy) return;
+    setState({ adminBusy: true, adminError: '', adminMsg: '' });
+    adminCall(action, action === 'apply_report' ? { id: r.id } : { id: r.id, status: status })
+      .then(function () {
+        setState({ adminBusy: false, adminMsg: action === 'apply_report' ? 'Rettelsen er tatt i bruk.' : (status === 'avvist' ? 'Rapporten er avvist.' : 'Rapporten er merket behandlet.') });
+        adminLoad();
+      })
+      .catch(function (err) { setState({ adminBusy: false, adminError: err.message }); });
+  }
+
+  function plural(n, one, many) { return n + ' ' + (Number(n) === 1 ? one : many); }
+  var ADMIN_LABEL = 'display: block; font-size: 12px; letter-spacing: 0.08em; text-transform: uppercase; font-weight: 600; color: ' + MUTED70 + '; margin-bottom: 6px;';
+  function adminInput(label, props, hint) {
+    return h('label', { style: 'display: block;' }, [
+      h('span', { style: ADMIN_LABEL, text: label }),
+      h('input', Object.assign({ cls: 'input', type: 'text', style: 'width: 100%; min-height: 40px; font-size: 15px;' }, props)),
+      hint ? h('span', { style: 'display: block; margin-top: 5px; font-size: 12px; color: ' + MUTED60 + ';', text: hint }) : null
+    ]);
+  }
+  function adminCheckbox(label, on, onChange) {
+    return h('label', { style: 'display: flex; align-items: center; gap: 8px; font-size: 14px; cursor: pointer;' }, [
+      h('input', { type: 'checkbox', checked: on ? 'checked' : false, onChange: onChange }),
+      label
+    ]);
+  }
+  function adminBadge(text, accent) {
+    return h('span', {
+      cls: 'tag ' + (accent ? 'tag-accent' : 'tag-neutral'),
+      style: 'font-size: 10px; letter-spacing: 0.04em; text-transform: uppercase;' + (accent ? ' background: var(--color-accent-200); color: var(--color-accent-800);' : ''),
+      text: text
+    });
+  }
+
+  function adminLoginScreen() {
+    return h('section', { 'data-screen-label': 'Admin' }, [
+      h('div', { style: 'padding: 64px 0 24px; max-width: 460px;' }, [
+        h('span', { style: KICKER, text: 'Adminpanel' }),
+        h('h1', { style: H1, text: 'Logg inn' }),
+        h('p', { style: 'margin: 16px 0 0; font-size: 15px; line-height: 22px; color: ' + MUTED70 + ';', text: 'Redigering av produkter og gjennomgang av innmeldte feil. Passordet ligger som en secret på serveren — det sjekkes ikke her i nettleseren.' }),
+        h('form', { style: 'margin-top: 24px; display: flex; flex-direction: column; gap: 14px;', onSubmit: function (e) { e.preventDefault(); adminLogin(); } }, [
+          adminInput('Passord', {
+            type: 'password', autocomplete: 'current-password', value: state.adminPw, 'data-focus-id': 'admin-pw',
+            onInput: function (e) { state.adminPw = e.target.value; }
+          }),
+          state.adminError ? h('p', { role: 'alert', style: 'margin: 0; font-size: 14px; color: var(--color-accent-900);', text: state.adminError }) : null,
+          h('div', {}, [
+            h('button', { type: 'submit', cls: 'btn btn-primary', disabled: state.adminBusy ? 'disabled' : false, text: state.adminBusy ? 'Logger inn …' : 'Logg inn' })
+          ])
+        ])
+      ])
+    ]);
+  }
+
+  function adminReportCard(r) {
+    var isPrice = r.kind === 'pris';
+    var agree = Number(r.agree || 0);
+    var open = r.status === 'ny' || r.status === 'markert';
+    var suggestion = isPrice
+      ? nf(Number(r.correct_price))
+      : '«' + r.correct_name + '»';
+    var now = isPrice
+      ? (r.current_price != null ? nf(Number(r.current_price)) : '—')
+      : '«' + (r.display_name || r.product_name) + '»';
+    return h('div', { style: 'padding: 16px 20px; border-bottom: 1px solid color-mix(in srgb, var(--color-text) 8%, transparent); display: flex; flex-wrap: wrap; gap: 14px; align-items: flex-start; justify-content: space-between;' }, [
+      h('div', { style: 'flex: 1; min-width: 260px;' }, [
+        h('div', { style: 'display: flex; flex-wrap: wrap; gap: 6px; align-items: center;' }, [
+          adminBadge(isPrice ? 'Feil pris' : 'Feil produkt', true),
+          adminBadge(STORE_NAME[r.store_id] || r.store_id),
+          r.status !== 'ny' ? adminBadge(r.status) : null,
+          r.admin_locked ? adminBadge('låst') : null,
+          r.hidden ? adminBadge('skjult') : null
+        ]),
+        h('span', { style: NAME_STYLE + ' display: block; margin-top: 8px;', text: r.display_name || r.product_name }),
+        h('p', { style: 'margin: 6px 0 0; font-size: 14px; line-height: 20px;' }, [
+          h('span', { style: 'color: ' + MUTED70 + ';', text: (isPrice ? 'Står nå: ' : 'Heter nå: ') + now + ' → ' }),
+          h('strong', { text: suggestion })
+        ]),
+        r.comment ? h('p', { style: 'margin: 6px 0 0; font-size: 14px; line-height: 20px; color: ' + MUTED78 + ';', text: '«' + r.comment + '»' }) : null,
+        h('p', { style: 'margin: 8px 0 0; font-size: 12px; color: ' + MUTED60 + ';', text: dateDM(String(r.created_at || '').slice(0, 10))
+          + ' · ' + agree + ' av 3 like rapporter'
+          + (Number(r.open_reports || 0) > 1 ? ' · ' + r.open_reports + ' åpne på varen' : '')
+          + ' · ' + r.product_name })
+      ]),
+      h('div', { style: 'display: flex; flex-wrap: wrap; gap: 8px; align-items: center;' }, [
+        r.group_key && GROUP_BY_KEY[r.group_key]
+          ? h('a', { cls: 'btn btn-ghost', href: '#/vare/' + encodeURIComponent(r.group_key) + '/' + encodeURIComponent(r.store_id), text: 'Se vare' })
+          : null,
+        open ? h('button', { type: 'button', cls: 'btn btn-primary', disabled: state.adminBusy ? 'disabled' : false, onClick: function () { adminReportAction(r, 'apply_report'); }, text: 'Bruk denne' }) : null,
+        open ? h('button', { type: 'button', cls: 'btn btn-ghost', disabled: state.adminBusy ? 'disabled' : false, onClick: function () { adminReportAction(r, 'report_status', 'avvist'); }, text: 'Avvis' }) : null,
+        open ? null : h('button', { type: 'button', cls: 'btn btn-ghost', disabled: state.adminBusy ? 'disabled' : false, onClick: function () { adminReportAction(r, 'report_status', 'ny'); }, text: 'Gjenåpne' })
+      ])
+    ]);
+  }
+
+  function adminEditForm() {
+    var e = state.adminEdit;
+    return h('div', { style: 'padding: 16px 20px; background: color-mix(in srgb, var(--color-accent) 5%, transparent); border-bottom: 1px solid color-mix(in srgb, var(--color-text) 8%, transparent);' }, [
+      h('div', { style: 'display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 14px;' }, [
+        adminInput('Produktnavn', {
+          value: e.name, maxlength: '120', 'data-focus-id': 'admin-name',
+          onInput: function (ev) { state.adminEdit.name = ev.target.value; }
+        }, 'Tomt felt = kjedens eget navn: ' + e.product_name),
+        adminInput('Pris (kr)', {
+          value: e.price, inputmode: 'decimal', 'data-focus-id': 'admin-price',
+          onInput: function (ev) { state.adminEdit.price = ev.target.value; }
+        }, 'Tomt felt = kjedens egen pris' + (e.feedPrice != null ? ': ' + nf(e.feedPrice) : '')),
+        adminInput('Notat (kun her)', {
+          value: e.note, maxlength: '300', 'data-focus-id': 'admin-note',
+          onInput: function (ev) { state.adminEdit.note = ev.target.value; }
+        }, 'Hvorfor ble varen endret?')
+      ]),
+      h('div', { style: 'display: flex; flex-wrap: wrap; gap: 18px; margin-top: 14px;' }, [
+        adminCheckbox('Fjern «førpris» (falskt tilbud)', e.clearPre, function (ev) { state.adminEdit.clearPre = ev.target.checked; }),
+        adminCheckbox('Skjul varen fra leksikonet', e.hidden, function (ev) { state.adminEdit.hidden = ev.target.checked; })
+      ]),
+      h('div', { style: 'display: flex; flex-wrap: wrap; gap: 8px; margin-top: 16px;' }, [
+        h('button', { type: 'button', cls: 'btn btn-primary', disabled: state.adminBusy ? 'disabled' : false, onClick: adminSave, text: state.adminBusy ? 'Lagrer …' : 'Lagre' }),
+        h('button', { type: 'button', cls: 'btn btn-ghost', onClick: function () { setState({ adminEdit: null, adminError: '' }); }, text: 'Avbryt' })
+      ]),
+      h('p', { style: 'margin: 12px 0 0; font-size: 12px; line-height: 18px; color: ' + MUTED60 + ';', text: 'Endringen legges oppå kjedens data og overlever ukentlig oppdatering. Den låser også varen mot 3-rapporter-regelen, til du tilbakestiller den.' })
+    ]);
+  }
+
+  function adminProductRow(p) {
+    var editing = state.adminEdit && state.adminEdit.store_id === p.store_id && state.adminEdit.product_name === p.product_name;
+    var changed = p.ov_name != null || p.ov_price != null || p.clear_pre_price || p.hidden;
+    var row = h('div', { style: 'padding: 14px 20px; border-bottom: 1px solid color-mix(in srgb, var(--color-text) 8%, transparent); display: flex; flex-wrap: wrap; gap: 14px; align-items: center; justify-content: space-between;' }, [
+      h('div', { style: 'flex: 1; min-width: 240px;' }, [
+        h('div', { style: 'display: flex; flex-wrap: wrap; gap: 6px; align-items: center;' }, [
+          adminBadge(STORE_NAME[p.store_id] || p.store_id),
+          p.flagged ? adminBadge('flagget', true) : null,
+          p.hidden ? adminBadge('skjult', true) : null,
+          changed && !p.hidden ? adminBadge(p.origin === 'admin' ? 'endret' : 'rettet av brukere') : null,
+          p.open_reports ? adminBadge(p.open_reports + ' rapport' + (p.open_reports === 1 ? '' : 'er'), true) : null
+        ]),
+        h('span', { style: NAME_STYLE + ' display: block; margin-top: 8px;', text: p.display_name }),
+        h('span', { style: 'display: block; margin-top: 4px; font-size: 12px; color: ' + MUTED60 + ';', text: (p.ov_name ? 'Kjedens navn: ' + p.product_name + ' · ' : '') + (p.sources ? 'kilde: ' + p.sources : (p.updated_at ? 'endret ' + dateDM(String(p.updated_at).slice(0, 10)) : '')) + (p.note ? ' · ' + p.note : '') })
+      ]),
+      h('div', { style: 'display: flex; align-items: baseline; gap: 10px;' }, [
+        p.ov_price != null && p.price != null
+          ? h('span', { style: "font-size: 13px; color: " + MUTED60 + "; text-decoration: line-through; font-feature-settings: 'tnum' 1;", text: nf(p.price) })
+          : null,
+        h('span', { style: "font-family: var(--font-heading); font-weight: 600; font-size: 20px; font-feature-settings: 'tnum' 1; white-space: nowrap;", text: nf(p.ov_price != null ? p.ov_price : (p.price != null ? p.price : 0)) })
+      ]),
+      h('div', { style: 'display: flex; flex-wrap: wrap; gap: 8px;' }, [
+        h('button', {
+          type: 'button', cls: 'btn btn-ghost', disabled: state.adminBusy ? 'disabled' : false,
+          onClick: function () {
+            setState({ adminError: '', adminEdit: editing ? null : {
+              store_id: p.store_id, product_name: p.product_name, feedPrice: p.price,
+              name: p.ov_name || '', price: p.ov_price != null ? String(p.ov_price).replace('.', ',') : '',
+              clearPre: !!p.clear_pre_price, hidden: !!p.hidden, note: p.note || ''
+            } });
+          },
+          text: editing ? 'Lukk' : 'Endre'
+        }),
+        h('button', { type: 'button', cls: 'btn btn-ghost', disabled: state.adminBusy ? 'disabled' : false, onClick: function () { adminSetHidden(p, !p.hidden); }, text: p.hidden ? 'Hent tilbake' : 'Fjern' }),
+        changed || p.flagged ? h('button', { type: 'button', cls: 'btn btn-ghost', disabled: state.adminBusy ? 'disabled' : false, onClick: function () { adminReset(p); }, text: 'Tilbakestill' }) : null
+      ])
+    ]);
+    return editing ? h('div', {}, [row, adminEditForm()]) : row;
+  }
+
+  function renderAdmin() {
+    if (!state.adminSession) return adminLoginScreen();
+    var st = state.adminStats || {};
+    var tabs = [['rapporter', 'Rapporter' + (Number(st.open_reports || 0) ? ' (' + st.open_reports + ')' : '')],
+                ['produkter', 'Produkter'],
+                ['endringer', 'Endringer' + (Number(st.overrides || 0) ? ' (' + st.overrides + ')' : '')]];
+    var head = h('div', { style: 'padding: 48px 0 20px;' }, [
+      h('div', { style: 'display: flex; flex-wrap: wrap; gap: 12px; align-items: baseline; justify-content: space-between;' }, [
+        h('span', { style: KICKER, text: 'Adminpanel' }),
+        h('button', { type: 'button', cls: 'btn btn-ghost', onClick: adminLogout, text: 'Logg ut' })
+      ]),
+      h('h1', { style: H1, text: 'Rediger leksikonet' }),
+      h('p', { style: 'margin: 14px 0 0; font-size: 14px; color: ' + MUTED70 + ";", text: state.adminStats
+        ? [plural(st.products, 'produktrad', 'produktrader'), plural(st.open_reports, 'åpen rapport', 'åpne rapporter'),
+           plural(st.flagged, 'flagget vare', 'flaggede varer'),
+           plural(st.overrides, 'endring', 'endringer') + ' (' + st.hidden + ' skjult)'].join(' · ')
+        : 'Laster oversikt …' }),
+      h('div', { role: 'group', 'aria-label': 'Velg fane', style: 'display: inline-flex; flex-wrap: wrap; margin-top: 22px; border: 1px solid var(--color-divider);' }, tabs.map(function (t, i) {
+        var on = state.adminTab === t[0];
+        return h('button', {
+          type: 'button', 'aria-pressed': on ? 'true' : 'false',
+          style: 'min-height: 38px; padding: 6px 16px; font-size: 12px; letter-spacing: 0.06em; text-transform: uppercase; font-weight: 600; cursor: pointer; border: 0;'
+            + (i > 0 ? ' border-left: 1px solid var(--color-divider);' : '')
+            + (on ? ' background: var(--color-accent); color: var(--color-bg);' : ' background: transparent; color: var(--color-text);'),
+          onClick: adminTab(t[0]), text: t[1]
+        });
+      })),
+      state.adminMsg ? h('p', { role: 'status', style: 'margin: 16px 0 0; font-size: 14px; color: var(--color-accent-800);', text: '✓ ' + state.adminMsg }) : null,
+      state.adminError ? h('p', { role: 'alert', style: 'margin: 16px 0 0; font-size: 14px; color: var(--color-accent-900);', text: state.adminError }) : null
+    ]);
+
+    var body;
+    if (state.adminTab === 'rapporter') {
+      var STATUSES = [['open', 'Åpne'], ['behandlet', 'Behandlet'], ['avvist', 'Avvist'], ['alle', 'Alle']];
+      var filter = h('div', { style: 'display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 18px;' }, STATUSES.map(function (s) {
+        var on = state.adminStatus === s[0];
+        return h('button', {
+          type: 'button', cls: 'btn ' + (on ? 'btn-secondary' : 'btn-ghost'), 'aria-pressed': on ? 'true' : 'false',
+          onClick: function () { state.adminStatus = s[0]; state.adminReports = null; adminLoad(); }, text: s[1]
+        });
+      }));
+      var reports = state.adminReports;
+      body = h('div', {}, [
+        h('span', { style: KICKER, text: '01 · Innmeldte feil' }),
+        h('hr', { style: RULE }),
+        filter,
+        h('div', { cls: 'blueprint', style: 'padding: 0;' }, corners().concat(
+          reports == null
+            ? [h('p', { style: 'margin: 0; padding: 20px; font-size: 14px; color: ' + MUTED60 + ';', text: 'Laster rapporter …' })]
+            : (reports.length ? reports.map(adminReportCard)
+              : [h('p', { style: 'margin: 0; padding: 20px; font-size: 14px; color: ' + MUTED60 + ';', text: 'Ingen rapporter her.' })])
+        )),
+        h('p', { style: 'margin: 16px 0 0; font-size: 13px; line-height: 19px; color: ' + MUTED60 + ';', text: 'Tre rapporter på samme vare flagger den. Tre som foreslår nøyaktig samme pris — eller samme navn — retter den av seg selv. «Bruk denne» gjør rettelsen med én gang, og låser varen mot regelen.' })
+      ]);
+    } else {
+      var products = state.adminProducts;
+      var controls = state.adminTab === 'produkter'
+        ? h('form', { style: 'display: flex; flex-wrap: wrap; gap: 10px; margin-bottom: 18px;', onSubmit: function (e) { e.preventDefault(); adminLoad(); } }, [
+            h('input', {
+              cls: 'input', type: 'search', placeholder: 'Søk etter produktnavn …', value: state.adminQuery,
+              'aria-label': 'Søk etter produkt', 'data-focus-id': 'admin-search',
+              style: 'flex: 1; min-width: 220px; min-height: 40px; font-size: 15px;',
+              onInput: function (e) { state.adminQuery = e.target.value; }
+            }),
+            h('select', {
+              cls: 'input', 'aria-label': 'Butikk', style: 'width: auto; min-height: 40px;',
+              value: state.adminStore, onChange: function (e) { state.adminStore = e.target.value; adminLoad(); }
+            }, [h('option', { value: '', selected: state.adminStore ? false : 'selected', text: 'Alle butikker' })].concat(
+              ALL_STORES.map(function (s) { return h('option', { value: s.id, selected: state.adminStore === s.id ? 'selected' : false, text: s.name }); })
+            )),
+            h('button', { type: 'submit', cls: 'btn btn-primary', disabled: state.adminBusy ? 'disabled' : false, text: 'Søk' })
+          ])
+        : null;
+      body = h('div', {}, [
+        h('span', { style: KICKER, text: state.adminTab === 'produkter' ? '01 · Produkter' : '01 · Endrede varer' }),
+        h('hr', { style: RULE }),
+        controls,
+        h('div', { cls: 'blueprint', style: 'padding: 0;' }, corners().concat(
+          products == null
+            ? [h('p', { style: 'margin: 0; padding: 20px; font-size: 14px; color: ' + MUTED60 + ';', text: 'Laster …' })]
+            : (products.length ? products.map(adminProductRow)
+              : [h('p', { style: 'margin: 0; padding: 20px; font-size: 14px; color: ' + MUTED60 + ';', text: state.adminTab === 'produkter' ? 'Ingen treff. Søk på et produktnavn.' : 'Ingen varer er endret ennå.' })])
+        )),
+        h('p', { style: 'margin: 16px 0 0; font-size: 13px; line-height: 19px; color: ' + MUTED60 + ';', text: 'Endringene lagres per (butikk, kjedens produktnavn) og legges oppå kjedens data — de overlever den ukentlige oppdateringen, og «Tilbakestill» gir kjedens egne verdier tilbake. «Fjern» skjuler varen fra leksikonet; ingenting slettes for godt.' })
+      ]);
+    }
+
+    return h('section', { 'data-screen-label': 'Admin' }, [head, h('div', { style: 'margin-top: 8px;' }, [body])]);
   }
 
   // ── Shells ───────────────────────────────────────────────────────────────
@@ -2597,6 +3262,7 @@
     else if (state.view === 'scan') container.appendChild(renderScan());
     else if (state.view === 'liste') container.appendChild(renderList());
     else if (state.view === 'om') container.appendChild(renderAbout());
+    else if (state.view === 'admin') container.appendChild(renderAdmin());
     else container.appendChild(renderHome());
     frag.appendChild(container);
     frag.appendChild(renderFooter());
@@ -2605,6 +3271,16 @@
       frag.appendChild(picker);
       // Move focus into the dialog once it's in the document.
       setTimeout(function () { var el = document.querySelector('[role="dialog"] button'); if (el) el.focus(); }, 0);
+    }
+    // The report dialog holds text inputs, so it is focused ONCE when it opens
+    // — grabbing focus on every render would pull the caret out of the field
+    // the visitor is typing in (the size dialog has no inputs, hence the split).
+    if (state.report) {
+      frag.appendChild(reportOverlay());
+      if (!reportFocused) {
+        reportFocused = true;
+        setTimeout(function () { var el = document.querySelector('[role="dialog"] button'); if (el) el.focus(); }, 0);
+      }
     }
     return frag;
   }
@@ -2901,7 +3577,8 @@
       coveredStores: coveredStores, staleDaysFor: staleDaysFor,
       sizeIdOf: sizeIdOf, sizeLabel: sizeLabel, sizeOptions: sizeOptions, bestPerStore: bestPerStore,
       entryId: entryId, parseEntry: parseEntry, moveEntry: moveEntry, swapEntry: swapEntry,
-      chartFrom: chartFrom, rowSizeId: rowSizeId, listStoreSeries: listStoreSeries
+      chartFrom: chartFrom, rowSizeId: rowSizeId, listStoreSeries: listStoreSeries,
+      parsePrice: parsePrice, reportPayload: reportPayload, normAdminProduct: normAdminProduct
     };
   }
 })();
