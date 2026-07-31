@@ -105,7 +105,18 @@ h1, h2, h3, h4 { font-family: var(--font-heading); font-weight: var(--font-headi
    ══════════════════════════════════════════════════════════════════════ */
 
 *, *::before, *::after { box-sizing: border-box; }
-body { margin: 0; font-size: 15px; line-height: 1.55; font-weight: 400; }
+body { margin: 0; font-size: 15px; line-height: 1.55; font-weight: 400; overflow-wrap: break-word; }
+/* ↑ Product names come from the chains' own feeds and are full of slash-joined
+   compounds with no break opportunity in them: "SMOOTHIE GULROT/MANGO/EPLE/
+   INGEFÆR KOLONIHAGEN", "KANTARELL/SJAMPINJONGSAUS". Twenty-five characters
+   unbroken is wider than a phone at the product-title size, and without this it
+   simply ran off the side of the screen.
+   `break-word`, deliberately, NOT `anywhere`: `anywhere` also lowers the box's
+   min-content, which is the width a flex or grid item is sized by — so every
+   column in a row could then shrink to one character, and they did. It turned a
+   page that scrolled sideways into "KI/WI" over two lines with the price
+   spelled downwards. Where a box genuinely has to shrink below its longest
+   word, that is said locally with min-width: 0 instead. */
 h1, h2, h3, h4, h5, h6 {
   font-family: var(--font-heading); font-weight: var(--font-heading-weight);
   line-height: 1.12; letter-spacing: -0.015em; margin: 0 0 var(--space-2);
@@ -226,6 +237,9 @@ textarea.input { min-height: 90px; resize: vertical; }
   display: inline-flex; align-items: center; font-size: 11px;
   letter-spacing: 0.02em; padding: 3px 10px;
   border-radius: calc(var(--radius-md) * 0.75);
+  /* A tag is a label, never a paragraph: squeezed into a narrow grid column it
+     would otherwise set "−20 %" one character per line. */
+  white-space: nowrap;
 }
 .tag-accent { background: var(--color-accent-100); color: var(--color-accent-800); }
 .tag-accent-2 { background: var(--color-accent-2-100); color: var(--color-accent-2-800); }
