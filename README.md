@@ -67,7 +67,10 @@ python3 -m http.server 8000
   Handleliste label collapses to a **cart glyph** (with the item count as a
   badge) and moves last, and the two items that don't fit drop out — "Om" is in
   the footer of every screen, and "Skann kvittering" is where "Bidra med priser"
-  already leads.
+  already leads. The freshness stamp drops to its own row under a **rule**, and
+  the menu type **scales with the viewport** (`clamp()`, 21/15 px from ~390 px
+  up, easing to 17/13 at 320) so the row stays one line down to the narrowest
+  phones instead of wrapping the cart onto a line of its own.
 - **Handleliste** `#/liste` — the products you've starred, kept in
   `localStorage` (no account). An entry is `<group key>@<size id>[*<qty>]`: adding a
   product **asks which pack size** you buy (a one-size product skips the

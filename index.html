@@ -92,8 +92,21 @@
 
     /* Small screens: let the top bar wrap instead of overflowing. */
     @media (max-width: 640px) {
-      .nav { flex-wrap: wrap; row-gap: 8px; }
-      .nav > span[style*="tnum"] { order: 3; flex-basis: 100%; }
+      .nav { flex-wrap: wrap; row-gap: 10px; column-gap: clamp(8px, 2.6vw, 10px); }
+      /* Thumb-sized rather than desktop-sized, now that the row holds three
+         items and a glyph instead of six. The row has to stay one line down to
+         the narrowest phones in use, so the type scales with the viewport
+         instead of picking one size that either wraps at 320 px or wastes the
+         space at 430: 21/15 px from ~390 px up, easing to 17/13 at 320. */
+      .nav-brand { font-size: clamp(17px, 5.4vw, 21px); }
+      .nav a { font-size: clamp(13px, 3.85vw, 15px); }
+      /* The freshness stamp is its own row, so a rule under the links reads as
+         the bar's own edge and separates the menu from the data it describes. */
+      .nav > span[style*="tnum"] {
+        order: 3; flex-basis: 100%;
+        border-top: 1px solid var(--color-divider);
+        padding-top: 9px;
+      }
       /* One line for Prisboka · Leksikon · Bidra med priser · cart: the list
          label collapses to the glyph and moves to the end of the row, and what
          doesn't fit drops out — "Om" lives in the footer of every screen, and
@@ -102,6 +115,7 @@
       .nav-cart { order: 1; }
       .nav-cart-text { display: none; }
       .nav-cart-icon { display: inline-flex; align-items: center; gap: 3px; }
+      .nav-cart-icon svg { width: 22px; height: 22px; }
     }
   </style>
 </head>
