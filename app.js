@@ -210,49 +210,98 @@
   // every week, not whatever happens to carry the steepest markdown. Weight 2 is
   // the front page (ost, kjøttdeig, kaffe …), weight 1 the rest of the everyday
   // basket, and anything unmatched is weight 0 — still shown, just after these.
-  // The patterns are matched against a *group key*: lowercased, ø/æ/å folded to
-  // o/ae/a, sizes and brands stripped, words sorted. So they must be spelled
-  // folded ("polse", "brod", "flote") and anchored on word boundaries, or "ost"
-  // starts matching "kompost" and "ris" matches "pris".
+  //
+  // Matched against a *group key*: lowercased, ø/æ/å folded to o/ae/a, sizes and
+  // brands stripped, words sorted. So the terms are spelled folded ("polse",
+  // "brod", "flote") and matched a word at a time — "ris" must not match "pris".
+  // Terms also match inside compounds, the way Norwegian builds words, but how
+  // far depends on how much room there is to collide:
+  //   5+ letters — anywhere in the word: "kyllingfilet", "grillkylling",
+  //                "orretfilet", "tynnribbe" all count.
+  //   4 letters  — only as the HEAD (the word ends with it), which is where the
+  //                meaning sits: "havrebrod" is a brød, "lettmelk" is melk,
+  //                "julebrus" is brus — while "melkesjokolade" is chocolate and
+  //                "choCOLAte" is not a cola, which anywhere-matching made it.
+  //   1-3        — whole word only, or "ost" matches "kompost" and "ris"
+  //                matches "pris". The compounds worth having are spelled out
+  //                instead (gulost, brunost, kremost …).
+  //
+  // ORDER MATTERS: the first entry that matches wins, so a composite dish comes
+  // before its ingredients. A mozzarella pizza is a pizza, not a cheese — with
+  // cheese first, four Ristorante variants filled the row as two pizzas and two
+  // "cheeses", straight past the per-category cap.
   var POPULAR = [
-    { w: 2, family: 'ost', re: /\b(ost|brunost|gulost|hvitost|norvegia|jarlsberg|cheddar|mozzarella)\b/ },
-    { w: 2, family: 'kjott', re: /\b(kjottdeig|karbonadedeig|ribbe|koteletter|entrecote|indrefilet|ytrefilet|biff|svinestek)\b/ },
-    { w: 2, family: 'kylling', re: /\b(kylling|kyllingfilet|kyllinglar|kyllingvinger)\b/ },
-    { w: 2, family: 'kaffe', re: /\b(kaffe|kaffekapsler|espresso)\b/ },
-    { w: 2, family: 'fisk', re: /\b(laks|torsk|reker|sei|orret|fiskekaker)\b/ },
-    { w: 2, family: 'pizza', re: /\b(pizza|grandiosa)\b/ },
-    { w: 2, family: 'drikke', re: /\b(brus|cola|pepsi|solo|farris|urge|battery|monster|energidrikk)\b/ },
-    { w: 1, family: 'meieri', re: /\b(melk|flote|romme|fraiche|smor|margarin|yoghurt|skyr|egg)\b/ },
-    { w: 1, family: 'palegg', re: /\b(bacon|polse|polser|skinke|servelat|leverpostei|makrell|kaviar)\b/ },
-    { w: 1, family: 'bakeri', re: /\b(brod|rundstykker|lomper|lefse|knekkebrod|boller)\b/ },
-    { w: 1, family: 'snacks', re: /\b(sjokolade|chips|iskrem|smagodt|godteri|kjeks|potetgull|snacks)\b/ },
-    { w: 1, family: 'middag', re: /\b(taco|lasagne|fiskepinner|kjottkaker|pasta|spaghetti|ris|wok|gryte)\b/ },
-    { w: 1, family: 'frukt', re: /\b(bananer|epler|jordbaer|tomater|agurk|poteter|clementiner|druer|appelsiner|salat|gulrot|gulrotter)\b/ }
+    { w: 2, family: 'pizza', words: ['pizza', 'grandiosa'] },
+    { w: 2, family: 'kjott', words: ['kjottdeig', 'karbonadedeig', 'ribbe', 'koteletter', 'entrecote', 'indrefilet', 'ytrefilet', 'biff', 'svinestek'] },
+    { w: 2, family: 'kylling', words: ['kylling'] },
+    { w: 2, family: 'fisk', words: ['laks', 'laksefilet', 'torsk', 'reker', 'sei', 'orret', 'fiskekaker'] },
+    { w: 2, family: 'ost', words: ['ost', 'brunost', 'gulost', 'hvitost', 'kremost', 'fetaost', 'feta', 'norvegia', 'jarlsberg', 'cheddar', 'mozzarella', 'parmesan'] },
+    { w: 2, family: 'kaffe', words: ['kaffe', 'espresso', 'filtermalt'] },
+    // "Millions jelly babies cola" is candy, not a soft drink.
+    { w: 2, family: 'drikke', words: ['brus', 'cola', 'pepsi', 'solo', 'farris', 'urge', 'battery', 'monster', 'energidrikk'], not: /\b(jelly|babies|lollipop|seigmenn|godteri|smagodt|gele|adventskalender)\b/ },
+    { w: 1, family: 'meieri', words: ['melk', 'flote', 'romme', 'fraiche', 'smor', 'margarin', 'yoghurt', 'skyr', 'egg'] },
+    { w: 1, family: 'palegg', words: ['bacon', 'polse', 'polser', 'skinke', 'servelat', 'leverpostei', 'makrell', 'kaviar'] },
+    { w: 1, family: 'bakeri', words: ['brod', 'rundstykker', 'lomper', 'lefse', 'knekkebrod', 'boller', 'loff'] },
+    { w: 1, family: 'snacks', words: ['sjokolade', 'chips', 'iskrem', 'floteis', 'smagodt', 'godteri', 'kjeks', 'potetgull', 'snacks'] },
+    { w: 1, family: 'middag', words: ['taco', 'lasagne', 'fiskepinner', 'kjottkaker', 'pasta', 'spaghetti', 'ris', 'wok', 'gryte', 'musli'] },
+    { w: 1, family: 'frukt', words: ['bananer', 'epler', 'jordbaer', 'tomater', 'agurk', 'poteter', 'clementiner', 'druer', 'appelsiner', 'salat', 'gulrot', 'gulrotter'] }
   ];
+  // Products that carry a staple's name but are not that staple's weekly buy:
+  // baby and toddler food ("Pasta&laks 1-3år", "Stroganoff med biff og ris 1 år")
+  // and pet food ("Gourmet Gold lever"). They get no category, so they rank
+  // behind everything that has one instead of headlining the row.
+  var NOT_A_STAPLE = /\b(ar|3ar|mnd|barnemat|barnegrot|smabarn|velling|purina|pedigree|whiskas|kattemat|hundefor|hundegodbit)\b/;
+  POPULAR.forEach(function (p) {
+    p.re = new RegExp('(^| )(?:' + p.words.map(function (w) {
+      if (w.length >= 5) return '[a-z]*' + w + '[a-z]*';
+      if (w.length === 4) return '[a-z]*' + w;
+      return w;
+    }).join('|') + ')( |$)');
+  });
   function popularityOf(key) {
-    for (var i = 0; i < POPULAR.length; i++) if (POPULAR[i].re.test(key)) return POPULAR[i];
+    if (NOT_A_STAPLE.test(key)) return null;
+    for (var i = 0; i < POPULAR.length; i++) {
+      var p = POPULAR[i];
+      if (p.re.test(key) && !(p.not && p.not.test(key))) return p;
+    }
     return null;
   }
 
-  // The cards for "Ukas tilbud". The front page of a tilbudsavis is not a list
-  // of the steepest markdowns — it is the staples a household buys every week
-  // (ost, kjøttdeig, kaffe …) at a good price, so that is what leads here too:
-  // popular categories first, deepest cut inside a category, one card per
-  // product (not the same cheese from three chains) and at most `perFamily`
-  // from any one category, so the row reads like a week's offers rather than
-  // eight cheeses. Offers outside the categories fill whatever slots are left.
+  // The cards for "Ukas tilbud", ranked the way a tilbudsavis fills its front
+  // page. Three tiers, in this order:
+  //
+  //  1. A real tilbudsavis offer. Only the tilbudsavis feed dates its offers, so
+  //     a validUntil marks one; everything else is an offer we INFER from a
+  //     price history, and that inference is noisy — a junk-high history value
+  //     reads as a markdown. The ingest caps the implied cut at 50 %, which
+  //     leaves a pile-up right at the cap: 1 018 of Meny's 2 211 "offers" sit at
+  //     exactly −50 %, and sorting on the cut alone handed the whole row to
+  //     them (four Dr. Oetker pizzas, a jar of baby food, dog treats).
+  //  2. The categories a household buys every week (ost, kjøttdeig, kaffe …),
+  //     since a front page is staples at a good price, not the steepest cuts.
+  //  3. The deepest cut, within a category.
+  //
+  // Then one card per product (not the same cheese from three chains) and at
+  // most `perFamily` per category, so the row reads like a week's offers rather
+  // than eight cheeses. Whatever is left over fills the remaining slots — an
+  // empty tilbudsavis week still gets a row, just a weaker one.
   function pickWeeklyOffers(groups, limit, perFamily) {
     limit = limit || 8;
     perFamily = perFamily || 2;
     var cands = [];
     (groups || []).forEach(function (g) {
       var best = null;
-      (g.variants || []).forEach(function (v) { if (v.isOffer && (!best || pctOff(v) > pctOff(best))) best = v; });
+      (g.variants || []).forEach(function (v) {
+        if (!v.isOffer) return;
+        // A dated offer beats an inferred one even if the inferred cut is deeper.
+        var better = !best || (!!v.validUntil !== !!best.validUntil ? !!v.validUntil : pctOff(v) > pctOff(best));
+        if (better) best = v;
+      });
       if (!best) return;
       var pop = popularityOf(g.key);
-      cands.push({ g: g, v: best, pop: pop ? pop.w : 0, family: pop ? pop.family : null });
+      cands.push({ g: g, v: best, avis: best.validUntil ? 1 : 0, pop: pop ? pop.w : 0, family: pop ? pop.family : null });
     });
-    cands.sort(function (a, b) { return (b.pop - a.pop) || (pctOff(b.v) - pctOff(a.v)); });
+    cands.sort(function (a, b) { return (b.avis - a.avis) || (b.pop - a.pop) || (pctOff(b.v) - pctOff(a.v)); });
     var out = [], taken = {};
     for (var i = 0; i < cands.length && out.length < limit; i++) {
       var c = cands[i];
