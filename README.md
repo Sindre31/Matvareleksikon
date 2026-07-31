@@ -55,13 +55,20 @@ python3 -m http.server 8000
   for "melk") outranks one that starts with it ("melkesjokolade") or only
   mentions it as an ingredient ("havregrøt **med** melk"), shortest name first.
   Each card leads with
-  the **cheapest price per litre/kilo/piece** (the pack price shown beneath),
-  so items compare on unit price by default. Products are grouped generically
+  the **pack price** (enhetspris — the number on the shelf label), with the
+  price per litre/kilo/piece beneath. Products are grouped generically
   (`group_key`) so store-specific items compare; cards are marked **"På tilbud"**.
-  Filter by store, **sort** (tilbud først / billigst / dyrest / navn), and
-  choose the price to lead with: **per kg/l** (jamførpris) or **enhetspris**
-  (the pack price) — the toggle drives both the card display and the
-  billigst/dyrest sort. Every card carries a **star** to add the item to the
+  The grid opens on **"Nyeste først"** — what entered the leksikon most
+  recently, first. That order costs nothing to ship: the catalogue is paged
+  `order=fetched_at.desc,external_id`, and a group's position in it *is* its
+  recency rank (`addedRank`, set in `buildGroups` from the first row that
+  creates the group). `fetched_at` is a first-seen stamp — it defaults to
+  `now()` on insert and no ingest ever writes it, so a weekly re-upsert leaves
+  it alone. Filter by store, **sort** (nyeste / tilbud først / billigst /
+  dyrest / navn — searching turns the first slot into **"Beste treff"**,
+  relevance-ranked), and choose the price to lead with: **enhetspris** (the
+  pack price) or **per kg/l** (jamførpris) — the toggle drives both the card
+  display and the billigst/dyrest sort. Every card carries a **star** to add the item to the
   shopping list. The top bar shows how fresh the data is ("sist oppdatert" =
   the latest recorded price point). On a phone it fits on one line: the
   Handleliste label collapses to a **cart glyph** (with the item count as a
@@ -303,10 +310,12 @@ Supabase request stays network-only so prices are never served stale.
 **Cold-start, offline data & egress.** The catalogue is ~49 500 offer rows —
 ~16 MB of JSON, ~2 MB over the wire once gzipped — so re-downloading it on every
 visit is slow on mobile and burns Supabase egress. It is snapshotted
-into the **Cache Storage API** (`prisboka-catalog-v3` — the big offers blob, which
+into the **Cache Storage API** (`prisboka-catalog-v4` — the big offers blob, which
 would blow the ~5 MB `localStorage` cap) with a small meta record in
-`localStorage` (`prisboka_catalog_meta_v4`: timestamp, the tiny stores list,
-freshness stamp). Boot:
+`localStorage` (`prisboka_catalog_meta_v5`: timestamp, the tiny stores list,
+freshness stamp). The snapshot version is bumped whenever the rows' **shape or
+order** changes — v4 because the row order became data (newest-first is what
+"Nyeste først" sorts on), v3 because `image_url` gave way to `has_image`. Boot:
 - **Within `CATALOG_TTL` (12 h)** a return visit trusts the snapshot and makes
   **zero network calls** — instant paint, no egress. Data refreshes weekly, so a
   few hours stale is fine.

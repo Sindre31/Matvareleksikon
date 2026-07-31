@@ -194,3 +194,35 @@ comment on function public.ml_group_key(text) is
   'the JS against 164 (product_name -> group_key) pairs captured from this '
   'function; regenerate that fixture whenever this changes. Note also that '
   'existing shopping lists are keyed on the current scheme and will shift.';
+
+-- The leksikon defaults to "Nyeste først", which needs a recency signal the
+-- catalogue payload doesn't carry. fetched_at is exactly that, for free:
+-- it defaults to now() on INSERT and NO ingest function ever sends it, so an
+-- upsert on external_id leaves it alone. It marks when a product first entered
+-- the leksikon, not the last time a feed re-saw it. (Keep it that way — an
+-- ingest that starts writing fetched_at turns the default sort into "whatever
+-- ran last".)
+--
+-- It is exposed on ml_catalog to ORDER BY, never selected. A timestamp per row
+-- would add ~1 MB to a ~1.2 MB payload for something the row ORDER already
+-- says: boot pages with order=fetched_at.desc,external_id and a group's
+-- position in the catalogue is its recency rank (buildGroups → addedRank).
+-- external_id is unique, so the order is total and offset paging stays stable
+-- across the client's six parallel lanes.
+create or replace view public.ml_catalog
+with (security_invoker = on) as
+select
+  o.external_id,      -- not selected by the client, but it breaks ties in the paging order
+  o.store_id, o.product_name, o.group_key,
+  o.price, o.pre_price, o.unit, o.unit_price, o.unit_price_unit,
+  o.offer_days, o.valid_until,
+  (o.image_url is not null and o.group_key is not null) as has_image,
+  o.fetched_at        -- ordered by, never selected
+from public.ml_offers o;
+
+-- Without this every one of the ~50 boot pages sorts all 49 603 rows on disk
+-- (external merge, ~105 ms a page). With it they are index scans, as
+-- order=external_id was: 27 ms for the deepest page (offset 40 000) against
+-- 33 ms for the old order, measured warm on the production catalogue.
+create index if not exists ml_offers_fetched_idx
+  on public.ml_offers (fetched_at desc, external_id);

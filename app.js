@@ -416,7 +416,7 @@
     if (!valid.length) valid = OFFERS.filter(Boolean);
     VALID_COUNT = valid.length;
     var map = {};
-    valid.forEach(function (o) {
+    valid.forEach(function (o, i) {
       // Skip a malformed row rather than let it throw and blank the catalogue.
       try {
         if (!o) return;
@@ -424,7 +424,11 @@
         if (!isFinite(price) || price <= 0) return;
         var key = ckey(o.product_name);
         if (!key) return;
-        var g = map[key] || (map[key] = { key: key, byStore: {}, serverKeys: {} });
+        // Rows arrive newest-first (see offersPage), so the first row that
+        // creates a group is its newest one and its position is the group's
+        // recency rank — lower is newer. This is what "Nyeste først" sorts on;
+        // no timestamp is shipped for it.
+        var g = map[key] || (map[key] = { key: key, byStore: {}, serverKeys: {}, addedRank: i });
         var v = buildVariant(o);
         g.serverKeys[v.serverKey] = 1;
         (g.byStore[v.storeId] || (g.byStore[v.storeId] = [])).push(v);
@@ -459,7 +463,7 @@
       var cheapUnitDim = cheapUnit != null ? variants[0].unitDim : null;
       return {
         key: key, name: canonLabel(key) || (variants[0] ? variants[0].name : key), variants: variants, hasImage: anyImage,
-        allByStore: byStore, serverKeys: Object.keys(map[key].serverKeys),
+        allByStore: byStore, serverKeys: Object.keys(map[key].serverKeys), addedRank: map[key].addedRank,
         minPrice: variants.reduce(function (m, v) { return Math.min(m, v.price); }, Infinity),
         storeCount: variants.length,
         unitPrice: cheapUnit, unitDim: cheapUnitDim,
@@ -641,7 +645,9 @@
   // ── State ────────────────────────────────────────────────────────────────
   var state = {
     phase: 'loading', errMsg: '',
-    view: 'home', groupKey: null, storeId: null, query: '', storeFilter: 'Alle', sort: 'relevans', priceMode: 'kilo',
+    // Defaults: the leksikon opens on what was added last, priced per pack —
+    // the number on the shelf label. Per kg/l is a click away in "Vis pris".
+    view: 'home', groupKey: null, storeId: null, query: '', storeFilter: 'Alle', sort: 'standard', priceMode: 'enhet',
     scanPhase: 'idle', scanStep: '', scanItems: [], scanStore: 'Kiwi', scanDate: '',
     scanSubmitting: false, scanError: null, scanImageUrl: null, scanNote: null,
     doneCount: 0, doneMsgN: 0,
@@ -1399,11 +1405,16 @@
     // without one sink to the bottom) or per pack (enhetspris).
     var kilo = state.priceMode === 'kilo';
     var sortVal = function (g) { return kilo ? (g.unitPrice != null ? g.unitPrice : Infinity) : g.minPrice; };
+    // addedRank counts up from the newest row in the catalogue (see buildGroups).
+    var byAdded = function (a, b) { return (a.addedRank - b.addedRank) || byName(a, b); };
     if (state.sort === 'billigst') filtered.sort(function (a, b) { return (sortVal(a) - sortVal(b)) || byName(a, b); });
     else if (state.sort === 'dyrest') filtered.sort(function (a, b) { return (sortVal(b) - sortVal(a)) || byName(a, b); });
     else if (state.sort === 'navn') filtered.sort(byName);
-    else if (q) filtered.sort(function (a, b) { return (searchRank(b, q) - searchRank(a, q)) || byName(a, b); }); // relevance while searching
-    else filtered.sort(function (a, b) { return (b.onOffer - a.onOffer) || byName(a, b); });
+    else if (state.sort === 'tilbud') filtered.sort(function (a, b) { return (b.onOffer - a.onOffer) || byAdded(a, b); });
+    // The default slot: relevance while searching (the query says what "best"
+    // means), newest additions first when just browsing the leksikon.
+    else if (q) filtered.sort(function (a, b) { return (searchRank(b, q) - searchRank(a, q)) || byName(a, b); });
+    else filtered.sort(byAdded);
     var CAP = 50;
     var shown = filtered.slice(0, CAP);
     shown.forEach(wantImages);
@@ -1461,7 +1472,7 @@
         return h('button', { type: 'button', 'aria-pressed': on ? 'true' : 'false', onClick: function () { setState({ priceMode: o[0] }); }, style: 'min-height: 34px; padding: 4px 12px; font-size: 12px; letter-spacing: 0.06em; text-transform: uppercase; font-weight: 600; cursor: pointer; border: 0;' + (idx > 0 ? ' border-left: 1px solid var(--color-divider);' : '') + (on ? ' background: var(--color-accent); color: var(--color-bg);' : ' background: transparent; color: var(--color-text);'), text: o[1] });
       }))
     ]);
-    var SORTS = [['relevans', q ? 'Beste treff' : 'Tilbud først'], ['billigst', 'Billigst'], ['dyrest', 'Dyrest'], ['navn', 'Navn A–Å']];
+    var SORTS = [['standard', q ? 'Beste treff' : 'Nyeste først'], ['tilbud', 'Tilbud først'], ['billigst', 'Billigst'], ['dyrest', 'Dyrest'], ['navn', 'Navn A–Å']];
     var sortControl = h('label', { style: 'display: flex; align-items: center; gap: 8px; font-size: 12px; letter-spacing: 0.08em; text-transform: uppercase; font-weight: 600; color: ' + MUTED70 + '; white-space: nowrap;' }, [
       'Sorter',
       h('select', { cls: 'input', 'aria-label': 'Sorter varene', style: 'min-height: 34px; width: auto;', value: state.sort, onChange: function (e) { setState({ sort: e.target.value }); } },
@@ -2589,8 +2600,16 @@
   // lanes fills the connection without hammering the API.
   var OFFER_LANES = 6;
 
+  // Newest first, and that ordering IS the recency data: the leksikon defaults
+  // to "nyeste først", and a fetched_at per row would add ~1 MB to a ~1.2 MB
+  // payload for something a row's position already says. fetched_at defaults to
+  // now() on INSERT and no ingest ever writes it, so it marks when a product
+  // first entered the leksikon, not when it was last seen. external_id breaks
+  // ties, which makes the order total and offset paging stable across the six
+  // parallel lanes. (ml_offers_fetched_idx serves it; without that index every
+  // page sorts the whole catalogue on disk.)
   function offersPage(offset, opts) {
-    return sb(OFFER_SRC + '?select=' + OFFER_COLS + '&order=external_id&limit=' + OFFER_PAGE + '&offset=' + offset, opts)
+    return sb(OFFER_SRC + '?select=' + OFFER_COLS + '&order=fetched_at.desc,external_id&limit=' + OFFER_PAGE + '&offset=' + offset, opts)
       .then(function (r) { if (!r.ok) throw new Error('offers ' + r.status); return r; });
   }
 
@@ -2675,13 +2694,14 @@
   //     background (stale-while-revalidate).
   //   • No Cache API (insecure context) → always revalidate, as before.
   var CATALOG_TTL = 12 * 60 * 60 * 1000; // 12 h
-  // v3: the snapshot's row shape changed with ml_catalog (image_url out,
-  // has_image in). A v2 snapshot would restore rows whose has_image is
-  // undefined, i.e. a leksikon with every photo silently missing, so it must not
-  // be reused — hence new names rather than a migration.
-  var CAT_CACHE = 'prisboka-catalog-v3';
-  var CAT_OFFERS_URL = '/__prisboka-offers-cache-v3'; // synthetic same-origin Cache key (never fetched)
-  var CAT_META_KEY = 'prisboka_catalog_meta_v4';
+  // v4: the row ORDER is now data — the catalogue is paged newest-first and a
+  // group's position in it is its recency rank, which "Nyeste først" (the
+  // default sort) reads. A v3 snapshot is ordered by external_id, so reusing it
+  // would open the leksikon on an arbitrary order that looks like a bug.
+  // (v3 itself changed the row shape: image_url out, has_image in.)
+  var CAT_CACHE = 'prisboka-catalog-v4';
+  var CAT_OFFERS_URL = '/__prisboka-offers-cache-v4'; // synthetic same-origin Cache key (never fetched)
+  var CAT_META_KEY = 'prisboka_catalog_meta_v5';
   var hasCaches = (typeof caches !== 'undefined' && caches && typeof caches.open === 'function');
 
   // Retire superseded caches: the old localStorage blob, and the previous
@@ -2693,6 +2713,7 @@
     localStorage.removeItem('prisboka_catalog_meta');
     localStorage.removeItem('prisboka_catalog_meta_v2');
     localStorage.removeItem('prisboka_catalog_meta_v3');
+    localStorage.removeItem('prisboka_catalog_meta_v4');
   } catch (e) { /* noop */ }
   if (hasCaches) {
     try {
