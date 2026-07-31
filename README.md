@@ -663,34 +663,42 @@ and nothing is hosted at the domain. Two consequences worth keeping in mind:
   forwarding, not a misconfiguration; the SPF record below covers it for mail
   the forwarder re-sends.
 
-**DNS.** The nameservers are Vercel's, so these go in Vercel's DNS panel — not
-at the registrar, and not in `vercel.json` (which only sets HTTP headers and
-redirects; it cannot express DNS). The domain had **no MX records at all**
-before this, so nothing is being replaced.
+**DNS.** The nameservers are Vercel's, so the records live in Vercel's DNS panel
+— not at the registrar, and not in `vercel.json` (which only sets HTTP headers
+and redirects; it cannot express DNS).
 
-Set up with [Forward Email](https://forwardemail.net) — free, open source,
-unlimited inbound, and, decisively here, it needs **only records** rather than a
-nameserver move. (Cloudflare Email Routing is an equally good free option but
-requires moving the nameservers off Vercel, which would mean re-creating the
-apex `A` and `www` `CNAME` there too. ImprovMX is the other obvious pick and is
-already in use elsewhere.)
+Forwarding runs on **[ImprovMX](https://improvmx.com)** (free tier: 1 domain,
+25 aliases, forwarding only). These are the records in place, verified live:
 
 | Name | Type | Priority | Value |
 | --- | --- | --- | --- |
-| `@` | `MX` | 10 | `mx1.forwardemail.net` |
-| `@` | `MX` | 10 | `mx2.forwardemail.net` |
-| `@` | `TXT` | — | `v=spf1 a include:spf.forwardemail.net -all` |
-| `@` | `TXT` | — | `forward-email=support:<din-personlige-adresse>` |
+| `@` | `MX` | 10 | `mx1.improvmx.com` |
+| `@` | `MX` | 20 | `mx2.improvmx.com` |
+| `@` | `TXT` | — | `v=spf1 include:spf.improvmx.com ~all` |
 
-Both MX records carry the *same* priority — they are equal peers, not a primary
-and a backup. Use the values Forward Email prints in its own dashboard over
-these if the two ever disagree.
+The priorities differ on purpose: `mx1` is primary and `mx2` the backup, so they
+are not interchangeable the way equal-priority peers would be.
 
-Verify once the records have propagated:
+**Exactly one SPF record.** More than one `v=spf1` TXT on a domain is a
+permanent error under RFC 7208 and disables SPF evaluation entirely rather than
+merging the two — so a second forwarding provider cannot simply be added
+alongside. Switching providers means replacing the MX *and* the SPF record
+together, which is what happened here: an earlier Forward Email setup
+(`mx1`/`mx2.forwardemail.net` plus its own `v=spf1 … -all` and a
+`forward-email=` routing record) was removed rather than left in place. Note
+also that ImprovMX ends its SPF in `~all` (softfail) where Forward Email used
+`-all` (hardfail); that is each provider's own recommended value, not a setting
+to normalise.
+
+The free tier's **one-domain limit** is worth re-checking after any change — if
+that slot previously held a different domain, pointing it at `prisboka.no` may
+have taken forwarding away from the other one.
+
+Verify:
 
 ```bash
-dig +short MX prisboka.no          # expect the two forwardemail hosts
-dig +short TXT prisboka.no         # expect the spf1 and forward-email lines
+dig +short MX prisboka.no          # expect mx1 (10) and mx2 (20) improvmx.com
+dig +short TXT prisboka.no         # expect exactly ONE v=spf1 line
 ```
 
 Then send a real message to `support@prisboka.no` and confirm it arrives — the
