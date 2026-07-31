@@ -5,7 +5,15 @@
  * offline. Cross-origin requests (Supabase REST + the scan Edge Function) are
  * never intercepted, so prices always come fresh from the network.
  */
-var CACHE = 'prisboka-v1';
+// Bump this when a release must reach returning visitors on the FIRST load.
+// The fetch handler below is stale-while-revalidate: it answers /app.js from
+// the cache and refreshes it in the background, so a normal deploy lands on the
+// visit AFTER the next one. That is the right trade for a price site — the data
+// is network-only anyway — but it hides a shipped feature from everyone who has
+// been here before, which is what happened with the feilrapport-knappen and
+// #/admin. A new cache name is dropped by the activate handler, so the shell is
+// re-fetched immediately instead.
+var CACHE = 'prisboka-v2';
 var CORE = [
   '/', '/index.html', '/styles.css', '/app.js',
   '/favicon.svg', '/manifest.webmanifest', '/icon-192.png', '/icon-512.png'
