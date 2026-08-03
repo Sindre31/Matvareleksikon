@@ -2241,7 +2241,12 @@
         h('p', { style: 'margin: 0; font-size: 15px; line-height: 22px; color: ' + MUTED78 + ';', text: 'Ta bilde av kvitteringen direkte på mobil. Hold den flatt og i godt lys.' }),
         h('label', { cls: 'btn btn-ghost', style: 'align-self: flex-start; cursor: pointer; margin-top: 8px;' }, ['Åpne kamera', cameraInput])
       ]));
-      var grid = h('div', { style: 'display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 40px;' }, [uploadCard, cameraCard]);
+      // minmax(300px, …) is a floor a track cannot go under, and the two cards
+      // sit inside a 22px-padded drop zone inside the 24px page gutter — 300px
+      // is wider than what a 390px phone leaves, so the frames were cut off and
+      // a 320px one scrolled sideways. min() keeps the two-column break at the
+      // same width and lets a single column be as narrow as the page.
+      var grid = h('div', { style: 'display: grid; grid-template-columns: repeat(auto-fit, minmax(min(300px, 100%), 1fr)); gap: 40px;' }, [uploadCard, cameraCard]);
       var DROP_IDLE = 'color-mix(in srgb, var(--color-text) 28%, transparent)';
       var dropHi = function (e, on) { e.preventDefault(); e.currentTarget.style.background = on ? 'color-mix(in srgb, var(--color-accent) 8%, transparent)' : 'transparent'; e.currentTarget.style.borderColor = on ? 'var(--color-accent)' : DROP_IDLE; };
       var dropZone = h('div', {
@@ -3025,8 +3030,14 @@
     var now = isPrice
       ? (r.current_price != null ? nf(Number(r.current_price)) : '—')
       : '«' + (r.display_name || r.product_name) + '»';
+    // The min-width is what makes the buttons drop under the text instead of
+    // squeezing it into a sliver — but a bare 260px is a floor the flex item
+    // cannot go below, and inside a 20px-padded row on a 320px phone there are
+    // only 230px to sit in, so the report ran 30px past the frame's right
+    // border. `min()` keeps the wrap point where it was and lets the column
+    // shrink to the row once the row is the narrower of the two.
     return h('div', { style: 'padding: 16px 20px; border-bottom: 1px solid color-mix(in srgb, var(--color-text) 8%, transparent); display: flex; flex-wrap: wrap; gap: 14px; align-items: flex-start; justify-content: space-between;' }, [
-      h('div', { style: 'flex: 1; min-width: 260px;' }, [
+      h('div', { style: 'flex: 1; min-width: min(260px, 100%);' }, [
         h('div', { style: 'display: flex; flex-wrap: wrap; gap: 6px; align-items: center;' }, [
           adminBadge(isPrice ? 'Feil pris' : 'Feil produkt', true),
           adminBadge(STORE_NAME[r.store_id] || r.store_id),
@@ -3059,7 +3070,7 @@
   function adminEditForm() {
     var e = state.adminEdit;
     return h('div', { style: 'padding: 16px 20px; background: color-mix(in srgb, var(--color-accent) 5%, transparent); border-bottom: 1px solid color-mix(in srgb, var(--color-text) 8%, transparent);' }, [
-      h('div', { style: 'display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 14px;' }, [
+      h('div', { style: 'display: grid; grid-template-columns: repeat(auto-fit, minmax(min(220px, 100%), 1fr)); gap: 14px;' }, [
         adminInput('Produktnavn', {
           value: e.name, maxlength: '120', 'data-focus-id': 'admin-name',
           onInput: function (ev) { state.adminEdit.name = ev.target.value; }
@@ -3089,7 +3100,7 @@
     var editing = state.adminEdit && state.adminEdit.store_id === p.store_id && state.adminEdit.product_name === p.product_name;
     var changed = p.ov_name != null || p.ov_price != null || p.clear_pre_price || p.hidden;
     var row = h('div', { style: 'padding: 14px 20px; border-bottom: 1px solid color-mix(in srgb, var(--color-text) 8%, transparent); display: flex; flex-wrap: wrap; gap: 14px; align-items: center; justify-content: space-between;' }, [
-      h('div', { style: 'flex: 1; min-width: 240px;' }, [
+      h('div', { style: 'flex: 1; min-width: min(240px, 100%);' }, [   // see adminReportCard
         h('div', { style: 'display: flex; flex-wrap: wrap; gap: 6px; align-items: center;' }, [
           adminBadge(STORE_NAME[p.store_id] || p.store_id),
           p.flagged ? adminBadge('flagget', true) : null,
@@ -3186,7 +3197,7 @@
             h('input', {
               cls: 'input', type: 'search', placeholder: 'Søk etter produktnavn …', value: state.adminQuery,
               'aria-label': 'Søk etter produkt', 'data-focus-id': 'admin-search',
-              style: 'flex: 1; min-width: 220px; min-height: 40px; font-size: 15px;',
+              style: 'flex: 1; min-width: min(220px, 100%); min-height: 40px; font-size: 15px;',
               onInput: function (e) { state.adminQuery = e.target.value; }
             }),
             h('select', {
