@@ -54,10 +54,24 @@ select cron.schedule(
 -- chain died at 77 % of the catalogue and reported success. Every 10 minutes
 -- this resumes the sweep from ml_sweep_state.next_page. It no-ops while the
 -- chain is alive (checkpoint younger than 4 min) and once the sweep is
--- finished, so a healthy week costs one cheap invocation per tick.
+-- finished — the resume branch returns before it touches the Kassalapp API, so
+-- an idle tick is one primary-key read of ml_sweep_state and nothing else.
+--
+-- WHEN, and why not around the clock: the sweep starts Monday 04:10 UTC and
+-- finished 04:57 on 2026-08-03, so outside Monday morning there is by
+-- definition nothing to resume. Ticking all week was ~1 000 invocations for the
+-- ~5 that can do any work. The cost was never money (4 300/month against a
+-- 500 000 free tier) — it was that 50 of the 55 lines in the function log were
+-- no-ops, which is exactly where a real failure would hide. Monday 04:00–09:59
+-- gives the watchdog a six-hour window over a 47-minute sweep and costs 36
+-- ticks a week.
+--
+-- The trade: a sweep started by hand on another day runs without a watchdog
+-- behind it. Widen the hour range, or re-run {resume:true} yourself, if that
+-- ever matters.
 select cron.schedule(
   'ml-ingest-kassalapp-resume',
-  '*/10 * * * *',
+  '*/10 4-9 * * 1',
   $cmd$
   select net.http_post(
     url := 'https://jiaxeedguivvhixychcg.supabase.co/functions/v1/ml-ingest-kassalapp',
