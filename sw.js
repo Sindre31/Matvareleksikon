@@ -13,7 +13,7 @@
 // been here before, which is what happened with the feilrapport-knappen and
 // #/admin. A new cache name is dropped by the activate handler, so the shell is
 // re-fetched immediately instead.
-var CACHE = 'prisboka-v2';
+var CACHE = 'prisboka-v3';
 var CORE = [
   '/', '/index.html', '/styles.css', '/app.js',
   '/favicon.svg', '/manifest.webmanifest', '/icon-192.png', '/icon-512.png'
