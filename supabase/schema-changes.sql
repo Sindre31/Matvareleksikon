@@ -797,3 +797,107 @@ grant execute on function public.ml_admin_reset(text, text)                     
 grant execute on function public.ml_admin_set_report(uuid, text)                               to service_role;
 grant execute on function public.ml_admin_apply_report(uuid)                                   to service_role;
 grant execute on function public.ml_admin_stats()                                              to service_role;
+
+-- ─────────────────────────────────────────────────────────────────────────────
+-- Tilbakemelding ("Gi tilbakemelding"-knappen nederst til høyre)
+-- ─────────────────────────────────────────────────────────────────────────────
+--
+-- Deliberately separate from ml_price_reports. A report is a structured
+-- correction to one product, and three reports that agree apply themselves to
+-- the public catalogue — that path has to stay as narrow as it is. This is the
+-- other half: prose about the site itself ("søket finner ikke rugmel", "grafen
+-- er rar på mobil"), which nothing can act on automatically and which a person
+-- reads. Nothing here touches ml_offers.
+--
+-- Written straight from the browser with the publishable key, so it copies the
+-- ml_price_reports security shape exactly: insert-only RLS, a table-level
+-- REVOKE followed by a column grant covering only the visitor-supplied
+-- columns — otherwise a scripted insert could file itself as already
+-- 'behandlet', or forge sender_ip — and a SECURITY DEFINER trigger that stamps
+-- the IP and rate-limits. There is no read grant: it is read in the SQL editor.
+-- (Linter 0024 rls_policy_always_true flags the insert policy for the same
+-- reason it flags the one on ml_price_reports: an open contribution endpoint is
+-- the point, and what bounds it is the CHECKs, the column grant and the
+-- trigger — not a row predicate.)
+create table if not exists public.ml_feedback (
+  id         uuid primary key default gen_random_uuid(),
+  created_at timestamptz not null default now(),
+  kind       text not null default 'annet',   -- ros | feil | onske | annet
+  message    text not null,
+  email      text,                            -- optional: only if they want an answer
+  path       text,                            -- the screen they were on (pathname only:
+                                              -- the shopping list lives in the fragment
+                                              -- so it is never sent anywhere)
+  sender     text,                            -- client id (localStorage), for de-duping
+  sender_ip  text,                            -- server-side only; no insert grant
+  status     text not null default 'ny',      -- ny | behandlet | avvist
+  handled_at timestamptz,
+  constraint ml_feedback_kind_ck    check (kind in ('ros','feil','onske','annet')),
+  constraint ml_feedback_status_ck  check (status in ('ny','behandlet','avvist')),
+  constraint ml_feedback_message_ck check (char_length(btrim(message)) between 2 and 2000),
+  constraint ml_feedback_email_ck   check (email is null or (char_length(email) between 3 and 254 and position('@' in email) > 1)),
+  constraint ml_feedback_path_ck    check (path is null or char_length(path) <= 512),
+  constraint ml_feedback_sender_ck  check (sender is null or char_length(sender) <= 64)
+);
+create index if not exists ml_feedback_created_idx on public.ml_feedback (created_at desc);
+create index if not exists ml_feedback_status_idx  on public.ml_feedback (status, created_at desc);
+
+alter table public.ml_feedback enable row level security;
+revoke all on public.ml_feedback from anon, authenticated;
+drop policy if exists ml_feedback_insert on public.ml_feedback;
+create policy ml_feedback_insert on public.ml_feedback
+  for insert to anon, authenticated with check (true);
+grant insert (kind, message, email, path, sender) on public.ml_feedback to anon, authenticated;
+
+-- Stamp, normalise and rate-limit. Same reasoning as ml_report_prepare: the
+-- anon key is public, so an open write endpoint needs a ceiling that does not
+-- depend on the client. Reuses ml_scan_allow under an 'fb:' key namespace.
+create or replace function public.ml_feedback_prepare() returns trigger
+language plpgsql security definer set search_path = public, pg_temp as $fn$
+declare
+  hdr json := nullif(current_setting('request.headers', true), '')::json;
+  ip  text;
+begin
+  ip := nullif(btrim(coalesce(
+    hdr ->> 'cf-connecting-ip',
+    hdr ->> 'x-real-ip',
+    split_part(coalesce(hdr ->> 'x-forwarded-for', ''), ',', 1)
+  )), '');
+
+  new.sender_ip  := ip;
+  new.status     := 'ny';
+  new.handled_at := null;
+
+  new.message := btrim(new.message);
+  new.email   := nullif(lower(btrim(coalesce(new.email, ''))), '');
+  new.path    := nullif(btrim(coalesce(new.path, '')), '');
+  new.sender  := nullif(btrim(coalesce(new.sender, '')), '');
+
+  if not ml_scan_allow('fb:GLOBAL', 300, 3600) then
+    raise exception 'For mange tilbakemeldinger akkurat nå. Prøv igjen om litt.'
+      using errcode = 'check_violation';
+  end if;
+  -- Skipped when the IP is unknown, so it never over-blocks a whole NAT.
+  if ip is not null and not ml_scan_allow('fb:' || ip, 10, 3600) then
+    raise exception 'Du har sendt mange tilbakemeldinger på kort tid. Prøv igjen senere.'
+      using errcode = 'check_violation';
+  end if;
+
+  return new;
+end;
+$fn$;
+
+-- Firing a trigger does not check EXECUTE, so revoking it closes the function
+-- as a REST RPC endpoint for the public anon key (linter 0028/0029) while an
+-- anon insert still runs it.
+revoke all on function public.ml_feedback_prepare() from anon, authenticated, public;
+
+drop trigger if exists ml_feedback_prepare_trg on public.ml_feedback;
+create trigger ml_feedback_prepare_trg
+  before insert on public.ml_feedback
+  for each row execute function public.ml_feedback_prepare();
+
+-- Reading it back (SQL editor):
+--   select created_at, kind, message, email, path from ml_feedback
+--    where status = 'ny' order by created_at desc;
+--   update ml_feedback set status = 'behandlet', handled_at = now() where id = '…';

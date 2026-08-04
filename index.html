@@ -116,6 +116,31 @@
       .store-row > :nth-child(4) { grid-area: report; justify-self: end; }
     }
 
+    /* The floating "Gi tilbakemelding" button. Bottom-right, over everything
+       on the page but under the dialogs (z-index 50). env(safe-area-inset-*)
+       keeps it clear of the home indicator on an iPhone and of the browser
+       chrome that overlaps the bottom of the viewport. */
+    .feedback-fab {
+      position: fixed; z-index: 40;
+      right: calc(16px + env(safe-area-inset-right, 0px));
+      bottom: calc(16px + env(safe-area-inset-bottom, 0px));
+      min-height: 44px;                       /* a thumb target, not a mouse one */
+      box-shadow: 0 2px 10px color-mix(in srgb, var(--color-text) 28%, transparent);
+      font-size: 13px; letter-spacing: 0.06em; text-transform: uppercase;
+    }
+    /* Below 560 px the words would cover a third of the screen, so the glyph
+       carries it and the label lives on in the aria-label + title. */
+    @media (max-width: 560px) {
+      .feedback-fab { right: 12px; bottom: calc(12px + env(safe-area-inset-bottom, 0px)); width: 48px; height: 48px; padding: 0; }
+      .feedback-fab span[aria-hidden] { font-size: 19px; }
+      .feedback-fab-text { display: none; }
+    }
+    /* The footer is the one thing the button can cover for good — everything
+       else scrolls past it. Keep a button's worth of room under the last row. */
+    @media (max-width: 560px) {
+      footer > div { padding-bottom: 84px; }
+    }
+
     /* Small screens: let the top bar wrap instead of overflowing. */
     @media (max-width: 640px) {
       .nav { flex-wrap: wrap; row-gap: 10px; column-gap: clamp(8px, 2.6vw, 10px); }
