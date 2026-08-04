@@ -433,6 +433,19 @@ Asset URLs in `index.html` must stay **root-relative**: on `/gruppe/helmelk` a
 bare `app.js` resolves to `/gruppe/app.js`, which falls through to the SPA
 rewrite and returns the HTML shell as JavaScript.
 
+The rewrites in `vercel.json` point at **`/`, not `/index.html`** — and that is
+not a stylistic choice. `cleanUrls: true` turns `/index.html` into a 308
+redirect to `/`, so it is not a servable path; a rewrite whose destination is a
+redirect cannot resolve, and Vercel answers **404**. Shipped with
+`/index.html` this was silent in every local check and in the unit tests —
+`/gruppe/…` still worked in production because the *prerendered files* were
+being served straight off the filesystem, which happens before rewrites are
+consulted. What it actually broke was every path with no file behind it:
+`/liste`, `/om`, `/skann`, all `/vare/…`, and every single-store group. If a
+deep link 404s after a routing change, check this line first — and check it
+against a path that is **not** prerendered, since a prerendered one will pass
+whether the rewrites work or not.
+
 **PWA.** The site is an installable PWA: `manifest.webmanifest` + a service worker
 (`sw.js`) that caches the app shell for offline use with a stale-while-revalidate
 strategy (a deploy is picked up on the next load), while every cross-origin
