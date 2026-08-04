@@ -1,7 +1,7 @@
 // Supabase Edge Function: ml-admin
 // -----------------------------------------------------------------------------
-// The password-protected back office for Prisboka: the report queue, and editing
-// / removing / restoring products.
+// The password-protected back office for Prisboka: the report queue, the
+// tilbakemelding queue, and editing / removing / restoring products.
 //
 // Why this exists at all: the browser key is a PUBLISHABLE key. Every write path
 // the front end has is guarded by RLS (anyone may insert a registration or a
@@ -180,6 +180,21 @@ Deno.serve(async (req: Request) => {
           p_limit: Math.min(Math.max(Number(body.limit) || 200, 1), 500),
         });
         return json({ reports: rows || [] });
+      }
+
+      case "feedback": {
+        const rows = await rpc("ml_admin_feedback", {
+          p_status: str(body.status, 20) || "open",
+          p_limit: Math.min(Math.max(Number(body.limit) || 200, 1), 500),
+        });
+        return json({ feedback: rows || [] });
+      }
+
+      case "feedback_status": {
+        const id = str(body.id, 40), status = str(body.status, 20);
+        if (!id || !status) return json({ error: "Mangler tilbakemelding eller status." }, 400);
+        await rpc("ml_admin_set_feedback", { p_id: id, p_status: status });
+        return json({ ok: true });
       }
 
       case "search": {

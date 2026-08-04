@@ -239,9 +239,15 @@ when it can't reach it. The output is gitignored.
   is recorded, never the URL fragment: the shopping list lives there precisely
   so it is never sent anywhere.
 - **Admin** `/admin` — the password-protected back office. Unlisted: no link in
-  the nav or the footer. Three tabs — the **report queue** (approve a
-  correction with "Bruk denne", or reject it), **product search** across the
-  whole catalogue, and **the products that have been changed**. Editing a
+  the nav or the footer. Four tabs — the **report queue** (approve a
+  correction with "Bruk denne", or reject it), the **tilbakemelding queue**,
+  **product search** across the whole catalogue, and **the products that have
+  been changed**. The tilbakemelding queue is free text and changes nothing by
+  itself: filter by uleste/behandlet/avvist, mark a message handled or rejected,
+  and — when the sender left an e-mail — "Svar" opens a draft in your own mail
+  client with the message quoted (the server sends no mail). The sender's IP is
+  never shown; a repeat sender surfaces as an "N fra samme avsender" badge
+  instead. Editing a
   product sets its name and price, kills a bogus "førpris", or **removes** it
   from the leksikon (a reversible hide — "Tilbakestill" puts the chain's own
   data back). Edits are stored per (butikk, kjedens produktnavn) in
@@ -272,7 +278,7 @@ schema:
 | `ml_price_reports` | Append-only community **error reports** (`kind` = `pris`/`produkt`, the reported variant, the proposed correction, an optional comment). Anyone may insert; nobody may read them back (they carry an IP) or set their own `status`. `ml_report_prepare` validates and rate-limits on the way in, `ml_report_apply` runs the three-report rule |
 | `ml_feedback` | Append-only free-text **tilbakemeldinger** from the floating button (`kind` = `ros`/`feil`/`onske`/`annet`, the message, an optional e-mail, the `pathname` they were on). Same security shape as `ml_price_reports` — insert-only for the anon key, a column grant covering only the five visitor-supplied fields, no read grant, and `ml_feedback_prepare` stamps the IP and rate-limits (300/h globally, 10/h per IP). Read it in the SQL editor: `select created_at, kind, message, email, path from ml_feedback where status = 'ny' order by created_at desc;` |
 | `ml_offer_overrides` | The corrections themselves, keyed on (`store_id`, the **chain's** `product_name`): new name, new price, "drop the før-price", hidden, plus `flagged`/`admin_locked`/`origin`. Public-readable, service-role-writable |
-| `ml_admin_*()` | The admin API — `search`, `overrides`, `reports`, `save`, `reset`, `set_report`, `apply_report`, `stats`. Typed arguments, `service_role`-only, called by the `ml-admin` Edge Function (product names are full of commas and dots, which PostgREST reads as filter syntax) |
+| `ml_admin_*()` | The admin API — `search`, `overrides`, `reports`, `feedback`, `save`, `reset`, `set_report`, `apply_report`, `set_feedback`, `stats`. Typed arguments, `service_role`-only, called by the `ml-admin` Edge Function (product names and free text are full of commas and dots, which PostgREST reads as filter syntax) |
 
 The leksikon is built entirely from **real prices** (`ml_offers`); the app
 groups store-specific products by `group_key` for comparison. (The earlier
