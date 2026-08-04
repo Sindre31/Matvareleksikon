@@ -13,7 +13,11 @@
 // been here before, which is what happened with the feilrapport-knappen and
 // #/admin. A new cache name is dropped by the activate handler, so the shell is
 // re-fetched immediately instead.
-var CACHE = 'prisboka-v3';
+// v4: the screens moved from '#/gruppe/…' to '/gruppe/…'. A returning visitor
+// holds the old app.js, and stale-while-revalidate would hand it back on the
+// first load — the old router reads only the hash, so every product link would
+// land on the front page. The rename forces the shell to be re-fetched now.
+var CACHE = 'prisboka-v4';
 var CORE = [
   '/', '/index.html', '/styles.css', '/app.js',
   '/favicon.svg', '/manifest.webmanifest', '/icon-192.png', '/icon-512.png'
@@ -48,11 +52,21 @@ self.addEventListener('fetch', function (e) {
   if (url.pathname.indexOf('/_vercel/') === 0) return;
 
   // App-shell navigations: prefer the network (fresh HTML), fall back to cache.
+  //
+  // Only '/' is written back as the shell. Product paths are prerendered — the
+  // HTML at /gruppe/helmelk carries that product's title, canonical and
+  // Product JSON-LD — so caching one of those as '/index.html' would make the
+  // offline fallback for every other screen claim to be helmelk until the app
+  // finished booting over it. The app renders the right screen either way (it
+  // routes on the path, not on the HTML it was served), but the metadata a
+  // crawler or a share preview reads would be another page's.
   if (req.mode === 'navigate') {
     e.respondWith(
       fetch(req).then(function (res) {
-        var copy = res.clone();
-        caches.open(CACHE).then(function (c) { c.put('/index.html', copy); });
+        if (url.pathname === '/' || url.pathname === '/index.html') {
+          var copy = res.clone();
+          caches.open(CACHE).then(function (c) { c.put('/index.html', copy); });
+        }
         return res;
       }).catch(function () { return caches.match('/index.html'); })
     );

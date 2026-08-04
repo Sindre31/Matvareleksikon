@@ -1,9 +1,17 @@
 {
   "$schema": "https://openapi.vercel.sh/vercel.json",
   "framework": null,
-  "buildCommand": "",
+  "buildCommand": "node build.mjs",
   "outputDirectory": ".",
   "cleanUrls": true,
+  "rewrites": [
+    { "source": "/gruppe/:slug([a-z0-9-]+)", "destination": "/index.html" },
+    { "source": "/vare/:slug([a-z0-9-]+)/:butikk([a-z0-9-]+)", "destination": "/index.html" },
+    { "source": "/liste", "destination": "/index.html" },
+    { "source": "/skann", "destination": "/index.html" },
+    { "source": "/om", "destination": "/index.html" },
+    { "source": "/admin", "destination": "/index.html" }
+  ],
   "redirects": [
     {
       "source": "/(.*)",
