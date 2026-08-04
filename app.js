@@ -947,6 +947,23 @@
     window.va.apply(null, arguments);
   }
 
+  // Google Analytics 4 alongside it. The tag loader is in index.html; the
+  // queue-and-config half lives here so the CSP can stay off 'unsafe-inline'.
+  // `dataLayer` is Google's own buffer — pushes made before gtag.js has loaded
+  // are replayed when it does, exactly like window.vaq above.
+  var GA_ID = 'G-D75JFRDSGK';
+  function gtag() {
+    if (typeof window === 'undefined') return;
+    (window.dataLayer = window.dataLayer || []).push(arguments);
+  }
+  function gaInit() {
+    gtag('js', new Date());
+    // send_page_view:false for the same reason Vercel's tracker is set to
+    // data-disable-auto-track: GA would count the load and nothing after it,
+    // because every screen change here is hash-only. trackView() sends them.
+    gtag('config', GA_ID, { send_page_view: false });
+  }
+
   function viewFor(r) {
     if (r.view === 'gruppe') return { path: '/gruppe/' + encodeURIComponent(r.groupKey), route: '/gruppe/[gruppe]' };
     if (r.view === 'vare') return { path: '/vare/' + encodeURIComponent(r.groupKey) + '/' + encodeURIComponent(r.storeId), route: '/vare/[gruppe]/[butikk]' };
@@ -963,6 +980,18 @@
   function trackView() {
     var v = viewFor(parseHash());
     va('pageview', { path: v.path, route: v.route });
+    // page_location is built from the screen rather than read off
+    // location.href, so the hash never rides along — on #/liste that hash
+    // carries the visitor's shopping list, which is not ours to send. Same
+    // rule the beforeSend hook below enforces for Vercel.
+    gtag('event', 'page_view', {
+      page_location: location.origin + v.path,
+      page_title: document.title,
+      // Not a GA dimension out of the box — register it as a custom
+      // dimension to group the thousands of product screens under their
+      // pattern the way `route` does in the Vercel dashboard.
+      route: v.route
+    });
   }
 
   var lastTrackedUrl = null;
@@ -3572,6 +3601,7 @@
   // never touches browser globals.
   if (typeof window !== 'undefined' && typeof document !== 'undefined') {
     va('beforeSend', analyticsBeforeSend);
+    gaInit();
     // A dialog belongs to the screen it was opened from. Navigating away — the
     // back button most of all, since both dialogs are the kind of thing you
     // press it to escape — used to leave it floating over whatever came next,

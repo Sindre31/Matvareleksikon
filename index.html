@@ -68,6 +68,7 @@
   <link rel="preconnect" href="https://jiaxeedguivvhixychcg.supabase.co" crossorigin>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link rel="preconnect" href="https://www.googletagmanager.com">
   <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Barlow:wght@400;500;700&family=Barlow+Condensed:wght@400;600&display=swap">
 
   <link rel="stylesheet" href="styles.css">
@@ -155,5 +156,14 @@
        shim Vercel's snippet puts inline lives in app.js for the same reason
        the service worker registration does — to keep script-src at 'self'. -->
   <script defer src="/_vercel/insights/script.js" data-disable-auto-track="1"></script>
+  <!-- Google Analytics 4 (G-D75JFRDSGK). Only the tag loader lives here; the
+       `gtag('config', …)` call and the page views are in app.js, so the CSP
+       keeps script-src at 'self' plus this one host — no 'unsafe-inline'.
+       app.js reports the views for the same reason it does for Vercel: GA's
+       own page_view fires once on load and never again in a hash-routed app,
+       so it is switched off with send_page_view:false and every screen is
+       reported by hand. `async` rather than `defer` is Google's own form; the
+       dataLayer queue in app.js means order between the two does not matter. -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=G-D75JFRDSGK"></script>
 </body>
 </html>
