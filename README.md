@@ -226,6 +226,18 @@ when it can't reach it. The output is gitignored.
   person pressing the button three times is one report, and a product an admin
   has edited by hand is never overwritten by the rule. See `ml_report_apply` in
   `supabase/schema-changes.sql`.
+- **Gi tilbakemelding** — a floating button in the bottom-right corner of every
+  screen (glyph-only below 560 px; absent from `/admin`), opening a dialog with
+  a **kind** — *noe er feil / ønske / ros / annet* — a **message**, and an
+  **optional e-mail**, for anyone who wants an answer. It exists because
+  "Rapporter feil" deliberately doesn't take free text: that path applies
+  itself to the public catalogue and has to stay narrow, so everything *about
+  the site* ("søket finner ikke rugmel", "grafen er rar på mobil") had nowhere
+  to go but the footer's `mailto:`, which is a dead end on a phone. Messages
+  land in `ml_feedback` and are **read by a person** — nothing here is applied
+  automatically and nothing touches `ml_offers`. Only the visitor's `pathname`
+  is recorded, never the URL fragment: the shopping list lives there precisely
+  so it is never sent anywhere.
 - **Admin** `/admin` — the password-protected back office. Unlisted: no link in
   the nav or the footer. Three tabs — the **report queue** (approve a
   correction with "Bruk denne", or reject it), **product search** across the
@@ -258,6 +270,7 @@ schema:
 | `ml_scan_allow()` | RPC: per-IP rate limit for the receipt-scan function |
 | `ml_scan_rate` | Backing table for the rate limiter |
 | `ml_price_reports` | Append-only community **error reports** (`kind` = `pris`/`produkt`, the reported variant, the proposed correction, an optional comment). Anyone may insert; nobody may read them back (they carry an IP) or set their own `status`. `ml_report_prepare` validates and rate-limits on the way in, `ml_report_apply` runs the three-report rule |
+| `ml_feedback` | Append-only free-text **tilbakemeldinger** from the floating button (`kind` = `ros`/`feil`/`onske`/`annet`, the message, an optional e-mail, the `pathname` they were on). Same security shape as `ml_price_reports` — insert-only for the anon key, a column grant covering only the five visitor-supplied fields, no read grant, and `ml_feedback_prepare` stamps the IP and rate-limits (300/h globally, 10/h per IP). Read it in the SQL editor: `select created_at, kind, message, email, path from ml_feedback where status = 'ny' order by created_at desc;` |
 | `ml_offer_overrides` | The corrections themselves, keyed on (`store_id`, the **chain's** `product_name`): new name, new price, "drop the før-price", hidden, plus `flagged`/`admin_locked`/`origin`. Public-readable, service-role-writable |
 | `ml_admin_*()` | The admin API — `search`, `overrides`, `reports`, `save`, `reset`, `set_report`, `apply_report`, `stats`. Typed arguments, `service_role`-only, called by the `ml-admin` Edge Function (product names are full of commas and dots, which PostgREST reads as filter syntax) |
 

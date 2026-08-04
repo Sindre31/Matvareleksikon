@@ -718,6 +718,7 @@
     listPriceMode: 'kilo', listOnlyUnit: false, listOpenStore: null, sizePicker: null,
     groupStore: 'Alle', groupSize: 'alle', groupSort: 'billigst', histMode: 'enhet',
     report: null,   // the feilrapport dialog's draft, see reportOverlay
+    feedback: null, // the tilbakemelding dialog's draft, see feedbackOverlay
     // Adminpanelet (#/admin). The session token lives in sessionStorage, so it
     // dies with the tab; nothing here is readable without the password.
     adminSession: null, adminPw: '', adminBusy: false, adminError: '', adminMsg: '',
@@ -1854,6 +1855,200 @@
       onClick: openReport(g, v),
       onKeydown: function (e) { if (e.key === 'Enter' || e.key === ' ' || e.key === 'Spacebar') e.stopPropagation(); }
     }, '⚠');
+  }
+
+  // ── Tilbakemelding ───────────────────────────────────────────────────────
+  // The other half of the report button. A report is a structured correction
+  // to one product, and three that agree apply themselves to the catalogue —
+  // it has to stay that narrow. Everything else a visitor might want to say
+  // ("søket finner ikke rugmel", "grafen er rar på mobil", "takk for siden")
+  // had nowhere to go but the mailto: in the footer, which is a dead end on a
+  // phone. So: one button, on every screen, that writes prose to a table a
+  // human reads. Nothing here is applied automatically.
+  //
+  // The row goes to ml_feedback (supabase/schema-changes.sql) with the same
+  // security shape as ml_price_reports: insert-only for the anon key, a column
+  // grant covering just these five fields, and a trigger that stamps the IP
+  // and rate-limits. No read grant — it is read in the SQL editor.
+  var FEEDBACK_KINDS = ['ros', 'feil', 'onske', 'annet'];
+
+  // Turn the dialog's draft into the row that gets inserted, or into the
+  // reason it can't be. Pure, and the checks mirror the table's CHECK
+  // constraints, so a rejected draft never reaches the network.
+  function feedbackPayload(d) {
+    d = d || {};
+    var msg = String(d.message == null ? '' : d.message).trim();
+    if (msg.length < 2) return { error: 'Skriv hva du vil si først.' };
+    if (msg.length > 2000) return { error: 'Meldingen kan være maks 2000 tegn.' };
+    var email = String(d.email == null ? '' : d.email).trim().toLowerCase();
+    if (email) {
+      if (email.length > 254 || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+        return { error: 'Sjekk e-postadressen — eller la feltet stå tomt.' };
+      }
+    }
+    return { payload: {
+      kind: FEEDBACK_KINDS.indexOf(d.kind) >= 0 ? d.kind : 'annet',
+      message: msg,
+      email: email || null,
+      // pathname only, never location.href: the shopping list lives in the
+      // fragment precisely so it is never sent anywhere (see listShareUrl).
+      path: String(d.path == null ? '' : d.path).slice(0, 512) || null,
+      sender: d.sender || null
+    } };
+  }
+
+  var feedbackFocused = true;   // one-shot, same as the report dialog
+  function openFeedback() {
+    feedbackFocused = false;
+    setState({ feedback: {
+      kind: 'annet', message: '', email: '',
+      path: typeof location !== 'undefined' ? location.pathname : null,
+      phase: 'form', error: null
+    } });
+  }
+  function patchFeedback(patch) {
+    if (!state.feedback) return;
+    setState({ feedback: Object.assign({}, state.feedback, patch) });
+  }
+  function submitFeedback() {
+    var d = state.feedback;
+    if (!d || d.phase === 'sending') return;
+    var built = feedbackPayload(Object.assign({}, d, { sender: reporterId() }));
+    if (built.error) { patchFeedback({ error: built.error }); return; }
+    patchFeedback({ phase: 'sending', error: null });
+    sb('/ml_feedback', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(built.payload)
+    })
+      .then(function (res) {
+        if (res.ok) return null;
+        return res.json().then(function (b) { throw new Error((b && b.message) || ''); }, function () { throw new Error(''); });
+      })
+      .then(function () {
+        // The Send button is what had focus and it is about to be replaced by
+        // the receipt screen, so focus would fall back to <body> — leaving the
+        // dialog open with no keyboard way out (the Escape handler sits on the
+        // overlay and only sees keys pressed inside it). Re-arm the one-shot so
+        // the render below moves focus to "Lukk".
+        feedbackFocused = false;
+        patchFeedback({ phase: 'done', error: null });
+      })
+      .catch(function (err) {
+        // ml_feedback_prepare raises Norwegian prose the sender can act on;
+        // anything else is a Postgres code they can't.
+        var msg = String((err && err.message) || '');
+        var ours = /^(For mange|Du har sendt)/.test(msg);
+        patchFeedback({ phase: 'form', error: ours ? msg : 'Kunne ikke sende tilbakemeldingen nå. Sjekk nettforbindelsen og prøv igjen.' });
+      });
+  }
+
+  function feedbackOverlay() {
+    var d = state.feedback;
+    if (!d) return null;
+    var close = function () { setState({ feedback: null }); };
+    var sending = d.phase === 'sending';
+
+    var kindBtn = function (id, label) {
+      var on = d.kind === id;
+      return h('button', {
+        type: 'button', 'aria-pressed': on ? 'true' : 'false',
+        style: 'flex: 1 1 auto; min-width: 92px; padding: 9px 12px; cursor: pointer; font: inherit; font-size: 13px;'
+          + ' font-family: var(--font-heading); font-weight: 600; letter-spacing: 0.02em; text-transform: uppercase;'
+          + ' border: 1px solid ' + (on ? 'var(--color-accent)' : 'var(--color-divider)') + ';'
+          + (on ? ' background: color-mix(in srgb, var(--color-accent) 10%, transparent);' : ' background: transparent;')
+          + ' color: inherit;',
+        onClick: function () { patchFeedback({ kind: id, error: null }); },
+        text: label
+      });
+    };
+
+    var body;
+    if (d.phase === 'done') {
+      body = h('div', { style: 'padding: 20px 16px;' }, [
+        h('p', { style: 'margin: 0; font-size: 15px; line-height: 22px;' }, ['Takk — meldingen er sendt.']),
+        h('p', { style: 'margin: 12px 0 0; font-size: 14px; line-height: 21px; color: ' + MUTED70 + ';' }, [
+          d.email
+            ? 'Vi leser alt som kommer inn, og svarer deg på ' + d.email + ' hvis det trengs.'
+            : 'Vi leser alt som kommer inn. Du la ikke igjen e-post, så dette er en enveismelding — det er helt greit.'
+        ]),
+        h('div', { style: 'margin-top: 18px;' }, [
+          h('button', { type: 'button', cls: 'btn btn-primary', 'data-focus-id': 'feedback-close', onClick: close, text: 'Lukk' })
+        ])
+      ]);
+    } else {
+      body = h('div', { style: 'padding: 16px;' }, [
+        h('div', { style: 'display: flex; flex-wrap: wrap; gap: 8px;' }, [
+          kindBtn('feil', 'Noe er feil'),
+          kindBtn('onske', 'Ønske'),
+          kindBtn('ros', 'Ros'),
+          kindBtn('annet', 'Annet')
+        ]),
+        h('label', { style: 'display: block; margin-top: 18px;' }, [
+          h('span', { style: 'display: block; font-size: 12px; letter-spacing: 0.08em; text-transform: uppercase; font-weight: 600; color: ' + MUTED70 + '; margin-bottom: 6px;', text: 'Melding' }),
+          h('textarea', {
+            cls: 'input', rows: '5', maxlength: '2000',
+            placeholder: 'Hva fungerer ikke — eller hva savner du?',
+            value: d.message, 'data-focus-id': 'feedback-message',
+            style: 'width: 100%; font-size: 16px; font-family: inherit; line-height: 22px;',
+            onInput: function (e) { patchFeedback({ message: e.target.value }); }
+          })
+        ]),
+        h('label', { style: 'display: block; margin-top: 16px;' }, [
+          h('span', { style: 'display: block; font-size: 12px; letter-spacing: 0.08em; text-transform: uppercase; font-weight: 600; color: ' + MUTED70 + '; margin-bottom: 6px;', text: 'E-post (valgfritt)' }),
+          h('input', {
+            cls: 'input', type: 'email', inputmode: 'email', autocomplete: 'email', maxlength: '254',
+            placeholder: 'bare hvis du vil ha svar',
+            value: d.email, 'data-focus-id': 'feedback-email',
+            style: 'width: 100%; min-height: 40px; font-size: 16px;',
+            onInput: function (e) { patchFeedback({ email: e.target.value }); }
+          })
+        ]),
+        d.error ? h('p', { role: 'alert', style: 'margin: 14px 0 0; font-size: 14px; line-height: 20px; color: var(--color-accent-900);', text: d.error }) : null,
+        // Sticky for the same reason the report dialog's row is: on a phone
+        // this card is taller than 85vh and the send button would sit below
+        // the fold of a container the visitor may not realise scrolls.
+        h('div', { style: 'display: flex; flex-wrap: wrap; gap: 10px; margin-top: 18px; position: sticky; bottom: 0; background: var(--color-bg); padding: 12px 0 4px;' }, [
+          h('button', { type: 'button', cls: 'btn btn-primary', disabled: sending ? 'disabled' : false, onClick: submitFeedback, text: sending ? 'Sender …' : 'Send' }),
+          h('button', { type: 'button', cls: 'btn btn-ghost', onClick: close, text: 'Avbryt' })
+        ]),
+        h('p', { style: 'margin: 14px 0 0; font-size: 12px; line-height: 18px; color: ' + MUTED60 + ';', text: 'Meldingen er anonym med mindre du skriver e-posten din. Vi lagrer det du skriver, hvilken side du var på, og IP-adressen din en kort stund for å stoppe søppelmeldinger.' })
+      ]);
+    }
+
+    var card = h('div', {
+      cls: 'blueprint', role: 'dialog', 'aria-modal': 'true', 'aria-label': 'Gi tilbakemelding',
+      style: 'width: min(520px, 100%); max-height: 85vh; overflow: auto; background: var(--color-bg); padding: 0;',
+      onClick: function (e) { e.stopPropagation(); }
+    }, corners().concat([
+      h('div', { style: 'padding: 20px 16px 12px;' }, [
+        h('span', { style: KICKER + ' margin-bottom: 6px;', text: 'Tilbakemelding' }),
+        h('span', { style: 'display: block; font-family: var(--font-heading); font-weight: 600; font-size: 22px; letter-spacing: 0.02em; text-transform: uppercase;', text: 'Si hva du mener' }),
+        h('p', { style: 'margin: 8px 0 0; font-size: 14px; line-height: 20px; color: ' + MUTED70 + ';', text: 'Feil pris på én vare? Bruk «Rapporter feil» på varen — den retter seg selv når nok folk melder fra. Alt annet hører hjemme her.' })
+      ]),
+      body
+    ]));
+    return h('div', {
+      style: 'position: fixed; inset: 0; z-index: 50; background: color-mix(in srgb, var(--color-text) 45%, transparent); display: flex; align-items: center; justify-content: center; padding: 20px;',
+      onClick: close,
+      onKeydown: function (e) { if (e.key === 'Escape') close(); }
+    }, [card]);
+  }
+
+  // The floating button itself, bottom-right of every screen. z-index 40 keeps
+  // it under the dialogs (50) — and it is left out of the tree entirely while
+  // one is open, so it can't show through the dim layer or take a tab stop
+  // behind it. Below 560 px the words drop and the glyph carries it, so the
+  // button stays thumb-sized instead of covering a third of a phone's width.
+  function feedbackFab() {
+    return h('button', {
+      type: 'button', cls: 'btn btn-primary feedback-fab',
+      title: 'Gi tilbakemelding', 'aria-label': 'Gi tilbakemelding',
+      onClick: openFeedback
+    }, [
+      h('span', { 'aria-hidden': 'true', style: 'font-size: 15px; line-height: 1;', text: '✎' }),
+      h('span', { cls: 'feedback-fab-text', text: 'Gi tilbakemelding' })
+    ]);
   }
 
   // "Copy link" button with transient confirmation, keyed on the current URL.
@@ -3575,6 +3770,19 @@
         setTimeout(function () { var el = document.querySelector('[role="dialog"] button'); if (el) el.focus(); }, 0);
       }
     }
+    if (state.feedback) {
+      frag.appendChild(feedbackOverlay());
+      if (!feedbackFocused) {
+        feedbackFocused = true;
+        setTimeout(function () { var el = document.querySelector('[role="dialog"] button'); if (el) el.focus(); }, 0);
+      }
+    }
+    // The floating tilbakemelding button, last so it paints over the page.
+    // Not on the admin panel — that screen is for the person who reads the
+    // feedback, not for sending it — and not while a dialog owns the screen.
+    if (state.view !== 'admin' && !state.report && !state.feedback && !state.sizePicker) {
+      frag.appendChild(feedbackFab());
+    }
     return frag;
   }
 
@@ -3906,7 +4114,8 @@
       chartFrom: chartFrom, rowSizeId: rowSizeId, listStoreSeries: listStoreSeries,
       slugFor: slugFor, keyFromSlug: keyFromSlug, groupPath: groupPath, variantPath: variantPath,
       parsePath: parsePath, parseSharedList: parseSharedList, legacyHashPath: legacyHashPath,
-      parsePrice: parsePrice, reportPayload: reportPayload, normAdminProduct: normAdminProduct
+      parsePrice: parsePrice, reportPayload: reportPayload, feedbackPayload: feedbackPayload,
+      normAdminProduct: normAdminProduct
     };
   }
 })();
