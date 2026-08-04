@@ -315,6 +315,17 @@
     return out;
   }
 
+  // A card or row that leads to another screen. It must be a real <a href>:
+  // a crawler follows anchors and cannot follow a click handler, which is why
+  // the product pages were undiscoverable even once they had their own paths —
+  // nothing on the site linked to them in a form a crawler could see. The
+  // handler stays so in-app navigation still avoids a document reload, and the
+  // colour/underline reset keeps the global `a` rule from restyling a card.
+  var LINK_RESET = 'color: inherit; text-decoration: none;';
+  function linkTo(href, handler, label) {
+    return { href: href, onClick: handler, 'aria-label': label || false };
+  }
+
   // Make a non-native clickable element keyboard-operable (Enter/Space) and
   // announced as a button. Merge the returned props into the element.
   function activate(handler, label) {
@@ -686,9 +697,12 @@
   }
 
   // A shareable list URL encodes the entries after the hash (entries are
-  // [a-z0-9 @.] only, so '~' is a safe separator) — no account, no server.
+  // [a-z0-9 @.] only, so '~' is a safe separator) — no account, no server. The
+  // screen moved to a real path, but the payload stays in the fragment on
+  // purpose: a fragment is never sent to the server or to the analytics
+  // beacon, and a shopping list is the visitor's own.
   function listShareUrl() {
-    return location.href.replace(/#.*$/, '') + '#/liste?d=' + encodeURIComponent(state.list.join('~'));
+    return location.origin + '/liste#d=' + encodeURIComponent(state.list.join('~'));
   }
 
   // ── State ────────────────────────────────────────────────────────────────
@@ -858,32 +872,227 @@
       corners().concat(src ? [h('img', { src: src, alt: alt, style: 'max-width: 82%; max-height: 82%; object-fit: contain; mix-blend-mode: multiply;' })] : []));
   }
 
+  // ── URLs ─────────────────────────────────────────────────────────────────
+  // Every screen lives on a real path — /gruppe/melange-margarin — rather than
+  // behind a '#'. A fragment is not part of the URL a crawler stores, requests
+  // or ranks, so while the products sat in the hash the whole leksikon was one
+  // indexable document: the front page. A path is its own document, which is
+  // what lets a search for "melange margarin pris" land on the product instead
+  // of the hero.
+  //
+  // ml_group_key folds a product name down to [a-z0-9 ] — no punctuation and,
+  // crucially, no hyphens (checked across all 39 088 keys in the catalogue) —
+  // so " " ⇄ "-" is a total, reversible mapping. No lookup table, no percent
+  // escapes, and a URL that reads as the product it points at. The
+  // encodeURIComponent is a no-op for that charset and stays as belt and
+  // braces in case the server-side folding ever widens.
+  function slugFor(key) { return String(key == null ? '' : key).trim().replace(/ +/g, '-'); }
+  function keyFromSlug(slug) { return String(slug == null ? '' : slug).replace(/-+/g, ' ').trim(); }
+  function groupPath(key) { return '/gruppe/' + encodeURIComponent(slugFor(key)); }
+  function variantPath(key, store) { return '/vare/' + encodeURIComponent(slugFor(key)) + '/' + encodeURIComponent(store); }
+
   // ── Routing ──────────────────────────────────────────────────────────────
-  function parseHash() {
-    var hn = (location.hash || '').replace(/^#/, '');
-    if (hn.indexOf('/gruppe/') === 0) return { view: 'gruppe', groupKey: decodeURIComponent(hn.slice('/gruppe/'.length)) };
-    if (hn.indexOf('/vare/') === 0) {
-      var rest = hn.slice('/vare/'.length), i = rest.lastIndexOf('/');
-      if (i > 0) return { view: 'vare', groupKey: decodeURIComponent(rest.slice(0, i)), storeId: decodeURIComponent(rest.slice(i + 1)) };
-    }
-    if (hn === '/skann') return { view: 'scan' };
-    if (hn === '/om') return { view: 'om' };
-    if (hn === '/admin') return { view: 'admin' };
-    if (hn.indexOf('/liste') === 0) {
-      var shared = null, qi = hn.indexOf('?');
-      if (qi > -1) {
-        var mm = hn.slice(qi + 1).match(/(?:^|&)d=([^&]*)/);
-        if (mm) { try { shared = decodeURIComponent(mm[1]).split('~').map(function (s) { return s.trim(); }).filter(Boolean); } catch (e) { shared = null; } }
-      }
-      return { view: 'liste', shared: shared };
+  // The shared shopping list rides in the *fragment* (#d=…), never in the query
+  // string. Everything after '#' stays inside the browser — it is not sent to
+  // the server, and not to the analytics beacon — and that list is the
+  // visitor's own. Moving the screens out of the hash is exactly why this now
+  // has to be stated: on the old #/liste?d=… the payload was in the hash by
+  // accident of the routing, and a naive port would have put it in the query.
+  function parseSharedList(hash) {
+    var m = String(hash || '').replace(/^#/, '').match(/(?:^|[?&])d=([^&]*)/);
+    if (!m) return null;
+    try {
+      var out = decodeURIComponent(m[1]).split('~').map(function (s) { return s.trim(); }).filter(Boolean);
+      return out.length ? out : null;
+    } catch (e) { return null; }
+  }
+
+  function parsePath(pathname, hash) {
+    var seg = String(pathname == null ? '/' : pathname).split('/').filter(Boolean);
+    for (var i = 0; i < seg.length; i++) { try { seg[i] = decodeURIComponent(seg[i]); } catch (e) { /* a malformed escape stays raw and simply won't match a group */ } }
+    if (seg[0] === 'gruppe' && seg[1] && seg.length === 2) return { view: 'gruppe', groupKey: keyFromSlug(seg[1]) };
+    if (seg[0] === 'vare' && seg[1] && seg[2] && seg.length === 3) return { view: 'vare', groupKey: keyFromSlug(seg[1]), storeId: seg[2] };
+    if (seg.length === 1) {
+      if (seg[0] === 'skann') return { view: 'scan' };
+      if (seg[0] === 'om') return { view: 'om' };
+      if (seg[0] === 'admin') return { view: 'admin' };
+      if (seg[0] === 'liste') return { view: 'liste', shared: parseSharedList(hash) };
     }
     return { view: 'home' };
   }
+
+  // Links shared before the move — #/gruppe/melange%20margarin — are out in
+  // Facebook posts, bookmarks and the odd forum reply, and they still have to
+  // land on the product. They are translated to the path form in place, with
+  // replaceState so the back button never bounces between the two spellings of
+  // the same screen. Returns null for a hash that was never one of ours (an
+  // in-page anchor), which is left alone.
+  function legacyHashPath(hash) {
+    var hn = String(hash || '').replace(/^#/, '');
+    if (hn.charAt(0) !== '/') return null;
+    var q = hn.indexOf('?'), qs = q > -1 ? hn.slice(q + 1) : '';
+    if (q > -1) hn = hn.slice(0, q);
+    var dec = function (s) { try { return decodeURIComponent(s); } catch (e) { return s; } };
+    if (hn.indexOf('/gruppe/') === 0) return groupPath(dec(hn.slice('/gruppe/'.length)));
+    if (hn.indexOf('/vare/') === 0) {
+      var rest = hn.slice('/vare/'.length), i = rest.lastIndexOf('/');
+      if (i > 0) return variantPath(dec(rest.slice(0, i)), dec(rest.slice(i + 1)));
+    }
+    if (hn === '/skann') return '/skann';
+    if (hn === '/om') return '/om';
+    if (hn === '/admin') return '/admin';
+    // The list payload moves from the query half of the old hash into the
+    // fragment, so a shared list survives the move without touching a server.
+    if (hn === '/liste') return '/liste' + (qs ? '#' + qs : '');
+    if (hn === '/') return '/';
+    return null;
+  }
+
+  function currentRoute() { return parsePath(location.pathname, location.hash); }
+
+  // The URL the router last acted on. popstate and hashchange can both fire for
+  // a single navigation (a change to /liste#d=… raises only the second), so the
+  // listener needs to tell a real move from the echo of one. Stamped inside
+  // route() rather than in the listener, because go() routes directly without
+  // going through either event.
+  var lastNavUrl = null;
+
+  // ── Per-page metadata ────────────────────────────────────────────────────
+  // Giving every product its own path only pays off if the page also *says* it
+  // is its own document: pages that share a title, a description and a
+  // canonical get folded together as duplicates of one another, which would
+  // undo the routing change. So all four are rewritten on every route, and a
+  // group screen additionally publishes a Product/AggregateOffer block — that
+  // is what lets the price itself appear in the search result.
+  var ORIGIN = 'https://prisboka.no';
+  var BASE_TITLE = 'Prisboka — Matvareleksikon med pristrender';
+  var BASE_DESC = 'Matvareleksikon med ekte matvarepriser fra norske dagligvarekjeder — hentet fra tilbudsaviser og skannede kvitteringer, og hvor prisen er på vei.';
+
+  // The cheapest pack in the group, and where it is. Pack price rather than
+  // price per kg, because that is the number on the shelf label and the number
+  // a search result should be able to quote back.
+  function cheapestVariant(g) {
+    var vs = (g && g.variants) || [];
+    if (!vs.length) return null;
+    return vs.reduce(function (a, b) { return b.price < a.price ? b : a; });
+  }
+
+  function metaFor(r) {
+    var g = r.groupKey ? GROUP_BY_KEY[r.groupKey] : null;
+    // Before the catalogue lands there is no product object yet — the slug is
+    // still a readable name, so the page is never nameless while it loads.
+    var name = g ? g.name : (r.groupKey ? canonLabel(r.groupKey) : '');
+    if (r.view === 'gruppe' && name) {
+      var best = cheapestVariant(g);
+      return {
+        title: name + ' — pris i ' + (g ? 'butikkene' : 'norske dagligvarebutikker') + ' | Prisboka',
+        desc: best
+          ? ('Hva koster ' + name.toLowerCase() + '? Billigst nå ' + nf(best.price) + ' hos ' + best.storeName
+             + '. Sammenlign ' + g.storeCount + (g.storeCount === 1 ? ' butikk' : ' butikker') + ', se prishistorikk og pris per kg/l.')
+          : ('Hva koster ' + name.toLowerCase() + '? Sammenlign prisen i norske dagligvarebutikker, med prishistorikk og pris per kg/l.'),
+        canonical: ORIGIN + groupPath(r.groupKey)
+      };
+    }
+    if (r.view === 'vare' && name) {
+      var store = STORE_NAME[r.storeId] || r.storeId;
+      return {
+        title: name + ' hos ' + store + ' — pris og prishistorikk | Prisboka',
+        desc: 'Hva ' + name.toLowerCase() + ' koster hos ' + store + ', og hvordan prisen har utviklet seg.',
+        // A per-store screen is one chain's view of a product the group page
+        // already covers in full. Pointing the canonical at the group keeps the
+        // ranking signal on one page per product instead of splitting it four
+        // ways over near-identical text — and the group page carries the store's
+        // price anyway, so nothing is lost from the result.
+        canonical: ORIGIN + groupPath(r.groupKey)
+      };
+    }
+    if (r.view === 'scan') return { title: 'Skann kvittering — bidra med priser | Prisboka', desc: 'Last opp en kvittering, så leses prisene inn i leksikonet. Ingen konto, ingen personopplysninger.', canonical: ORIGIN + '/skann' };
+    if (r.view === 'om') return { title: 'Om Prisboka — hvor prisene kommer fra', desc: 'Hvor tallene i Prisboka kommer fra, hvordan varer grupperes på tvers av kjeder, og hva prisene ikke dekker.', canonical: ORIGIN + '/om' };
+    if (r.view === 'liste') return { title: 'Handleliste — hva lista koster i hver butikk | Prisboka', desc: 'Samle varene du handler, og se hva hele lista koster i hver kjede.', canonical: ORIGIN + '/liste' };
+    return { title: BASE_TITLE, desc: BASE_DESC, canonical: ORIGIN + '/' };
+  }
+
+  function headTag(sel, make) {
+    var el = document.head.querySelector(sel);
+    if (!el) { el = make(); document.head.appendChild(el); }
+    return el;
+  }
+
+  // Product markup for the group screens. AggregateOffer rather than a bare
+  // Offer because the whole point of the page is that several chains sell the
+  // same thing at different prices — low/high is the story, and each chain
+  // rides along as its own Offer with the store as seller.
+  function productLd(r) {
+    if (r.view !== 'gruppe') return null;
+    var g = GROUP_BY_KEY[r.groupKey];
+    if (!g || !g.variants || !g.variants.length) return null;
+    var prices = g.variants.map(function (v) { return v.price; }).filter(function (p) { return isFinite(p) && p > 0; });
+    if (!prices.length) return null;
+    var url = ORIGIN + groupPath(r.groupKey);
+    return {
+      '@context': 'https://schema.org',
+      '@type': 'Product',
+      '@id': url + '#product',
+      name: g.name,
+      url: url,
+      category: 'Dagligvarer',
+      offers: {
+        '@type': 'AggregateOffer',
+        priceCurrency: 'NOK',
+        lowPrice: Math.min.apply(null, prices),
+        highPrice: Math.max.apply(null, prices),
+        offerCount: g.variants.length,
+        offers: g.variants.map(function (v) {
+          return {
+            '@type': 'Offer',
+            name: v.rawName,
+            price: v.price,
+            priceCurrency: 'NOK',
+            availability: 'https://schema.org/InStock',
+            url: ORIGIN + variantPath(g.key, v.storeId),
+            seller: { '@type': 'Organization', name: v.storeName }
+          };
+        })
+      }
+    };
+  }
+
+  function setMeta(r) {
+    if (typeof document === 'undefined' || !document.head) return;
+    var m = metaFor(r);
+    document.title = m.title;
+    headTag('link[rel="canonical"]', function () { var e = document.createElement('link'); e.setAttribute('rel', 'canonical'); return e; }).setAttribute('href', m.canonical);
+    headTag('meta[name="description"]', function () { var e = document.createElement('meta'); e.setAttribute('name', 'description'); return e; }).setAttribute('content', m.desc);
+    [['og:title', m.title], ['og:description', m.desc], ['og:url', m.canonical]].forEach(function (p) {
+      headTag('meta[property="' + p[0] + '"]', function () { var e = document.createElement('meta'); e.setAttribute('property', p[0]); return e; }).setAttribute('content', p[1]);
+    });
+    [['twitter:title', m.title], ['twitter:description', m.desc]].forEach(function (p) {
+      headTag('meta[name="' + p[0] + '"]', function () { var e = document.createElement('meta'); e.setAttribute('name', p[0]); return e; }).setAttribute('content', p[1]);
+    });
+    // A stale Product block on a non-product screen would describe the wrong
+    // thing, so the node is removed rather than left behind when we leave.
+    var ld = productLd(r), node = document.getElementById('ld-product');
+    if (!ld) { if (node) node.parentNode.removeChild(node); return; }
+    if (!node) {
+      node = document.createElement('script');
+      node.id = 'ld-product';
+      node.type = 'application/ld+json';
+      document.head.appendChild(node);
+    }
+    node.textContent = JSON.stringify(ld);
+  }
   function route() {
+    // Before the phase check: route() runs both on navigation and when the
+    // background catalogue refresh lands, and the second is the first moment a
+    // product's name and prices are known — which is what the <title> and the
+    // Product JSON-LD are built from. A crawler that renders the page sees the
+    // filled-in version; one that doesn't still gets the path's own title.
+    setMeta(currentRoute());
+    lastNavUrl = location.pathname + location.hash;
     if (state.phase !== 'ready') { render(); return; }
-    var r = parseHash();
+    var r = currentRoute();
     if (r.view === 'gruppe') {
-      if (!GROUP_BY_KEY[r.groupKey]) { location.hash = '#/'; return; }
+      if (!GROUP_BY_KEY[r.groupKey]) { replaceWith('/'); return; }
       // The history lives on this page now, so fetch it here too. Opening a
       // different product resets the page's filters — they belong to the view,
       // not to the shopper.
@@ -891,7 +1100,7 @@
       state.view = 'gruppe'; state.groupKey = r.groupKey;
       loadHistory(GROUP_BY_KEY[r.groupKey]);
     } else if (r.view === 'vare') {
-      if (!GROUP_BY_KEY[r.groupKey]) { location.hash = '#/'; return; }
+      if (!GROUP_BY_KEY[r.groupKey]) { replaceWith('/'); return; }
       state.view = 'vare'; state.groupKey = r.groupKey; state.storeId = r.storeId;
       loadHistory(GROUP_BY_KEY[r.groupKey]);
     } else if (r.view === 'scan') {
@@ -921,21 +1130,39 @@
     return names.slice(0, -1).join(', ') + ' og ' + names[names.length - 1];
   }
 
-  var HASH_FOR = { home: '#/', scan: '#/skann', liste: '#/liste', om: '#/om' };
-  function go(hash) { if (location.hash === hash || (hash === '#/' && !location.hash)) route(); else location.hash = hash; }
-  function nav(view) { return function (e) { if (e && e.preventDefault) e.preventDefault(); go(HASH_FOR[view] || '#/'); window.scrollTo(0, 0); }; }
-  function openGroup(key) { return function () { go('#/gruppe/' + encodeURIComponent(key)); window.scrollTo(0, 0); }; }
-  function openVariant(key, store) { return function () { go('#/vare/' + encodeURIComponent(key) + '/' + encodeURIComponent(store)); window.scrollTo(0, 0); }; }
+  var PATH_FOR = { home: '/', scan: '/skann', liste: '/liste', om: '/om', admin: '/admin' };
+
+  // pushState rather than a hash assignment, so the address bar shows the path
+  // a crawler and a shopper can both use. It fires no event of its own, hence
+  // the explicit route()/trackView() — popstate covers only back and forward.
+  function go(path) {
+    if (path === location.pathname + location.hash) { route(); return; }
+    history.pushState(null, '', path);
+    route();
+    trackView();
+  }
+  // Used where the app itself corrects the URL (a product that no longer
+  // exists), so the dead address doesn't sit in the history for Back to
+  // return to.
+  function replaceWith(path) { history.replaceState(null, '', path); route(); }
+  function nav(view) { return function (e) { if (e && e.preventDefault) e.preventDefault(); go(PATH_FOR[view] || '/'); window.scrollTo(0, 0); }; }
+  // Every navigating element is a real <a href> now — a crawler follows those
+  // and cannot follow an onclick — so these handlers take over from the
+  // browser's own navigation rather than standing in for it.
+  function openGroup(key) { return function (e) { if (e && e.preventDefault) e.preventDefault(); go(groupPath(key)); window.scrollTo(0, 0); }; }
+  function openVariant(key, store) { return function (e) { if (e && e.preventDefault) e.preventDefault(); go(variantPath(key, store)); window.scrollTo(0, 0); }; }
 
   // ── Analytics ────────────────────────────────────────────────────────────
-  // Vercel Web Analytics counts a view only when the *pathname* changes, and
-  // its tracker skips hash-only navigation outright — so in this hash-routed
-  // app every screen would land on "/" and the dashboard would show one page.
-  // We report the views ourselves instead: `path` is the screen the visitor is
-  // on, `route` is the pattern it belongs to, so thousands of products group
-  // under /gruppe/[gruppe] rather than filling the list one by one. Both are
-  // ordinary page views (they hit the same /_vercel/insights/view endpoint as
-  // the automatic ones) — not custom events, so no paid plan is involved.
+  // Vercel Web Analytics counts a view only when the *pathname* changes. Now
+  // that the screens are pushState routes it would follow them by itself, but
+  // auto-tracking stays off and we report the views here, for two reasons the
+  // routing change doesn't retire: `route` — the pattern a screen belongs to,
+  // so thousands of products group under /gruppe/[gruppe] rather than filling
+  // the list one by one — is ours to attach and the tracker knows nothing
+  // about it, and /liste#d=… moves without touching the pathname it watches.
+  // Both are ordinary page views (they hit the same /_vercel/insights/view
+  // endpoint as the automatic ones) — not custom events, so no paid plan is
+  // involved.
   //
   // `window.va` does not exist until the deferred tracker loads, so calls are
   // queued in `window.vaq` and replayed on load. That queue is Vercel's own
@@ -959,14 +1186,15 @@
   function gaInit() {
     gtag('js', new Date());
     // send_page_view:false for the same reason Vercel's tracker is set to
-    // data-disable-auto-track: GA would count the load and nothing after it,
-    // because every screen change here is hash-only. trackView() sends them.
+    // data-disable-auto-track: one reporter, not two racing. GA's own
+    // page_view fires on load only, and would miss both the `route` dimension
+    // and the hash-only move to /liste#d=…. trackView() sends them.
     gtag('config', GA_ID, { send_page_view: false });
   }
 
   function viewFor(r) {
-    if (r.view === 'gruppe') return { path: '/gruppe/' + encodeURIComponent(r.groupKey), route: '/gruppe/[gruppe]' };
-    if (r.view === 'vare') return { path: '/vare/' + encodeURIComponent(r.groupKey) + '/' + encodeURIComponent(r.storeId), route: '/vare/[gruppe]/[butikk]' };
+    if (r.view === 'gruppe') return { path: groupPath(r.groupKey), route: '/gruppe/[gruppe]' };
+    if (r.view === 'vare') return { path: variantPath(r.groupKey, r.storeId), route: '/vare/[gruppe]/[butikk]' };
     if (r.view === 'scan') return { path: '/skann', route: '/skann' };
     if (r.view === 'om') return { path: '/om', route: '/om' };
     // The shared list travels in the hash as ?d=<varer> — the screen is what we
@@ -975,10 +1203,10 @@
     return { path: '/', route: '/' };
   }
 
-  // Derived from parseHash, not from the raw hash, so an unrecognised URL
+  // Derived from parsePath, not from the raw pathname, so an unrecognised URL
   // collapses to home exactly the way the router treats it.
   function trackView() {
-    var v = viewFor(parseHash());
+    var v = viewFor(currentRoute());
     va('pageview', { path: v.path, route: v.route });
     // page_location is built from the screen rather than read off
     // location.href, so the hash never rides along — on #/liste that hash
@@ -1628,11 +1856,11 @@
     }, '⚠');
   }
 
-  // "Copy link" button with transient confirmation, keyed on the current hash.
+  // "Copy link" button with transient confirmation, keyed on the current URL.
   function copyLinkBtn() {
-    var done = state.copiedFor === (location.hash || '#/');
+    var done = state.copiedFor === (location.pathname + location.hash);
     return h('button', { type: 'button', cls: 'btn btn-ghost', style: 'font-size: 13px; letter-spacing: 0.08em; text-transform: uppercase; font-weight: 600;', onClick: function () {
-      var here = location.hash || '#/';
+      var here = location.pathname + location.hash;
       var mark = function () { state.copiedFor = here; render(); setTimeout(function () { if (state.copiedFor === here) { state.copiedFor = null; render(); } }, 2000); };
       try {
         if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(location.href).then(mark, mark);
@@ -1663,7 +1891,7 @@
   function navCartLink() {
     var n = listCount();
     var label = 'Handleliste' + (n ? ' (' + n + ')' : '');
-    return h('a', { cls: 'nav-cart', href: '#/liste', onClick: nav('liste'), 'aria-label': label, title: label }, [
+    return h('a', { cls: 'nav-cart', href: '/liste', onClick: nav('liste'), 'aria-label': label, title: label }, [
       h('span', { cls: 'nav-cart-text', text: label }),
       h('span', { cls: 'nav-cart-icon' }, [
         h('svg', { width: '20', height: '20', viewBox: '0 0 20 20', fill: 'none', 'aria-hidden': 'true' }, [
@@ -1682,10 +1910,10 @@
   function renderNav() {
     return h('nav', { cls: 'nav', 'data-screen-label': 'Topplinje', style: 'padding-inline: max(24px, calc((100% - 1160px) / 2 + 24px));' }, [
       h('span', Object.assign({ cls: 'nav-brand', style: 'cursor: pointer;', text: 'Prisboka' }, activate(nav('home'), 'Prisboka — til forsiden'))),
-      h('a', { href: '#/', onClick: nav('home'), text: 'Leksikon' }),
+      h('a', { href: '/', onClick: nav('home'), text: 'Leksikon' }),
       navCartLink(),
-      h('a', { href: '#/skann', onClick: nav('scan'), text: 'Bidra med priser' }),
-      h('a', { cls: 'nav-wide-only', href: '#/om', onClick: nav('om'), text: 'Om' }),
+      h('a', { href: '/skann', onClick: nav('scan'), text: 'Bidra med priser' }),
+      h('a', { cls: 'nav-wide-only', href: '/om', onClick: nav('om'), text: 'Om' }),
       h('span', { cls: 'nav-wide-only', style: 'flex: 1;' }),
       h('span', {
         style: 'font-size: 13px; letter-spacing: 0.06em; text-transform: uppercase; '
@@ -1774,7 +2002,7 @@
         h('hr', { style: RULE }),
         h('div', { style: 'display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 28px;' }, picked.map(function (o) {
           var v = o.v;
-          return h('div', Object.assign({ cls: 'blueprint card-hover', style: 'padding: 0; cursor: pointer; display: flex; flex-direction: column;' }, activate(openGroup(o.g.key), o.g.name + ', tilbud hos ' + v.storeName + ', ' + nf(v.price))), corners().concat([
+          return h('a', Object.assign({ cls: 'blueprint card-hover', style: 'padding: 0; display: flex; flex-direction: column; ' + LINK_RESET }, linkTo(groupPath(o.g.key), openGroup(o.g.key), o.g.name + ', tilbud hos ' + v.storeName + ', ' + nf(v.price))), corners().concat([
             cardStar(o.g.key),
             imgBox(imageOf(v), v.name, '150px', v.hasImage),
             h('div', { style: 'padding: 14px 16px; display: flex; flex-direction: column; gap: 6px;' }, [
@@ -1830,7 +2058,7 @@
         priceTxt = pre + nf(g.minPrice);
         subTxt = hasUnit ? (nfUnit(g.unitPrice, g.unitDim) + ' · ' + whereTxt) : (g.storeCount > 1 ? whereTxt : (g.onOffer ? whereTxt : ''));
       }
-      return h('div', Object.assign({ cls: 'blueprint card-hover', style: 'padding: 0; cursor: pointer; display: flex; flex-direction: column;' }, activate(openGroup(g.key), g.name + ', ' + priceTxt + ' ' + whereTxt)), corners().concat([
+      return h('a', Object.assign({ cls: 'blueprint card-hover', style: 'padding: 0; display: flex; flex-direction: column; ' + LINK_RESET }, linkTo(groupPath(g.key), openGroup(g.key), g.name + ', ' + priceTxt + ' ' + whereTxt)), corners().concat([
         cardStar(g.key),
         imgBox(groupImage(g), g.name, '150px', g.hasImage),
         h('div', { style: 'padding: 16px 18px 18px; display: flex; flex-direction: column; gap: 6px;' }, [
@@ -1865,7 +2093,7 @@
       h('div', { style: 'padding: 64px 0 24px;' }, [
         h('h1', { style: H1, text: 'Fant ikke varen' }),
         h('p', { style: 'margin: 16px 0 24px; max-width: 56ch; font-size: 16px; line-height: 24px; color: ' + MUTED70 + ';', text: msg }),
-        h('a', { href: '#/', onClick: nav('home'), cls: 'btn btn-primary', text: 'Til leksikonet' })
+        h('a', { href: '/', onClick: nav('home'), cls: 'btn btn-primary', text: 'Til leksikonet' })
       ])
     ]);
   }
@@ -1878,7 +2106,7 @@
     var head = h('div', { style: 'padding: 40px 0 24px; display: flex; flex-wrap: wrap; gap: 28px; align-items: flex-start;' }, [
       h('div', { style: 'flex: 1; min-width: 260px;' }, [
         h('div', { style: 'display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 12px;' }, [
-          h('a', { href: '#/', onClick: nav('home'), style: 'font-size: 13px; letter-spacing: 0.08em; text-transform: uppercase; font-weight: 600;', text: '← Tilbake til leksikonet' }),
+          h('a', { href: '/', onClick: nav('home'), style: 'font-size: 13px; letter-spacing: 0.08em; text-transform: uppercase; font-weight: 600;', text: '← Tilbake til leksikonet' }),
           copyLinkBtn()
         ]),
         h('div', { style: 'display: flex; flex-wrap: wrap; align-items: baseline; gap: 16px; margin-top: 20px;' }, [
@@ -1935,7 +2163,7 @@
       // The four columns (name, tag, price, report) and how they restack on a
       // phone live in index.html's .store-row — a media query can't be written
       // inline, and this row needs one.
-      return h('div', Object.assign({ cls: 'row-hover store-row', style: 'cursor: pointer; padding: 14px 20px; border-bottom: 1px solid color-mix(in srgb, var(--color-text) 8%, transparent);' }, activate(openVariant(g.key, v.storeId), v.storeName + ', ' + nf(v.price) + (nSizes > 1 ? ', ' + nSizes + ' størrelser' : '') + ', se prishistorikk')), [
+      return h('a', Object.assign({ cls: 'row-hover store-row', style: 'padding: 14px 20px; border-bottom: 1px solid color-mix(in srgb, var(--color-text) 8%, transparent); ' + LINK_RESET }, linkTo(variantPath(g.key, v.storeId), openVariant(g.key, v.storeId), v.storeName + ', ' + nf(v.price) + (nSizes > 1 ? ', ' + nSizes + ' størrelser' : '') + ', se prishistorikk')), [
         h('span', { style: 'display: flex; align-items: center; gap: 12px; min-width: 0;' }, [
           storeLine(v.color, v.dash, 18),
           h('span', { style: 'min-width: 0;' }, [
@@ -2159,7 +2387,7 @@
     var head = h('div', { style: 'padding: 40px 0 24px; display: flex; flex-wrap: wrap; gap: 28px; align-items: flex-start;' }, [
       h('div', { style: 'flex: 1; min-width: 260px;' }, [
         h('div', { style: 'display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 12px;' }, [
-          h('a', { href: '#/gruppe/' + encodeURIComponent(g.key), onClick: function (e) { e.preventDefault(); openGroup(g.key)(); }, style: 'font-size: 13px; letter-spacing: 0.08em; text-transform: uppercase; font-weight: 600;', text: '← ' + softBreaks(g.name) }),
+          h('a', { href: groupPath(g.key), onClick: openGroup(g.key), style: 'font-size: 13px; letter-spacing: 0.08em; text-transform: uppercase; font-weight: 600;', text: '← ' + softBreaks(g.name) }),
           copyLinkBtn()
         ]),
         h('div', { style: 'display: flex; flex-wrap: wrap; align-items: baseline; gap: 16px; margin-top: 20px;' }, [
@@ -2520,9 +2748,9 @@
       var newCount = sentries.filter(function (p) { return state.list.indexOf(p.id) < 0; }).length;
       var importShared = function () {
         sentries.forEach(function (p) { if (state.list.indexOf(p.id) < 0) state.list.push(p.id); });
-        saveList(); state.sharedList = null; go('#/liste'); window.scrollTo(0, 0);
+        saveList(); state.sharedList = null; go('/liste'); window.scrollTo(0, 0);
       };
-      var dismissShared = function () { state.sharedList = null; go('#/liste'); };
+      var dismissShared = function () { state.sharedList = null; go('/liste'); };
       sharedBanner = h('div', { cls: 'blueprint', style: 'padding: 20px 22px; margin-bottom: 32px; display: flex; flex-direction: column; gap: 12px; background: color-mix(in srgb, var(--color-accent) 5%, transparent);' }, corners().concat([
         h('span', { style: KICKER + ' margin-bottom: 0;', text: 'Delt handleliste' }),
         h('p', { style: 'margin: 0; font-size: 15px; line-height: 22px;', text: 'Noen har delt en handleliste med ' + sentries.length + (sentries.length === 1 ? ' vare' : ' varer') + (sNames.length ? ': ' + sNames.slice(0, 10).join(', ') + (sNames.length > 10 ? ' m.fl.' : '') + '.' : '.') }),
@@ -2536,7 +2764,7 @@
     if (!count) {
       return h('section', { 'data-screen-label': 'Handleliste' }, [head, sharedBanner,
         h('div', { style: 'margin-top: 8px;' }, [
-          h('a', { href: '#/', onClick: nav('home'), cls: 'btn btn-primary', text: 'Til leksikonet' })
+          h('a', { href: '/', onClick: nav('home'), cls: 'btn btn-primary', text: 'Til leksikonet' })
         ])
       ]);
     }
@@ -2818,9 +3046,9 @@
     return h('footer', { style: 'border-top: 1px solid var(--color-divider); margin-top: 24px;' }, [
       h('div', { style: 'max-width: 1160px; margin: 0 auto; padding: 28px 24px 48px; display: flex; flex-wrap: wrap; gap: 8px 16px; align-items: baseline; justify-content: space-between; font-size: 13px; color: ' + MUTED70 + ';' }, [
         h('span', { style: 'display: flex; flex-wrap: wrap; gap: 4px; align-items: baseline;' }, [
-          h('a', { href: '#/om', onClick: nav('om'), text: 'Om' }), sep(),
-          h('a', { href: '#/om', onClick: nav('om'), text: 'Kilder' }), sep(),
-          h('a', { href: '#/om', onClick: nav('om'), text: 'Personvern' }), sep(),
+          h('a', { href: '/om', onClick: nav('om'), text: 'Om' }), sep(),
+          h('a', { href: '/om', onClick: nav('om'), text: 'Kilder' }), sep(),
+          h('a', { href: '/om', onClick: nav('om'), text: 'Personvern' }), sep(),
           h('a', { href: 'mailto:' + SUPPORT_EMAIL, text: 'Kontakt' })
         ]),
         h('span', { style: 'color: ' + MUTED60 + '; max-width: 62ch;', text: 'Ekte priser fra ' + storeListText() + '. Uavhengig prosjekt — ikke tilknyttet kjedene. Sjekk prisen i butikk.' })
@@ -3087,7 +3315,7 @@
       ]),
       h('div', { style: 'display: flex; flex-wrap: wrap; gap: 8px; align-items: center;' }, [
         r.group_key && GROUP_BY_KEY[r.group_key]
-          ? h('a', { cls: 'btn btn-ghost', href: '#/vare/' + encodeURIComponent(r.group_key) + '/' + encodeURIComponent(r.store_id), text: 'Se vare' })
+          ? h('a', { cls: 'btn btn-ghost', href: variantPath(r.group_key, r.store_id), text: 'Se vare' })
           : null,
         open ? h('button', { type: 'button', cls: 'btn btn-primary', disabled: state.adminBusy ? 'disabled' : false, onClick: function () { adminReportAction(r, 'apply_report'); }, text: 'Bruk denne' }) : null,
         open ? h('button', { type: 'button', cls: 'btn btn-ghost', disabled: state.adminBusy ? 'disabled' : false, onClick: function () { adminReportAction(r, 'report_status', 'avvist'); }, text: 'Avvis' }) : null,
@@ -3602,6 +3830,14 @@
   if (typeof window !== 'undefined' && typeof document !== 'undefined') {
     va('beforeSend', analyticsBeforeSend);
     gaInit();
+    // Links minted before the screens moved out of the hash — #/gruppe/melange
+    // %20margarin — are in Facebook posts, bookmarks and forum replies, and
+    // they arrive at '/' with the whole route sitting in the fragment. Rewrite
+    // to the path form before the first route(), with replaceState so Back
+    // doesn't bounce between the two spellings of one screen.
+    var legacy = legacyHashPath(location.hash);
+    if (legacy) history.replaceState(null, '', legacy);
+
     // A dialog belongs to the screen it was opened from. Navigating away — the
     // back button most of all, since both dialogs are the kind of thing you
     // press it to escape — used to leave it floating over whatever came next,
@@ -3609,11 +3845,19 @@
     // its own Avbryt. Closing them here rather than in route() is deliberate:
     // route() also runs when the background catalogue refresh lands, and that
     // must not shut a dialog the visitor is in the middle of typing into.
-    window.addEventListener('hashchange', function () {
+    //
+    // popstate covers back/forward over the pushState history; hashchange is
+    // still wired because /liste#d=… changes only the fragment, and a browser
+    // fires hashchange rather than popstate for that. Both can fire for one
+    // navigation, so the URL is compared against the last one handled.
+    var onNavigated = function () {
+      if (location.pathname + location.hash === lastNavUrl) return;
       if (state.report || state.sizePicker) { state.report = null; state.sizePicker = null; }
       route();
       trackView();
-    });
+    };
+    window.addEventListener('popstate', onNavigated);
+    window.addEventListener('hashchange', onNavigated);
     document.addEventListener('paste', function (e) {
       if (state.phase !== 'ready' || state.view !== 'scan' || state.scanPhase !== 'idle') return;
       var items = (e.clipboardData && e.clipboardData.items) || [];
@@ -3634,6 +3878,11 @@
       });
     }
 
+    // The title/canonical for this URL before any data has loaded, so a
+    // product page never spends its first paint claiming to be the front page.
+    // route() runs it again with the real name and prices once the catalogue
+    // lands; a prerendered page already has the same values in its HTML.
+    setMeta(currentRoute());
     render();
     // Reported before boot() rather than once the catalogue is ready: a visit
     // where the data never loads is still a visit, and is the one you would
@@ -3655,6 +3904,8 @@
       sizeIdOf: sizeIdOf, sizeLabel: sizeLabel, sizeOptions: sizeOptions, bestPerStore: bestPerStore,
       entryId: entryId, parseEntry: parseEntry, moveEntry: moveEntry, swapEntry: swapEntry,
       chartFrom: chartFrom, rowSizeId: rowSizeId, listStoreSeries: listStoreSeries,
+      slugFor: slugFor, keyFromSlug: keyFromSlug, groupPath: groupPath, variantPath: variantPath,
+      parsePath: parsePath, parseSharedList: parseSharedList, legacyHashPath: legacyHashPath,
       parsePrice: parsePrice, reportPayload: reportPayload, normAdminProduct: normAdminProduct
     };
   }

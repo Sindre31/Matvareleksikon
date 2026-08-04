@@ -15,14 +15,26 @@ på `matvareleksikon.vercel.app`)
 
 ## Run it
 
-Static front end — no build step, no bundler. It talks to Supabase over the
-public REST API (PostgREST) using the publishable/anon key, so it just needs
-to be served:
+Static front end — no bundler. It talks to Supabase over the public REST API
+(PostgREST) using the publishable/anon key, so it just needs to be served:
 
 ```bash
 python3 -m http.server 8000
 # then open http://localhost:8000
 ```
+
+The front page and everything you reach by clicking work that way. **Deep links
+do not**: `/gruppe/melange-margarin` is served by the `rewrites` in
+`vercel.json`, and `http.server` knows nothing about them, so loading one
+directly 404s. Either click through from `/`, or use a server that falls back
+to `index.html` for the app's paths — `npx vercel dev` reads `vercel.json` and
+gets it right.
+
+`node build.mjs` is the deploy-time step (Vercel runs it via `buildCommand`).
+It prerenders the indexable product pages into `gruppe/` and rewrites
+`sitemap.xml` from the live catalogue — see **SEO** below. It is optional
+locally, it needs network access to Supabase, and it exits 0 with a warning
+when it can't reach it. The output is gitignored.
 
 ## What's here
 
@@ -36,13 +48,15 @@ python3 -m http.server 8000
 | `favicon.svg` | Blueprint-mark favicon |
 | `icon-192.png`, `icon-512.png` | PWA/app icons (rasterised from the favicon) |
 | `og.png` | 1200×630 social preview card |
-| `robots.txt`, `sitemap.xml` | Crawler hints (single canonical URL — the app is hash-routed) |
+| `build.mjs` | Deploy-time build: prerenders a static HTML page per indexable product group into `gruppe/` and regenerates `sitemap.xml` from the live catalogue |
+| `robots.txt`, `sitemap.xml` | Crawler hints. The committed sitemap is a three-URL fallback; `build.mjs` overwrites it with every product worth indexing |
+| `gruppe/` | Build output (gitignored) — one prerendered page per product group |
 | `test/` | Unit tests (`node --test`): the pure price/grouping helpers, the "Ukas tilbud" selection, the cold-start offer paging, the on-demand photo loader, the client mirror of `ml_group_key`, and the error-report validation |
 | `design/` | The imported Claude Design source, kept for provenance |
 
-## Screens (deep-linkable)
+## Screens (each on its own URL)
 
-- **Leksikon (home)** `#/` — hero + live search, **"Ukas tilbud"**, and the
+- **Leksikon (home)** `/` — hero + live search, **"Ukas tilbud"**, and the
   product grid. The offer row is picked the way a tilbudsavis fills its front
   page (`pickWeeklyOffers`), in three tiers: a **real tilbudsavis offer** first
   (only that feed dates its offers, so a `valid_until` marks one — everything
@@ -88,7 +102,7 @@ python3 -m http.server 8000
   the menu type **scales with the viewport** (`clamp()`, 21/15 px from ~390 px
   up, easing to 17/13 at 320) so the row stays one line down to the narrowest
   phones instead of wrapping the cart onto a line of its own.
-- **Handleliste** `#/liste` — the products you've starred, kept in
+- **Handleliste** `/liste` — the products you've starred, kept in
   `localStorage` (no account). An entry is `<group key>@<size id>[*<qty>]`: adding a
   product **asks which pack size** you buy (a one-size product skips the
   dialog), and every price below — the row, the per-store sum, the "billigst"
@@ -144,10 +158,10 @@ python3 -m http.server 8000
   2026-07-28 are still cheapest-pack and sit discontinuously under the newer
   ones.
   Purely client-side. **"Del liste"**
-  copies a URL that encodes the entries after the hash (`#/liste?d=…`); opening
+  copies a URL that encodes the entries after the hash (`/liste#d=…`); opening
   it shows a preview + import banner, so a list travels between phone and PC
   without an account (it never silently overwrites the visitor's own list).
-- **Produktgruppe** `#/gruppe/:key` — a generic product and **where it's sold**:
+- **Produktgruppe** `/gruppe/:slug` — a generic product and **where it's sold**:
   the store variants ("REMA 1000 Tacosaus Medium", "Meny Tacosaus Medium" …) with
   prices, before-prices and validity, **ranked by price per litre/kilo** (a
   store showing its cheapest-per-unit size; "N størrelser" hints there are more,
@@ -172,7 +186,7 @@ python3 -m http.server 8000
   says so.
   The group and variant pages each carry a **"Kopier lenke"** button (the URLs
   are already shareable) and the shopping-list star.
-- **Produktside (variant)** `#/vare/:key/:store` — one store's product with, when
+- **Produktside (variant)** `/vare/:slug/:butikk` — one store's product with, when
   the store carries it in several sizes, a **"Størrelser"** list (every size,
   sorted by price per litre/kilo, cheapest-per-unit highlighted); a **price
   history** chart with each chain in its **brand colour** (Rema blue, Kiwi green,
@@ -184,7 +198,7 @@ python3 -m http.server 8000
   When a product is on offer, the ingest functions automatically
   record its before-price as *last week's* price point, so the chart shows the
   markdown from the first time the offer is seen.
-- **Skann kvittering** `#/skann` — upload a photo, use the phone camera, or
+- **Skann kvittering** `/skann` — upload a photo, use the phone camera, or
   **drag-and-drop / paste** an image → the image is sent to a **Supabase Edge
   Function that runs Google Gemini vision** → the parsed line items and detected store are shown for
   review (pick the chain and confirm the **receipt date**) → submit **persists**
@@ -212,7 +226,7 @@ python3 -m http.server 8000
   person pressing the button three times is one report, and a product an admin
   has edited by hand is never overwritten by the rule. See `ml_report_apply` in
   `supabase/schema-changes.sql`.
-- **Admin** `#/admin` — the password-protected back office. Unlisted: no link in
+- **Admin** `/admin` — the password-protected back office. Unlisted: no link in
   the nav or the footer. Three tabs — the **report queue** (approve a
   correction with "Bruk denne", or reject it), **product search** across the
   whole catalogue, and **the products that have been changed**. Editing a
@@ -222,7 +236,7 @@ python3 -m http.server 8000
   `ml_offer_overrides`, so they **survive the weekly ingest**, which rewrites
   `ml_offers` wholesale. The password lives as a Supabase secret and is checked
   in the `ml-admin` Edge Function, never in the browser — see below.
-- **Om** `#/om` — what Prisboka is, **sources** (tilbudsaviser and receipt
+- **Om** `/om` — what Prisboka is, **sources** (tilbudsaviser and receipt
   scans) with a note on the coverage threshold, an independence disclaimer,
   and a **privacy** note (no accounts/tracking; the shopping list is local-only;
   receipt images go to Google Gemini and aren't stored; only the IP is kept
@@ -375,10 +389,51 @@ brand *is* the product (Santa Maria vs. Old El Paso tacosaus), while the chains'
 own-brand tacosaus collapses together — national brand words are kept, house
 brands stripped. Recognised categories get a friendly title via `canonLabel`.
 
-**SEO & PWA.** `index.html` carries a canonical link and JSON-LD (`WebSite` +
-`Organization`); `robots.txt` points crawlers at `sitemap.xml`. Because the app
-is hash-routed there is a single crawlable URL, so the sitemap lists only the
-root. The site is an installable PWA: `manifest.webmanifest` + a service worker
+**SEO.** Every screen has a real path (`/gruppe/melange-margarin`), not a
+fragment. This is load-bearing rather than cosmetic: a `#` is not part of the
+URL a crawler stores, requests or ranks, so while the products lived in the hash
+the entire leksikon was **one** indexable document — the front page — and no
+amount of content could change that. Three things had to be true together, and
+each was separately fatal:
+
+1. **Its own URL.** `/gruppe/:slug` and `/vare/:slug/:butikk`, served by the
+   `rewrites` in `vercel.json`. The slug is the group key with spaces as
+   hyphens — `ml_group_key` folds a name down to `[a-z0-9 ]`, so that mapping is
+   total and reversible with no lookup table (asserted over the frozen fixture
+   in `test/urls.test.js`). Pre-move `#/gruppe/…` links are translated in place
+   by `legacyHashPath` on boot, so what has already been shared still lands.
+2. **Links a crawler can follow.** Product cards and store rows are real
+   `<a href>` elements now. They were `<div>`s with click handlers, which a
+   crawler cannot follow at all — so even once the paths existed, nothing on the
+   site would have led to them.
+3. **Content that survives without a full boot.** The app fetches the whole
+   catalogue (~50 requests) before it can draw one product, which is more than a
+   crawler's renderer will wait for. `build.mjs` therefore prerenders the
+   indexable groups to static HTML — name, price per chain, links, `Product` /
+   `AggregateOffer` JSON-LD — and the app boots over the top and replaces it
+   (`render()` clears `#app`), so visitors still get live prices.
+
+`setMeta()` rewrites the title, description, canonical and OG/Twitter pair on
+every route, because pages sharing those get folded together as duplicates —
+which would have undone (1). A `/vare/…` screen **canonicalises to its group**:
+it is one chain's slice of a page the group already covers in full, and
+splitting the ranking signal four ways over near-identical text helps nobody.
+
+`build.mjs` prerenders and lists the groups **at least two chains carry**
+(~4 900 of ~36 700). Those answer the question the site exists for — who has
+this cheapest — while the ~32 000 single-store groups stay crawlable on their
+own paths but are kept out of the sitemap: submitting them from a young domain
+spends crawl budget on the site's weakest pages. `MIN_STORES` moves that line.
+The build is **fail-soft** — no network, no Supabase, a shape change — it warns,
+exits 0, and leaves the committed fallback sitemap in place, because a price
+site that cannot deploy when its database blinks is worse off than one serving
+last week's prerender.
+
+Asset URLs in `index.html` must stay **root-relative**: on `/gruppe/helmelk` a
+bare `app.js` resolves to `/gruppe/app.js`, which falls through to the SPA
+rewrite and returns the HTML shell as JavaScript.
+
+**PWA.** The site is an installable PWA: `manifest.webmanifest` + a service worker
 (`sw.js`) that caches the app shell for offline use with a stale-while-revalidate
 strategy (a deploy is picked up on the next load), while every cross-origin
 Supabase request stays network-only so prices are never served stale.
@@ -531,8 +586,9 @@ JavaScript. The rendering and the `chartFor()` / price-change / cheapest-per
 computations mirror the original; only the data source changed from a
 synthetic in-browser formula to the seeded Supabase tables. Rendering is a
 small SVG-aware hyperscript with full re-render on state change and
-focus/selection preservation for text inputs. Screens are hash-routed for
-shareable URLs and working back/forward.
+focus/selection preservation for text inputs. Screens are **path-routed**
+(History API) so every product is its own URL — shareable, crawlable, and
+working with back/forward.
 
 ### Receipt OCR
 
@@ -669,19 +725,22 @@ deliberately skips `/_vercel/*` so the tracker is never served from the shell
 cache.
 
 **The app reports its own page views.** The tracker fires a view only when the
-`pathname` changes — reading its source, hash-only navigation is explicitly
-skipped, and it listens to `pushState`/`popstate` but never `hashchange`. This
-app changes nothing but the hash, so left to itself the tracker would report a
-single `/` per visit and no screen would ever appear. Hence
-`data-disable-auto-track` on the script tag and `trackView()` in `app.js`,
-which fires on load and on every `hashchange`:
+`pathname` changes, and it listens to `pushState`/`popstate` but never
+`hashchange`. Before the screens moved onto real paths that meant it saw
+*nothing* — the app changed only the hash, so a whole visit was one `/`. Now
+that navigation is `pushState`, the tracker would in fact follow along on its
+own; auto-tracking stays off anyway, for two reasons that outlast the routing
+change. `route` (the pattern a screen belongs to) is ours to attach and the
+tracker knows nothing about it, and `/liste#d=…` moves without touching the
+pathname, so the tracker would miss it. `data-disable-auto-track` on the script
+tag plus `trackView()` in `app.js` keeps one reporter rather than two racing:
 
 | Screen | `path` | `route` |
 | --- | --- | --- |
-| `#/` and anything unrecognised | `/` | `/` |
-| `#/gruppe/melk-lett` | `/gruppe/melk-lett` | `/gruppe/[gruppe]` |
-| `#/vare/melk-lett/kiwi` | `/vare/melk-lett/kiwi` | `/vare/[gruppe]/[butikk]` |
-| `#/skann`, `#/om`, `#/liste` | `/skann`, `/om`, `/liste` | same |
+| `/` and anything unrecognised | `/` | `/` |
+| `/gruppe/melk-lett` | `/gruppe/melk-lett` | `/gruppe/[gruppe]` |
+| `/vare/melk-lett/kiwi` | `/vare/melk-lett/kiwi` | `/vare/[gruppe]/[butikk]` |
+| `/skann`, `/om`, `/liste` | `/skann`, `/om`, `/liste` | same |
 
 `route` is what keeps the dashboard readable: every product would otherwise be
 its own row, and the panel keeps only the top handful before bucketing the rest
@@ -697,7 +756,7 @@ Two details in `app.js` that look optional and are not:
 
 - **The `beforeSend` hook strips the hash from the reported URL.** The tracker
   builds that URL from `location.href`, so the hash rides along even when
-  `path` is set — and on `#/liste?d=…` the hash *is* the visitor's shopping
+  `path` is set — and on `/liste#d=…` the hash *is* the visitor's shopping
   list. The screen is what gets reported, never its contents. The query string
   is deliberately left alone, since that is where `utm_*` lives.
 - **The view is reported before `boot()`,** not once the catalogue is ready. A

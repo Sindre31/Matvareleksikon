@@ -1,3 +1,8 @@
 node_modules/
 .DS_Store
 *.log
+
+# Prerendered product pages — build.mjs writes ~5 000 of these from the live
+# catalogue on every deploy. They are output, not source: committing them would
+# bury real diffs and ship last week's prices to anyone reading the repo.
+/gruppe/
