@@ -296,6 +296,135 @@
     return null;
   }
 
+  // ── Categories ───────────────────────────────────────────────────────────
+  // A category is a page for the words people actually type: "hva koster egg",
+  // "smørpris". The leksikon had no such page for any of them. Groups are keyed
+  // on a product's whole name, so "Smør Økologisk 250g Røros" keys to
+  // `okologisk roros smor` — there is no group called `smor`, because no
+  // product is named simply "Smør". Of 24 everyday staples checked, 9 had a
+  // page and 12 had no group at all.
+  //
+  // A category does NOT regroup anything. It is a view over the groups that
+  // already exist, so every like-for-like comparison underneath stays exactly
+  // as it was; the category page just gathers them and links onward.
+  //
+  // MATCHED ON THE HEAD OF THE NAME, not anywhere in it. mlGroupKey keeps word
+  // order (ckey sorts alphabetically and drops one-letter words, so "m/" is
+  // gone by then), and the term must land in the first two tokens. That single
+  // rule is what keeps a category honest, because Norwegian puts the product
+  // first and its qualifiers after:
+  //
+  //     Helmelk 1,75l Tine            -> helmelk            melk ✓
+  //     Havregrøt m/Melk 50g Axa      -> havregrot m melk   melk ✗ (it is porridge)
+  //     Melange margarin u/melk       -> melange margarin…  melk ✗ (it is margarine)
+  //     Firkløver m/Kaffe Freia       -> firklover m kaffe  kaffe ✗ (it is chocolate)
+  //     Fiskegrateng m/Makaroni       -> fiskegrateng m …   pasta ✗ (it is a gratin)
+  //
+  // Without it every list filled with things that merely CONTAIN the staple —
+  // the same defect that put a børek on the kjøttdeig page.
+  //
+  // ORDER MATTERS, as in POPULAR above: the first match wins, so a composite
+  // claims its groups before the ingredient it is named for. "Pastasaus" leads
+  // with a word that contains "pasta", so the sauce must come first or the
+  // pasta page fills with jars of sauce.
+  var CATEGORIES = [
+    { slug: 'potetgull', title: 'Potetgull', words: ['potetgull', 'potetsticks', 'potetchips', 'potetskruer'] },
+    { slug: 'potetmos', title: 'Potetmos og potetsalat', words: ['potetmos', 'potetsalat', 'potetstappe', 'potetbat', 'potetgrateng', 'rostipotet'] },
+    { slug: 'pastasaus', title: 'Pastasaus', words: ['pastasaus'] },
+    { slug: 'knekkebrod', title: 'Knekkebrød', words: ['knekkebrod', 'flatbrod'] },
+    { slug: 'polsebrod', title: 'Pølsebrød og burgerbrød', words: ['polsebrod', 'burgerbrod', 'hamburgerbrod'] },
+    { slug: 'melkesjokolade', title: 'Melkesjokolade', words: ['melkesjokolade'] },
+    { slug: 'kokosmelk', title: 'Kokosmelk', words: ['kokosmelk'] },
+    { slug: 'egg', title: 'Egg', words: ['egg'], not: /eggesalat|eggehvite|eggedosis|noodles|sandwich|baguette/ },
+    { slug: 'smor', title: 'Smør', words: ['smor'], not: /peanott|shea|krydder|hvitlok|sandefjord|maiskaker|olivenolje/ },
+    { slug: 'melk', title: 'Melk', words: ['melk'], not: /sjokolade|erstatning/ },
+    { slug: 'iskaffe', title: 'Iskaffe', words: ['iskaffe'] },
+    { slug: 'kaffe', title: 'Kaffe', words: ['kaffe', 'espresso', 'filtermalt'], not: /rensemiddel|maskin|kake|filter( |$)|skyr|flote|kaffedrikk/ },
+    { slug: 'yoghurt', title: 'Yoghurt', words: ['yoghurt'], not: /mandel|notter|yoghurtnott/ },
+    { slug: 'ris', title: 'Ris', words: ['ris'], not: /risgrot|risengrot/ },
+    { slug: 'pasta', title: 'Pasta', words: ['pasta', 'spaghetti', 'makaroni', 'fusilli', 'tagliatelle', 'linguine'], not: /bolognese|carbonara|grateng|krydder|salat|snack|formaggio|parma|chorizo/ },
+    { slug: 'brod', title: 'Brød', words: ['brod'], not: /brodmix|brodblanding|brodpose|brodrister|brodform|wienerbrod|marsipanbrod/ },
+    { slug: 'kyllingfilet', title: 'Kyllingfilet', words: ['kyllingfilet'] },
+    { slug: 'kjottdeig', title: 'Kjøttdeig', words: ['kjottdeig', 'karbonadedeig'] },
+    { slug: 'bananer', title: 'Bananer', words: ['banan'], not: /smoothie|sjokolade|chips|kake/ },
+    { slug: 'olivenolje', title: 'Olivenolje', words: ['olivenolje'] },
+    { slug: 'gulost', title: 'Gulost', words: ['gulost', 'norvegia', 'jarlsberg'] }
+  ];
+  // Same compound rules the offer matcher uses, but anchored to a token rather
+  // than tested against the whole key: 5+ letters anywhere in the word, 4 only
+  // as the compound head, 1-3 as the whole word.
+  CATEGORIES.forEach(function (c) {
+    c.re = new RegExp('^(?:' + c.words.map(function (w) {
+      if (w.length >= 5) return '[a-z]*' + w + '[a-z]*';
+      if (w.length === 4) return '[a-z]*' + w;
+      return w;
+    }).join('|') + ')$');
+  });
+  var CATEGORY_BY_SLUG = {};
+  CATEGORIES.forEach(function (c) { CATEGORY_BY_SLUG[c.slug] = c; });
+
+  // Does any of the group's own product names lead with this category's term?
+  // Every chain's spelling gets a vote, because they name the same product
+  // differently ("TINE HELMELK 3.5%" against "Helmelk 1,75l Tine") and one
+  // chain burying the word behind its brand should not hide the product.
+  // The second token counts too, because mlGroupKey only strips the chains and
+  // a handful of big brands — "Kims Potetgull", "Wasa Knekkebrød" and "Dolmio
+  // Pastasaus" all lead with a brand it does not know, and requiring the first
+  // token would drop them. Requiring only the first also drops "Økologisk Melk".
+  //
+  // But that window is exactly what let a pastry into the egg page: "Wienerbrød
+  // egg&rosin" has "egg" second. So the window closes when the FIRST token is
+  // itself a product — a prepared dish or a baked good is not the raw staple it
+  // is filled with, however the name reads. Expect to add to this list; it is
+  // the same kind of list as MINCE_DISQUALIFY and wants the same treatment.
+  var CATEGORY_NOT_HEAD = /^(wienerbrod|sandwich|baguette|maiskaker|kake|kaker|kjeks|iskrem|floteis|smoothie|salat|suppe|gryte|wrap|pai|pizza|toast|bolle|boller|muffins|pudding|dessert|snacks|nudler|noodles|grot|grateng|lapper|vafler|croissant|rull|pinne|pinner|stang|stenger)$/;
+  // Non-food that carries a staple's name — napkins printed with coffee cups,
+  // bread bags, gift cards. Tested against the whole key, not just the head,
+  // because these words can sit anywhere in the name.
+  var CATEGORY_NONFOOD = /\b(serviett|servietter|papir|plast|pose|poser|bestikk|penn|penner|tallerken|kopper|gavekort|emballasje|klut|bleie|lysestake|duk|form|rister|maskin|rensemiddel)\b/;
+  var CATEGORY_HEAD_TOKENS = 2;
+  function headMatches(c, name) {
+    var toks = mlGroupKey(name).split(' ');
+    if (c.re.test(toks[0] || '')) return true;
+    if (CATEGORY_NOT_HEAD.test(toks[0] || '')) return false;
+    for (var i = 1; i < toks.length && i < CATEGORY_HEAD_TOKENS; i++) if (c.re.test(toks[i])) return true;
+    return false;
+  }
+  function categoryFor(g) {
+    if (!g || !g.variants || !g.variants.length) return null;
+    for (var i = 0; i < CATEGORIES.length; i++) {
+      var c = CATEGORIES[i];
+      if (c.not && c.not.test(g.key)) continue;
+      if (CATEGORY_NONFOOD.test(g.key)) return null;
+      for (var j = 0; j < g.variants.length; j++) if (headMatches(c, g.variants[j].rawName)) return c;
+    }
+    return null;
+  }
+  // Every group in a category, cheapest per kg/l first — the order the question
+  // "hva koster X" is asking for. Groups with no comparable unit price sort
+  // last on pack price rather than being dropped, since a page that hides half
+  // its products to keep one ranking tidy answers a narrower question.
+  function categoryGroups(slug) {
+    var c = CATEGORY_BY_SLUG[slug];
+    if (!c) return [];
+    var out = GROUPS.filter(function (g) { return categoryFor(g) === c; });
+    // Most categories are priced in one dimension, but not all — yoghurt has
+    // both kg and stk. Comparing 16,20/stk against 27,00/kg is two scales in
+    // one column, so only the dominant one is ranked on; the rest keep their
+    // place below, on pack price.
+    var tally = {};
+    out.forEach(function (g) { if (g.unitPrice != null && g.unitDim) tally[g.unitDim] = (tally[g.unitDim] || 0) + 1; });
+    var dim = Object.keys(tally).sort(function (a, b) { return tally[b] - tally[a]; })[0] || null;
+    var rank = function (g) { return (dim && g.unitDim === dim && g.unitPrice != null) ? g.unitPrice : null; };
+    return out.sort(function (a, b) {
+      var au = rank(a), bu = rank(b);
+      if (au != null && bu != null) return au - bu;
+      if (au != null) return -1;
+      if (bu != null) return 1;
+      return a.minPrice - b.minPrice;
+    });
+  }
+
   // The cards for "Ukas tilbud", ranked the way a tilbudsavis fills its front
   // page. Three tiers, in this order:
   //
@@ -755,7 +884,7 @@
     phase: 'loading', errMsg: '',
     // Defaults: the leksikon opens on what was added last, priced per pack —
     // the number on the shelf label. Per kg/l is a click away in "Vis pris".
-    view: 'home', groupKey: null, storeId: null, query: '', storeFilter: 'Alle', sort: 'standard', priceMode: 'enhet',
+    view: 'home', groupKey: null, storeId: null, catSlug: null, query: '', storeFilter: 'Alle', sort: 'standard', priceMode: 'enhet',
     scanPhase: 'idle', scanStep: '', scanItems: [], scanStore: 'Kiwi', scanDate: '',
     scanSubmitting: false, scanError: null, scanImageUrl: null, scanNote: null,
     doneCount: 0, doneMsgN: 0,
@@ -965,6 +1094,7 @@
   function slugFor(key) { return String(key == null ? '' : key).trim().replace(/ +/g, '-'); }
   function keyFromSlug(slug) { return String(slug == null ? '' : slug).replace(/-+/g, ' ').trim(); }
   function groupPath(key) { return '/gruppe/' + encodeURIComponent(slugFor(key)); }
+  function categoryPath(slug) { return '/kategori/' + encodeURIComponent(slug); }
   function variantPath(key, store) { return '/vare/' + encodeURIComponent(slugFor(key)) + '/' + encodeURIComponent(store); }
 
   // ── Routing ──────────────────────────────────────────────────────────────
@@ -986,6 +1116,7 @@
   function parsePath(pathname, hash) {
     var seg = String(pathname == null ? '/' : pathname).split('/').filter(Boolean);
     for (var i = 0; i < seg.length; i++) { try { seg[i] = decodeURIComponent(seg[i]); } catch (e) { /* a malformed escape stays raw and simply won't match a group */ } }
+    if (seg[0] === 'kategori' && seg[1] && seg.length === 2) return { view: 'kategori', slug: seg[1] };
     if (seg[0] === 'gruppe' && seg[1] && seg.length === 2) return { view: 'gruppe', groupKey: keyFromSlug(seg[1]) };
     if (seg[0] === 'vare' && seg[1] && seg[2] && seg.length === 3) return { view: 'vare', groupKey: keyFromSlug(seg[1]), storeId: seg[2] };
     if (seg.length === 1) {
@@ -1081,6 +1212,21 @@
         // price anyway, so nothing is lost from the result.
         canonical: ORIGIN + groupPath(r.groupKey)
       };
+    }
+    if (r.view === 'kategori') {
+      var c = CATEGORY_BY_SLUG[r.slug];
+      if (c) {
+        var gs = state.phase === 'ready' ? categoryGroups(c.slug) : [];
+        var low = null;
+        gs.forEach(function (g) { g.variants.forEach(function (v) { if (!low || v.price < low.price) low = v; }); });
+        var t = c.title.toLowerCase();
+        return {
+          title: 'Hva koster ' + t + '? Pris i ' + (gs.length ? 'butikkene' : 'norske dagligvarebutikker') + ' | Prisboka',
+          desc: (low ? 'Billigst nå ' + nf(low.price) + ' hos ' + low.storeName + '. ' : '')
+            + 'Sammenlign prisen på ' + t + ' i norske dagligvarebutikker' + (gs.length ? ' — ' + gs.length + ' varer' : '') + ', med prishistorikk og pris per kg/l.',
+          canonical: ORIGIN + categoryPath(c.slug)
+        };
+      }
     }
     if (r.view === 'scan') return { title: 'Skann kvittering — bidra med priser | Prisboka', desc: 'Last opp en kvittering, så leses prisene inn i leksikonet. Ingen konto, ingen personopplysninger.', canonical: ORIGIN + '/skann' };
     if (r.view === 'om') return { title: 'Om Prisboka — hvor prisene kommer fra', desc: 'Hvor tallene i Prisboka kommer fra, hvordan varer grupperes på tvers av kjeder, og hva prisene ikke dekker.', canonical: ORIGIN + '/om' };
@@ -1179,6 +1325,9 @@
       if (!GROUP_BY_KEY[r.groupKey]) { replaceWith('/'); return; }
       state.view = 'vare'; state.groupKey = r.groupKey; state.storeId = r.storeId;
       loadHistory(GROUP_BY_KEY[r.groupKey]);
+    } else if (r.view === 'kategori') {
+      if (!CATEGORY_BY_SLUG[r.slug]) { replaceWith('/'); return; }
+      state.view = 'kategori'; state.catSlug = r.slug;
     } else if (r.view === 'scan') {
       state.view = 'scan';
     } else if (r.view === 'liste') {
@@ -1226,6 +1375,7 @@
   // and cannot follow an onclick — so these handlers take over from the
   // browser's own navigation rather than standing in for it.
   function openGroup(key) { return function (e) { if (e && e.preventDefault) e.preventDefault(); go(groupPath(key)); window.scrollTo(0, 0); }; }
+  function openCategory(slug) { return function (e) { if (e && e.preventDefault) e.preventDefault(); go(categoryPath(slug)); window.scrollTo(0, 0); }; }
   function openVariant(key, store) { return function (e) { if (e && e.preventDefault) e.preventDefault(); go(variantPath(key, store)); window.scrollTo(0, 0); }; }
 
   // ── Analytics ────────────────────────────────────────────────────────────
@@ -1271,6 +1421,7 @@
   function viewFor(r) {
     if (r.view === 'gruppe') return { path: groupPath(r.groupKey), route: '/gruppe/[gruppe]' };
     if (r.view === 'vare') return { path: variantPath(r.groupKey, r.storeId), route: '/vare/[gruppe]/[butikk]' };
+    if (r.view === 'kategori') return { path: categoryPath(r.slug), route: '/kategori/[kategori]' };
     if (r.view === 'scan') return { path: '/skann', route: '/skann' };
     if (r.view === 'om') return { path: '/om', route: '/om' };
     // The shared list travels in the hash as ?d=<varer> — the screen is what we
@@ -2377,7 +2528,11 @@
         : ('Ingen varer' + (sf !== 'Alle' ? ' hos ' + sf : '') + ' akkurat nå. Velg en annen butikk eller nullstill filteret.') }) : null
     ]);
 
-    return h('section', { 'data-screen-label': 'Hovedside' }, [hero, bestSection, catalog]);
+    // The category links live above the catalogue on purpose. They are the only
+    // route from the front page into the leksikon that a crawler can follow
+    // without paging through 5 000 products, and they are the pages that
+    // answer the words people actually search for.
+    return h('section', { 'data-screen-label': 'Hovedside' }, [hero, bestSection, categoryNav(null), catalog]);
   }
 
   function notFoundView(msg) {
@@ -3977,11 +4132,125 @@
     return wrap;
   }
 
+  // ── Category screen ──────────────────────────────────────────────────────
+  // The page for "hva koster egg". It regroups nothing: the products below are
+  // the same groups the leksikon already has, gathered under the word people
+  // search for and linked onward. That is also what it is for structurally —
+  // 5 000 product pages with no path from the front page to most of them are
+  // orphans, and internal links are most of what tells a crawler which of them
+  // matter.
+  function renderCategory() {
+    var c = CATEGORY_BY_SLUG[state.catSlug];
+    if (!c) return notFoundView('Denne kategorien finnes ikke.');
+    var groups = categoryGroups(c.slug);
+    var lower = c.title.toLowerCase();
+
+    // Cheapest per chain across the whole category — the answer the question
+    // is actually asking. Compared per kg/l where every candidate has one, so
+    // a small pack cannot win by being small.
+    var perStore = {};
+    groups.forEach(function (g) {
+      g.variants.forEach(function (v) {
+        var cur = perStore[v.storeId];
+        var better = !cur || (v.perUnit != null && cur.v.perUnit != null
+          ? v.perUnit < cur.v.perUnit
+          : v.price < cur.v.price);
+        if (better) perStore[v.storeId] = { v: v, g: g };
+      });
+    });
+    var ranked = STORES.map(function (s) { return perStore[s.id]; }).filter(Boolean);
+    var cheapest = ranked.length ? ranked.reduce(function (a, b) { return b.v.price < a.v.price ? b : a; }) : null;
+
+    var head = h('div', { style: 'padding: 40px 0 24px;' }, [
+      h('a', { href: '/', onClick: nav('home'), style: 'font-size: 13px; letter-spacing: 0.08em; text-transform: uppercase; font-weight: 600;', text: '← Tilbake til leksikonet' }),
+      h('h1', { style: H1 + ' margin-top: 20px;', text: 'Hva koster ' + lower + '?' }),
+      h('p', { style: 'margin: 14px 0 0; font-size: 15px; line-height: 23px; color: ' + MUTED70 + '; max-width: 68ch;',
+        text: groups.length
+          ? (cheapest
+              ? 'Billigst nå er ' + cheapest.g.name.toLowerCase() + ' til ' + nf(cheapest.v.price) + ' hos ' + cheapest.v.storeName + '. '
+              : '')
+            + 'Under ligger ' + groups.length + ' ' + (groups.length === 1 ? 'vare' : 'varer') + ' fra ' + storeListText()
+            + ', rangert etter pris per kilo eller liter. Prisene kommer fra kjedenes tilbudsaviser og fra kvitteringer folk skanner.'
+          : 'Ingen varer i denne kategorien akkurat nå. Leksikonet fylles opp uke for uke.' })
+    ]);
+
+    var byStore = h('div', {}, [
+      h('span', { style: KICKER, text: '01 · Billigst i hver butikk' }),
+      h('hr', { style: RULE }),
+      h('div', { cls: 'blueprint', style: 'padding: 0;' }, corners().concat(
+        ranked.length ? ranked.slice().sort(function (a, b) {
+          if (a.v.perUnit != null && b.v.perUnit != null) return a.v.perUnit - b.v.perUnit;
+          return a.v.price - b.v.price;
+        }).map(function (x) {
+          return h('a', Object.assign({
+            cls: 'row-hover store-row',
+            style: 'padding: 14px 20px; border-bottom: 1px solid color-mix(in srgb, var(--color-text) 8%, transparent); ' + LINK_RESET
+          }, linkTo(groupPath(x.g.key), openGroup(x.g.key), x.v.storeName + ', ' + x.g.name + ', ' + nf(x.v.price))), [
+            h('span', { style: 'min-width: 0;' }, [
+              h('span', { style: SIZE_NAME_STYLE + ' text-transform: uppercase;', text: x.v.storeName }),
+              h('span', { style: 'display: block; font-size: 13px; color: ' + MUTED60 + ';', text: softBreaks(x.g.name) })
+            ]),
+            h('span', {}),
+            h('span', { style: 'display: flex; flex-direction: column; align-items: flex-end; gap: 2px;' }, [
+              h('span', { style: "font-family: var(--font-heading); font-weight: 600; font-size: 22px; font-feature-settings: 'tnum' 1; white-space: nowrap;", text: nf(x.v.price) }),
+              (x.v.perUnit != null) ? h('span', { style: 'font-size: 12px; color: ' + MUTED60 + "; font-feature-settings: 'tnum' 1; white-space: nowrap;", text: nfUnit(x.v.perUnit, x.v.unitDim) }) : null
+            ]),
+            h('span', {})
+          ]);
+        }) : [h('p', { style: 'margin: 0; padding: 20px; font-size: 14px; color: ' + MUTED60 + ';', text: 'Ingen priser ennå.' })]
+      ))
+    ]);
+
+    var list = h('div', { style: 'margin-top: 40px;' }, [
+      h('span', { style: KICKER, text: '02 · Alle varer, billigst først' }),
+      h('hr', { style: RULE }),
+      h('div', { cls: 'blueprint', style: 'padding: 0;' }, corners().concat(groups.map(function (g) {
+        return h('a', Object.assign({
+          cls: 'row-hover store-row',
+          style: 'padding: 14px 20px; border-bottom: 1px solid color-mix(in srgb, var(--color-text) 8%, transparent); ' + LINK_RESET
+        }, linkTo(groupPath(g.key), openGroup(g.key), g.name + ', fra ' + nf(g.minPrice) + ', ' + g.storeCount + ' butikker')), [
+          h('span', { style: 'min-width: 0;' }, [
+            h('span', { style: SIZE_NAME_STYLE, text: softBreaks(g.name) }),
+            h('span', { style: 'display: block; font-size: 13px; color: ' + MUTED60 + ';', text: g.storeCount + (g.storeCount === 1 ? ' butikk' : ' butikker') })
+          ]),
+          h('span', {}),
+          h('span', { style: 'display: flex; flex-direction: column; align-items: flex-end; gap: 2px;' }, [
+            h('span', { style: "font-family: var(--font-heading); font-weight: 600; font-size: 20px; font-feature-settings: 'tnum' 1; white-space: nowrap;", text: 'fra ' + nf(g.minPrice) }),
+            (g.unitPrice != null) ? h('span', { style: 'font-size: 12px; color: ' + MUTED60 + "; font-feature-settings: 'tnum' 1; white-space: nowrap;", text: nfUnit(g.unitPrice, g.unitDim) }) : null
+          ]),
+          h('span', {})
+        ]);
+      }))),
+      h('p', { style: 'margin: 16px 0 0; font-size: 13px; color: ' + MUTED60 + ';', text: 'Trykk på en vare for å se prisen i hver butikk og hvordan den har utviklet seg.' })
+    ]);
+
+    return h('section', { 'data-screen-label': 'Kategori' }, [head, byStore, groups.length ? list : null, categoryNav(c.slug)]);
+  }
+
+  // The other categories, on every category page and on the front page. This
+  // is the crawl path: without it the category pages are as orphaned as the
+  // product pages they exist to reach.
+  function categoryNav(currentSlug) {
+    return h('div', { style: 'margin-top: 48px;' }, [
+      h('span', { style: KICKER, text: 'Andre kategorier' }),
+      h('hr', { style: RULE }),
+      h('div', { style: 'display: flex; flex-wrap: wrap; gap: 8px;' }, CATEGORIES.filter(function (c) {
+        return c.slug !== currentSlug;
+      }).map(function (c) {
+        return h('a', Object.assign({
+          cls: 'btn btn-secondary',
+          style: 'min-height: 32px; padding: 4px 12px; font-size: 13px; text-transform: uppercase; letter-spacing: 0.04em; ' + LINK_RESET
+        }, linkTo(categoryPath(c.slug), openCategory(c.slug), 'Hva koster ' + c.title.toLowerCase())), c.title);
+      }))
+    ]);
+  }
+
   function renderInner() {
     var frag = document.createDocumentFragment();
     frag.appendChild(renderNav());
     var container = h('div', { style: 'max-width: 1160px; margin: 0 auto; padding: 0 24px 96px;' });
-    if (state.view === 'gruppe') container.appendChild(renderGroup());
+    if (state.view === 'kategori') container.appendChild(renderCategory());
+    else if (state.view === 'gruppe') container.appendChild(renderGroup());
     else if (state.view === 'vare') container.appendChild(renderVariant());
     else if (state.view === 'scan') container.appendChild(renderScan());
     else if (state.view === 'liste') container.appendChild(renderList());
@@ -4348,6 +4617,7 @@
       sizeIdOf: sizeIdOf, sizeLabel: sizeLabel, sizeOptions: sizeOptions, bestPerStore: bestPerStore,
       entryId: entryId, parseEntry: parseEntry, moveEntry: moveEntry, swapEntry: swapEntry,
       chartFrom: chartFrom, storeSeries: storeSeries, rowSizeId: rowSizeId, listStoreSeries: listStoreSeries,
+      CATEGORIES: CATEGORIES, categoryFor: categoryFor, categoryGroups: categoryGroups, categoryPath: categoryPath,
       slugFor: slugFor, keyFromSlug: keyFromSlug, groupPath: groupPath, variantPath: variantPath,
       parsePath: parsePath, parseSharedList: parseSharedList, legacyHashPath: legacyHashPath,
       parsePrice: parsePrice, reportPayload: reportPayload, feedbackPayload: feedbackPayload,

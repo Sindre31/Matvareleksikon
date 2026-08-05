@@ -172,11 +172,84 @@ function renderPage(shell, g, related) {
   return html;
 }
 
-function sitemapXml(groups) {
+// The category pages — "hva koster egg". These matter more per page than the
+// product pages: one answers a whole query rather than a single product, and
+// they are the only crawl path from the front page into the ~5 000 products
+// that does not involve paging through all of them.
+function renderCategoryPage(shell, c, groups) {
+  const lower = c.title.toLowerCase();
+  const url = `${ORIGIN}${app.categoryPath(c.slug)}`;
+  // Cheapest pack in the category, and which product it is — the same choice
+  // app.js makes, so the prerendered sentence and the live one agree.
+  let low = null;
+  for (const g of groups) for (const v of g.variants) if (!low || v.price < low.v.price) low = { v, g };
+
+  const title = `Hva koster ${lower}? Pris i butikkene | Prisboka`;
+  const desc = (low ? `Billigst nå ${nf(low.v.price)} hos ${low.v.storeName}. ` : '')
+    + `Sammenlign prisen på ${lower} i norske dagligvarebutikker — ${groups.length} varer, `
+    + 'med prishistorikk og pris per kg/l.';
+
+  // ItemList rather than Product: the page is a ranked list of products, and
+  // saying so is what lets a result show it as one.
+  const ld = {
+    '@context': 'https://schema.org',
+    '@type': 'ItemList',
+    '@id': `${url}#list`,
+    name: `Hva koster ${lower}?`,
+    url,
+    numberOfItems: groups.length,
+    itemListElement: groups.slice(0, 50).map((g, i) => ({
+      '@type': 'ListItem',
+      position: i + 1,
+      name: g.name,
+      url: `${ORIGIN}${app.groupPath(g.key)}`
+    }))
+  };
+
+  const rows = groups.map((g) => `<li><a href="${esc(app.groupPath(g.key))}">${esc(g.name)}</a>`
+    + ` — fra ${esc(nf(g.minPrice))}`
+    + (g.unitPrice != null ? ` (${esc(nf(g.unitPrice))} per ${esc(g.unitDim)})` : '')
+    + `, ${g.storeCount} ${g.storeCount === 1 ? 'butikk' : 'butikker'}</li>`).join('\n      ');
+  const others = app.CATEGORIES.filter((x) => x.slug !== c.slug)
+    .map((x) => `<li><a href="${esc(app.categoryPath(x.slug))}">${esc(x.title)}</a></li>`).join('\n      ');
+
+  const body = `<article>
+    <p><a href="/">Prisboka</a> › Kategori</p>
+    <h1>Hva koster ${esc(lower)}?</h1>
+    <p>${low ? `Billigst nå er ${esc(low.g.name.toLowerCase())} til ${esc(nf(low.v.price))} hos ${esc(low.v.storeName)}. ` : ''}${groups.length} varer, rangert etter pris per kilo eller liter.
+       Prisene kommer fra kjedenes tilbudsaviser og fra kvitteringer folk skanner.</p>
+    <ul>
+      ${rows}
+    </ul>
+    <h2>Andre kategorier</h2>
+    <ul>
+      ${others}
+    </ul>
+  </article>`;
+
+  let html = shell;
+  const swap = (re, replacement) => { html = html.replace(re, replacement); };
+  swap(/<title>[\s\S]*?<\/title>/, `<title>${esc(title)}</title>`);
+  swap(/<meta name="description" content="[^"]*">/, `<meta name="description" content="${esc(desc)}">`);
+  swap(/<link rel="canonical" href="[^"]*">/, `<link rel="canonical" href="${esc(url)}">`);
+  swap(/<meta property="og:title" content="[^"]*">/, `<meta property="og:title" content="${esc(title)}">`);
+  swap(/<meta property="og:description" content="[^"]*">/, `<meta property="og:description" content="${esc(desc)}">`);
+  swap(/<meta property="og:url" content="[^"]*">/, `<meta property="og:url" content="${esc(url)}">`);
+  swap(/<meta name="twitter:title" content="[^"]*">/, `<meta name="twitter:title" content="${esc(title)}">`);
+  swap(/<meta name="twitter:description" content="[^"]*">/, `<meta name="twitter:description" content="${esc(desc)}">`);
+  swap(/<\/head>/, `  <script type="application/ld+json" id="ld-product">${JSON.stringify(ld)}</script>\n</head>`);
+  swap(/<div id="app"><\/div>/, `<div id="app">${body}</div>`);
+  return html;
+}
+
+function sitemapXml(groups, categories) {
   const urls = [
     { loc: `${ORIGIN}/`, priority: '1.0', changefreq: 'daily' },
     { loc: `${ORIGIN}/om`, priority: '0.3', changefreq: 'monthly' },
     { loc: `${ORIGIN}/skann`, priority: '0.5', changefreq: 'monthly' },
+    // Above the product pages: a category answers a whole query ("hva koster
+    // egg") rather than one product, and it is the page the products hang off.
+    ...categories.map((c) => ({ loc: `${ORIGIN}${app.categoryPath(c.slug)}`, priority: '0.9', changefreq: 'weekly' })),
     ...groups.map((g) => ({ loc: `${ORIGIN}${app.groupPath(g.key)}`, priority: '0.7', changefreq: 'weekly' }))
   ];
   // /liste is a visitor's own basket and /vare/* is one chain's slice of a page
@@ -220,7 +293,17 @@ async function main() {
     .filter((g) => g.storeCount >= MIN_STORES)
     .sort((a, b) => a.key.localeCompare(b.key, 'nb'));
 
-  await writeFile(path.join(OUT, 'sitemap.xml'), sitemapXml(indexable));
+  // Only categories that actually have products — an empty page is worse than
+  // no page, and it would be the one a search lands on.
+  const categories = app.CATEGORIES.filter((c) => app.categoryGroups(c.slug).length > 0);
+
+  await writeFile(path.join(OUT, 'sitemap.xml'), sitemapXml(indexable, categories));
+
+  await mkdir(path.join(OUT, 'kategori'), { recursive: true });
+  for (const c of categories) {
+    const gs = app.categoryGroups(c.slug);
+    await writeFile(path.join(OUT, 'kategori', `${c.slug}.html`), renderCategoryPage(shell, c, gs));
+  }
 
   await mkdir(path.join(OUT, 'gruppe'), { recursive: true });
   for (let i = 0; i < indexable.length; i++) {
@@ -241,7 +324,8 @@ async function main() {
   }
 
   console.log(`build: ${rows.length} rader → ${groups.length} grupper, `
-    + `${indexable.length} forhåndsrendret (≥${MIN_STORES} butikker) og lagt i sitemap.`);
+    + `${indexable.length} produktsider (≥${MIN_STORES} butikker) og ${categories.length} kategorisider `
+    + `forhåndsrendret og lagt i sitemap.`);
 }
 
 main().catch((err) => {

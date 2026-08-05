@@ -161,6 +161,10 @@ when it can't reach it. The output is gitignored.
   copies a URL that encodes the entries after the hash (`/liste#d=…`); opening
   it shows a preview + import banner, so a list travels between phone and PC
   without an account (it never silently overwrites the visitor's own list).
+- **Kategori** `/kategori/:slug` — the page for "hva koster egg": the cheapest
+  in each chain across the whole category, then every product in it ranked by
+  price per kilo or litre, each linking to its own group page. Regroups
+  nothing — see **Category pages** below.
 - **Produktgruppe** `/gruppe/:slug` — a generic product and **where it's sold**:
   the store variants ("REMA 1000 Tacosaus Medium", "Meny Tacosaus Medium" …) with
   prices, before-prices and validity, **ranked by price per litre/kilo** (a
@@ -353,6 +357,57 @@ descriptive `aria-label`s; the store filter is an `aria-pressed` button group.
 Every screen has a real empty/error state: a distinct message for no-search-hits
 vs. an empty store filter vs. an empty catalogue, a "fant ikke varen" view for a
 dead product deep link, and a boot-failure screen with a retry button.
+
+**Category pages — the words people actually search.** Groups are keyed on a
+product's whole name, so `Smør Økologisk 250g Røros` keys to
+`okologisk roros smor`. There is no group called `smor`, because no product is
+named simply "Smør". Of 24 everyday staples checked, **9 had a page and 12 had
+no group at all** — no landing page for "hva koster egg", "smørpris",
+"potetpris", among the most-searched grocery queries in Norway.
+
+A category (`/kategori/egg`) **regroups nothing**. It is a view over the groups
+that already exist, so every like-for-like comparison underneath is untouched;
+the page gathers them, ranks them and links onward. That linking is half the
+point: ~5 000 product pages reachable only by paging through the catalogue are
+orphans, and internal links are most of what tells a crawler which pages matter.
+The category list sits on the front page and on every category page.
+
+Matching is **anchored to the head of the name**, not to the name anywhere.
+`mlGroupKey` keeps word order (`ckey` sorts alphabetically and drops
+one-letter words, so `m/` is gone by then), and the term must land in the first
+two tokens:
+
+| name | key | verdict |
+| --- | --- | --- |
+| `Helmelk 1,75l Tine` | `helmelk` | melk ✓ |
+| `Havregrøt m/Melk 50g Axa` | `havregrot m melk` | ✗ it is porridge |
+| `Melange margarin u/melk` | `melange margarin u melk` | ✗ it is margarine |
+| `Firkløver m/Kaffe Freia` | `firklover m kaffe` | ✗ it is chocolate |
+
+The second token counts because `mlGroupKey` strips only the chains and a few
+big brands — `Kims Potetgull`, `Wasa Knekkebrød` and `Dolmio Pastasaus` all
+lead with a brand it does not know. That window is also what let a pastry onto
+the egg page (`Wienerbrød egg&rosin`), so it **closes when the first token is
+itself a product**: `CATEGORY_NOT_HEAD` lists the prepared dishes and baked
+goods that are named for what fills them. Expect to extend it; it is the same
+kind of list as `MINCE_DISQUALIFY` and wants the same treatment.
+
+`CATEGORIES` is **ordered, and the order matters** exactly as in `POPULAR`: the
+first match wins, so a composite claims its groups before the ingredient it is
+named for. `pastasaus` leads with a word containing `pasta`, so the sauce must
+come first or the pasta page fills with jars of sauce. Two further guards: a
+per-category `not`, and `CATEGORY_NONFOOD` for napkins printed with coffee cups
+and bread bags.
+
+Ranking is by price per kg/l **within the category's dominant unit**. Some
+categories mix dimensions — yoghurt has both kg and stk — and putting 16,20/stk
+above 27,00/kg is two scales in one column, not a ranking; the rest keep their
+place below, on pack price.
+
+`build.mjs` prerenders every category that has products (an empty page is worse
+than no page, and it is the one a search would land on) and puts them in the
+sitemap **above** the product pages: one category answers a whole query rather
+than a single product.
 
 **Price floor — what counts as a price at all.** Meny's feed carries
 **placeholder** prices for goods it has no real figure for, and they are not

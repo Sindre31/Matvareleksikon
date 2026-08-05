@@ -6,6 +6,7 @@
   "cleanUrls": true,
   "rewrites": [
     { "source": "/gruppe/:slug([a-z0-9-]+)", "destination": "/" },
+    { "source": "/kategori/:slug([a-z0-9-]+)", "destination": "/" },
     { "source": "/vare/:slug([a-z0-9-]+)/:butikk([a-z0-9-]+)", "destination": "/" },
     { "source": "/liste", "destination": "/" },
     { "source": "/skann", "destination": "/" },
