@@ -20,7 +20,7 @@
 var CACHE = 'prisboka-v4';
 var CORE = [
   '/', '/index.html', '/styles.css', '/app.js',
-  '/favicon.svg', '/manifest.webmanifest', '/icon-192.png', '/icon-512.png'
+  '/favicon.ico', '/favicon.svg', '/manifest.webmanifest', '/icon-192.png', '/icon-512.png'
 ];
 
 self.addEventListener('install', function (e) {
