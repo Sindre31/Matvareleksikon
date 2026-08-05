@@ -409,6 +409,42 @@ than no page, and it is the one a search would land on) and puts them in the
 sitemap **above** the product pages: one category answers a whole query rather
 than a single product.
 
+**Unit price — two estimates, and a disagreement is a fault report.** The price
+per kg/l is derived twice: parsed from the product name, and read off the
+source's own field. On the 10 800 catalogue rows where both exist in the same
+dimension **they agree within 2 % on 97 %** of them, which is what makes the
+remainder worth reading rather than averaging.
+
+Past a factor of **3** the pack keeps its shelf price and claims **no** price
+per kilo, because one estimate is wrong and nothing in the data says which:
+
+| | name says | source says | wrong one |
+| --- | ---: | ---: | --- |
+| `Ostekake m/Pasjonsfrukt 380g` | 210,30/kg | 210 263/kg | source, by 1000 |
+| `Leverpostei Kuvert, 22g x 70stk` | 20 009/kg | 285,80/kg | name |
+| `Coca-Cola Zero 0,33lx20bx Brett` | 421,20/l | 21,10/l | name |
+
+The factor is 3 because **below it the disagreements are not faults.** They are
+drained weight against total weight, which is how canned goods are labelled:
+`Agurker Hele 580g Nora` is 63,60/kg by the jar and 136,70/kg by what you eat,
+and both numbers are true. 262 of the 297 disagreements sit under 3 and are
+that; the 35 above it are broken. A jar cannot be much more than two-thirds
+liquid, so 3 is where the physical explanation runs out — the number is not a
+taste setting.
+
+`parseAmount` also learned the **count-after-size** multipack spelling
+(`22g x 70stk`, `0,33lx20bx`, `175gx2stk`; 64 rows). It only read the
+count-first form, so a 70-cup box of leverpostei was priced as one 22 g cup.
+Requiring the `x` immediately after the unit is what keeps the rule tight.
+
+Still open: a row whose **price basis** differs from the size its name states,
+with no source figure to check it against — `Kyllingfilet Spyd Sweet Chili 1kg`
+at 14 kr, `Kaffemelk 3,5% 100x10ml Kuvert` at 2,10. Both parse correctly and
+both have `unit_price` null, so there is no second opinion to disagree with.
+That is an implausible *price*, the tail of the same problem `MIN_PRICE_NOK`
+addresses, and it wants a different instrument — peer comparison inside a
+group, or a per-category band — rather than a guess bolted onto this one.
+
 **Price floor — what counts as a price at all.** Meny's feed carries
 **placeholder** prices for goods it has no real figure for, and they are not
 rare noise but a systematic pattern: counter and deli items (`Husets Pizza`

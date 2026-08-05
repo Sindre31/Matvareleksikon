@@ -171,6 +171,54 @@ function offer(store_id, product_name, price, extra) {
 }
 function byKey(groups, key) { return groups.find((g) => g.key === key); }
 
+test('parseAmount — a multipack counted after the size, not just before it', () => {
+  // "22g x 70stk" fell through to the largest-single-token rule and priced a
+  // 70-cup box of leverpostei as one 22 g cup: 20 009 kr/kg against the
+  // source's 285,80.
+  // Compared with a tolerance: 22 * 70 / 1000 is 1.5399999999999998 in binary
+  // floating point, and the dimension is what the assertion is really about.
+  const near = (got, value, dim) => {
+    assert.equal(got.dim, dim);
+    assert.ok(Math.abs(got.value - value) < 1e-9, `${got.value} ≈ ${value}`);
+  };
+  near(lib.parseAmount('Leverpostei Kuvert, 22g x 70stk'), 1.54, 'kg');
+  near(lib.parseAmount('Hvitløksbaguetter 175gx2stk Hatting'), 0.35, 'kg');
+  near(lib.parseAmount('Coca-Cola Zero 0,33lx20bx Brett'), 6.6, 'l');
+  // The count-first spelling still reads the same way it always did.
+  assert.deepEqual(lib.parseAmount('Cola 4 x 1,5l'), { value: 6, dim: 'l' });
+  assert.deepEqual(lib.parseAmount('Kaffemelk 100x10ml Kuvert'), { value: 1, dim: 'l' });
+  // And an ordinary single size is untouched.
+  assert.deepEqual(lib.parseAmount('Spaghetti 500g Barilla'), { value: 0.5, dim: 'kg' });
+});
+
+test('buildGroups — two estimates that disagree far enough claim no unit price', () => {
+  // One estimate is parsed from the name, the other supplied by the source. On
+  // 10 800 rows carrying both they agree within 2 % on 97 %. Where they
+  // diverge past a factor of 3 one is wrong and we cannot tell which — the
+  // source is sometimes off by 1000, the name sometimes misses a multipack —
+  // so the pack keeps its shelf price and claims no price per kilo.
+  lib.buildStores(STORES);
+  const groups = lib.buildGroups([
+    { store_id: 'kiwi', product_name: 'Ostekake 380g', price: 79.9, unit_price: 210263.2, unit_price_unit: 'kg' }
+  ]);
+  const g = groups.find((x) => /ostekake/.test(x.key));
+  assert.ok(g, 'the product is still in the leksikon');
+  assert.equal(g.variants[0].price, 79.9, 'and keeps its shelf price');
+  assert.equal(g.variants[0].perUnit, null, 'but claims no price per kilo');
+});
+
+test('buildGroups — drained weight is not a fault, so it keeps its unit price', () => {
+  // "Agurker Hele 580g Nora" is 63,60/kg by the jar and 136,70/kg by what you
+  // eat. Both numbers are true, and 262 of the 297 disagreements in the
+  // catalogue are this. Only past a factor of 3 does the explanation run out.
+  lib.buildStores(STORES);
+  const groups = lib.buildGroups([
+    { store_id: 'kiwi', product_name: 'Agurker Hele 580g Nora', price: 36.9, unit_price: 136.7, unit_price_unit: 'kg' }
+  ]);
+  const g = groups.find((x) => /agurker/.test(x.key));
+  assert.ok(g.variants[0].perUnit > 0, 'a jar in brine still compares per kilo');
+});
+
 test('buildGroups — placeholder prices are not prices', () => {
   // Meny's feed carries a placeholder for goods it has no real figure for:
   // "Husets Pizza" 0,10, "Barracuda Filet pr Kg" 2,00, free waste bags at
