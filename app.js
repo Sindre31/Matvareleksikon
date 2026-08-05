@@ -165,16 +165,45 @@
   // A "kjøttdeig"/"karbonadedeig" name that also carries one of these is really
   // a pizza, sauce, ready meal or veg imitation — keep it out of the mince
   // groups (substring on the folded name; no 'ris' — it hides inside "pris").
-  var MINCE_DISQUALIFY = /a la|pizza|grandiosa|bowl|gronnsak|saus|wok|gryte|lasagne|taco|suppe|potetmos|vegetar|veggie|plante|soya|surdeig|medister/;
+  //
+  // 'borek' joins them for the same reason: a børek is a filled pastry, and
+  // "Børek m/Kjøttdeig 100g United Bakeries" put a 19,90 snack on the
+  // kjøttdeig page next to 400 g packs of raw mince. 'plast' and 'hakker'
+  // are not food at all — "Kjøttdeig Hakker Plast Hack-It" is a mince
+  // chopper, and it was being priced against beef. ('hakker' the tool, not
+  // 'hakket' the adjective: "Kjøttdeig Hakket 800g Folkets" is real mince and
+  // must stay.)
+  var MINCE_DISQUALIFY = /a la|pizza|grandiosa|bowl|gronnsak|saus|wok|gryte|lasagne|taco|suppe|potetmos|vegetar|veggie|plante|soya|surdeig|medister|borek|\bplast|\bhakker\b/;
+  // "X med kjøttdeig" names the filling, not the product. Anything built this
+  // way — a pastry, a pie, a ready meal — is something else that happens to
+  // contain mince, so it does not belong in a group people open to compare
+  // what a kilo of mince costs. ("m" is how the fold leaves "m/".)
+  var MINCE_AS_INGREDIENT = /(^| )m(ed)? (kjottdeig|karbonadedeig)( |$)/;
   var TYPE_LABEL = { storfe: 'av storfe', svin: 'av svin', kylling: 'kylling', kalkun: 'kalkun', lam: 'av lam', laks: 'av laks', elg: 'elg', vilt: 'vilt', hjort: 'hjort', rein: 'rein', kalv: 'kalv', blandet: 'blandet' };
 
+  // A meat type counts when it is a whole word, or the head or the tail of a
+  // compound — which is where Norwegian actually puts it: "storfekjøttdeig",
+  // "kyllingkjøttdeig" (head), "frilandsgris", "heldiggris" (tail).
+  //
+  // NOT a bare substring, which is what this used to be: "Kjøttdeig Helgø"
+  // folds to "kjottdeig helgo", and h-e-l-g-o contains "elg", so a butcher's
+  // own-brand mince was filed as elk and got a product page of its own. The
+  // same trap is one letter away everywhere else in this list — "rein" sits
+  // inside "protein", "lam" inside "flambert".
   function typePresent(folded, t) {
     var al = TYPE_ALIASES[t] || [t];
-    for (var i = 0; i < al.length; i++) if (folded.indexOf(al[i]) > -1) return true;
+    var toks = folded.split(' ');
+    for (var i = 0; i < al.length; i++) {
+      var a = al[i];
+      for (var j = 0; j < toks.length; j++) {
+        var tok = toks[j];
+        if (tok === a || tok.lastIndexOf(a, 0) === 0 || (tok.length > a.length && tok.slice(-a.length) === a)) return true;
+      }
+    }
     return false;
   }
   function minceKey(folded) {
-    if (MINCE_DISQUALIFY.test(folded)) return null;
+    if (MINCE_DISQUALIFY.test(folded) || MINCE_AS_INGREDIENT.test(folded)) return null;
     var toks = folded.split(' '), base = null;
     for (var i = 0; i < toks.length; i++) if (/karbonadedeig$/.test(toks[i])) { base = 'karbonadedeig'; break; }
     if (!base) for (var j = 0; j < toks.length; j++) if (/kjottdeig$/.test(toks[j])) { base = 'kjottdeig'; break; }
