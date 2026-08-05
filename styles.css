@@ -172,6 +172,24 @@ figcaption {
 .btn-icon { width: 36px; height: 36px; padding: 0; }
 .btn-block { width: 100%; margin-top: var(--space-2); }
 
+/* — touch targets —
+   A finger cannot be aimed the way a cursor can, and the sizes above are
+   cursor sizes: 32-36 px against the 44x44 WCAG 2.5.5 asks for. Raise them
+   where the input actually is a finger, and leave the desktop untouched.
+
+   The two custom properties are here because several controls in app.js set
+   their height in an inline `style` attribute, and an inline declaration beats
+   any selector in this file no matter how specific — a plain rule would have
+   silently missed every one of them. Those controls read the variable instead,
+   each with its own current size as the fallback, so nothing moves until the
+   media query below gives the variable a value. */
+@media (pointer: coarse) {
+  :root { --tap-row: 44px; --tap-icon: 44px; }
+  .btn { min-height: 44px; }
+  .btn-icon { width: 44px; height: 44px; }
+  .input { min-height: 44px; }
+}
+
 /* — forms — */
 .field > label {
   display: block; font-size: 12px; margin-bottom: 5px;
