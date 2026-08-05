@@ -6,7 +6,20 @@
   <title>Prisboka — Matvareleksikon med pristrender</title>
   <meta name="description" content="Matvareleksikon med ekte matvarepriser fra norske dagligvarekjeder — hentet fra tilbudsaviser og skannede kvitteringer, og hvor prisen er på vei.">
   <meta name="theme-color" content="#5980a6">
+  <!-- Four icon links, not one, because four different consumers read them.
+       Google Search takes the favicon for the result row from rel="icon" /
+       rel="apple-touch-icon" and needs Googlebot-Image to be able to fetch the
+       file it points at; an SVG is the one format it has no guarantee of
+       rasterising, and /favicon.ico — the path every crawler falls back to when
+       the markup gives it nothing it can use — was a 404 here, which is what
+       left the grey globe next to prisboka.no in the results.
+       favicon.ico carries 16-256 px in one file, so the tab, the bookmark bar
+       and the search result each pick a size instead of downscaling a guess;
+       browsers that understand SVG take the sharper favicon.svg on the next
+       line, since the last icon link a browser can use wins. -->
+  <link rel="icon" href="/favicon.ico" sizes="16x16 32x32 48x48 64x64 128x128 256x256">
   <link rel="icon" href="/favicon.svg" type="image/svg+xml">
+  <link rel="icon" href="/icon-192.png" type="image/png" sizes="192x192">
   <link rel="apple-touch-icon" href="/icon-192.png">
   <link rel="canonical" href="https://prisboka.no/">
 
