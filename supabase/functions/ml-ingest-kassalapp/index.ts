@@ -19,6 +19,23 @@
 // Requires the KASSALAPP_TOKEN secret; a no-op ({skipped}) without it.
 import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 
+// A price at or below this is not a price. Meny's feed carries placeholders
+// for goods it has no real figure for — counter and deli items ("Husets
+// Pizza" 0,10, "Barracuda Filet pr Kg" 2,00, "Sau hel og Halv pr Kg" 2,00),
+// free municipal waste bags (0,01, and Kiwi has them too), gift cards and
+// cutlery packs. 101 catalogue rows sat at or below 2 kr and not one of them
+// was a real grocery price; the first genuine ones appear just above, at
+// 2,40-2,99 (taco spice sachets, loose potatoes, marsipan). Hence 2, not 3:
+// three would have taken ~15 real products with it.
+//
+// The floor cannot key on "pr Kg" or "Husets" instead — plenty of counter
+// rows carry a true per-kilo price ("Kjøttdeig Av Storfe pr Kg" at 225). The
+// price itself is what separates a placeholder from a measurement.
+//
+// Mirrored in app.js (MIN_PRICE_NOK) so the rows already in the database are
+// hidden without waiting for the next ingest run. Change both together.
+const MIN_PRICE_NOK = 2;
+
 const API = "https://kassal.app/api/v1";
 const PAGE_SIZE = 100;
 // Kept well under the platform's wall-clock limit: the upserts still have to run
@@ -172,7 +189,7 @@ async function writeSweep(SB_URL: string, sbHeaders: Record<string, string>, pat
 function rowFrom(p: any): any | null {
   const price = num(p?.current_price) ?? num(p?.price);
   const slug = storeSlug(p?.store?.name);
-  if (price == null || price <= 0 || !slug || !p?.name) return null;
+  if (price == null || price <= MIN_PRICE_NOK || !slug || !p?.name) return null;
   const hist = (p?.price_history ?? []).map((h: any) => h?.price).filter((x: any) => typeof x === "number");
   const recentMax = hist.length ? Math.max(...hist) : price;
   // Real markdown, not a price_history outlier: between 5% and 50% off. Kassalapp's

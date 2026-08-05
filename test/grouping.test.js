@@ -171,6 +171,39 @@ function offer(store_id, product_name, price, extra) {
 }
 function byKey(groups, key) { return groups.find((g) => g.key === key); }
 
+test('buildGroups — placeholder prices are not prices', () => {
+  // Meny's feed carries a placeholder for goods it has no real figure for:
+  // "Husets Pizza" 0,10, "Barracuda Filet pr Kg" 2,00, free waste bags at
+  // 0,01. 101 catalogue rows sat at or below 2 kr and not one was a real
+  // grocery price. One of them — 0,80 for organic beef mince sold by the kilo
+  // — was enough to pin a product's whole price chart to the floor.
+  lib.buildStores(STORES);
+  const groups = lib.buildGroups([
+    offer('kiwi', 'Lettmelk 1 l', 18.9),
+    offer('meny', 'Lettmelk 1 l', 0.1),     // placeholder
+    offer('meny', 'Barracuda Filet pr Kg', 2),
+    offer('meny', 'Gule Poser Metallemballasje 20stk', 0.01)
+  ]);
+  const melk = byKey(groups, 'lettmelk');
+  assert.equal(melk.storeCount, 1, 'the placeholder store is not in the comparison');
+  assert.equal(melk.minPrice, 18.9, 'and cannot become the cheapest price');
+  assert.equal(byKey(groups, 'kg pr barracuda filet'), undefined);
+  assert.equal(groups.filter((g) => /poser/.test(g.key)).length, 0);
+});
+
+test('buildGroups — the floor sits at 2, so genuinely cheap goods survive', () => {
+  // The first real prices start just above: taco spice sachets at 2,40-2,90,
+  // loose potatoes at 2,59, marsipan at 2,60. A floor at 3 would have taken
+  // about fifteen real products with it, which is why it is 2.
+  lib.buildStores(STORES);
+  const groups = lib.buildGroups([
+    offer('kiwi', 'Taco Kryddermix 28g First Price', 2.4),
+    offer('rema', 'Tacokrydder 40g Prima', 2.9)
+  ]);
+  assert.equal(groups.filter((g) => /krydder|kryddermix/.test(g.key)).length > 0, true);
+  assert.equal(groups.reduce((n, g) => n + g.variants.length, 0), 2, 'both survive the floor');
+});
+
 test('buildGroups — the same product across stores folds into one group', () => {
   lib.buildStores(STORES);
   const groups = lib.buildGroups([

@@ -498,6 +498,22 @@
     });
   }
 
+  // A price at or below this is not a price. Meny's feed carries placeholders
+  // for goods it has no real figure for — counter and deli items ("Husets
+  // Pizza" 0,10, "Barracuda Filet pr Kg" 2,00, "Sau hel og Halv pr Kg" 2,00),
+  // free municipal waste bags (0,01, and Kiwi has them too), gift cards and
+  // cutlery packs. 101 catalogue rows sat at or below 2 kr and not one was a
+  // real grocery price; the first genuine ones appear just above, at 2,40-2,99
+  // (taco spice sachets, loose potatoes, marsipan). Hence 2, not 3 — three
+  // would have taken ~15 real products with it.
+  //
+  // The ingest functions apply the same floor on the way in, so this is not
+  // the only defence. It is here because ml_offers is rebuilt weekly but
+  // ml_price_history is append-only: without it, a 0,80 kr "Kjøttdeig Av
+  // Storfe Øko pr Kg" recorded once would drag that product's chart to the
+  // floor forever. Mirrored as MIN_PRICE_NOK in supabase/functions/ml-ingest-*.
+  var MIN_PRICE_NOK = 2;
+
   function buildGroups(offers) {
     OFFERS = Array.isArray(offers) ? offers : [];
     var today = new Date().toISOString().slice(0, 10);
@@ -510,7 +526,7 @@
       try {
         if (!o) return;
         var price = Number(o.price);
-        if (!isFinite(price) || price <= 0) return;
+        if (!isFinite(price) || price <= MIN_PRICE_NOK) return;
         var key = ckey(o.product_name);
         if (!key) return;
         // Rows arrive newest-first (see offersPage), so the first row that
@@ -1319,7 +1335,9 @@
       // Drop points from stores the leksikon doesn't show, so a hidden chain
       // can't draw a line on the chart or a row in "Registreringer".
       .then(function (rows) {
-        state.history[key] = (rows || []).filter(function (r) { return r && STORE_NAME[r.store_id]; });
+        state.history[key] = (rows || []).filter(function (r) {
+          return r && STORE_NAME[r.store_id] && Number(r.price) > MIN_PRICE_NOK;
+        });
         if (HISTORY_VIEWS[state.view]) render();
       })
       .catch(function () { state.history[key] = []; if (HISTORY_VIEWS[state.view]) render(); });
@@ -1359,7 +1377,9 @@
         .then(function (r) { return r.ok ? r.json() : []; })
         .then(function (rows) {
           (rows || []).forEach(function (r) {
-            if (!r || !STORE_NAME[r.store_id]) return;
+            // Same floor the product chart applies — a placeholder price would
+            // otherwise sink the whole basket's line for that chain.
+            if (!r || !STORE_NAME[r.store_id] || !(Number(r.price) > MIN_PRICE_NOK)) return;
             var ck = byServerKey[r.group_key];
             if (ck && landed[ck]) landed[ck].push(r);
           });

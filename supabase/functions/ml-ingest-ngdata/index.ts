@@ -7,6 +7,23 @@
 // have no per-store assortment here so we stick to Meny.
 import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 
+// A price at or below this is not a price. Meny's feed carries placeholders
+// for goods it has no real figure for — counter and deli items ("Husets
+// Pizza" 0,10, "Barracuda Filet pr Kg" 2,00, "Sau hel og Halv pr Kg" 2,00),
+// free municipal waste bags (0,01, and Kiwi has them too), gift cards and
+// cutlery packs. 101 catalogue rows sat at or below 2 kr and not one of them
+// was a real grocery price; the first genuine ones appear just above, at
+// 2,40-2,99 (taco spice sachets, loose potatoes, marsipan). Hence 2, not 3:
+// three would have taken ~15 real products with it.
+//
+// The floor cannot key on "pr Kg" or "Husets" instead — plenty of counter
+// rows carry a true per-kilo price ("Kjøttdeig Av Storfe pr Kg" at 225). The
+// price itself is what separates a placeholder from a measurement.
+//
+// Mirrored in app.js (MIN_PRICE_NOK) so the rows already in the database are
+// hidden without waiting for the next ingest run. Change both together.
+const MIN_PRICE_NOK = 2;
+
 const API = "https://platform-rest-prod.ngdata.no";
 const MENY = { chainId: "1300", gln: "7080000002153", store: "meny" };
 const PAGE_SIZE = 100;
@@ -39,7 +56,7 @@ const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 function rowFrom(hit: any): any | null {
   const price = hit?.pricePerUnit;
-  if (typeof price !== "number" || !isFinite(price) || price <= 0 || !hit?.title) return null;
+  if (typeof price !== "number" || !isFinite(price) || price <= MIN_PRICE_NOK || !hit?.title) return null;
   const name = hit.subtitle ? `${hit.title} ${hit.subtitle}`.trim() : hit.title;
   const isOffer = hit?.isOffer === true;
   const orig = hit?.pricePerUnitOriginal;
