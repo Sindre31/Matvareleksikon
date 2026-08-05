@@ -354,6 +354,34 @@ Every screen has a real empty/error state: a distinct message for no-search-hits
 vs. an empty store filter vs. an empty catalogue, a "fant ikke varen" view for a
 dead product deep link, and a boot-failure screen with a retry button.
 
+**Price floor — what counts as a price at all.** Meny's feed carries
+**placeholder** prices for goods it has no real figure for, and they are not
+rare noise but a systematic pattern: counter and deli items (`Husets Pizza`
+0,10, `Barracuda Filet pr Kg` 2,00, `Sau hel og Halv pr Kg` 2,00), free
+municipal waste bags at 0,01 (Kiwi has those too), gift cards, cutlery packs.
+**101 catalogue rows sat at or below 2 kr and not one was a real grocery
+price.** One of them — `Kjøttdeig Av Storfe Øko pr Kg` at 0,80 — was enough to
+drag a product's whole price chart to the floor, on a page built to be found
+in search.
+
+`MIN_PRICE_NOK` is **2**, and the number is where it is because the data put it
+there: the first genuine prices appear just above, at 2,40–2,99 (taco spice
+sachets, loose potatoes, marsipan), so a floor at 3 would have taken ~15 real
+products with it. It removes 91 groups, 89 variants and 3 of the ~5 000
+indexable pages — every one of them a placeholder or a non-food item.
+
+The floor cannot key on `pr Kg` or `Husets` instead: plenty of counter rows
+carry a true per-kilo price (`Kjøttdeig Av Storfe pr Kg` at 225). The price
+itself is the only thing that separates a placeholder from a measurement.
+
+It is applied in **both places on purpose**. The four `ml-ingest-*` Edge
+Functions drop such rows on the way in, and since each deletes its own
+`source=` rows before re-inserting, the catalogue cleans itself on the next
+weekly run. But `ml_price_history` is **append-only** — a placeholder recorded
+once would define that product's chart forever — so `app.js` applies the same
+floor when it reads the catalogue, the product history and the shopping-list
+history. Change `MIN_PRICE_NOK` in all five files together.
+
 **Store coverage threshold — which chains the leksikon shows.** A chain only
 belongs in a price comparison once it carries enough of the catalogue to be
 compared: a store on a fraction of the products is worse than no store, because
