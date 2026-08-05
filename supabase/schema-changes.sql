@@ -769,8 +769,12 @@ begin
 end;
 $fn$;
 
+-- The counters behind the tab labels. open_feedback was appended later; a
+-- CREATE OR REPLACE cannot widen a function's return type, so that migration
+-- dropped this first. Callers read the row by name, so appending is safe.
+drop function if exists public.ml_admin_stats();
 create or replace function public.ml_admin_stats()
-returns table (open_reports bigint, flagged bigint, overrides bigint, hidden bigint, products bigint)
+returns table (open_reports bigint, flagged bigint, overrides bigint, hidden bigint, products bigint, open_feedback bigint)
 language sql stable set search_path = public, pg_temp as $fn$
   -- Aliased throughout: `flagged`/`hidden` are also OUT parameter names here,
   -- and an unqualified reference to one is ambiguous.
@@ -778,7 +782,46 @@ language sql stable set search_path = public, pg_temp as $fn$
          (select count(*) from ml_offer_overrides v where v.flagged),
          (select count(*) from ml_offer_overrides v),
          (select count(*) from ml_offer_overrides v where v.hidden),
-         (select count(*) from ml_offers o);
+         (select count(*) from ml_offers o),
+         (select count(*) from ml_feedback f where f.status = 'ny');
+$fn$;
+
+-- The tilbakemelding queue. Same shape as ml_admin_reports: typed arguments,
+-- service_role only, called by the ml-admin Edge Function.
+--
+-- sender_ip is deliberately NOT returned. It exists to rate-limit, not to
+-- identify, and the queue does not need it to be useful. What the admin does
+-- need is whether a message is one of many from the same person, so a flood is
+-- visible without the address being on screen: `from_sender` counts the
+-- messages sharing this sender id (falling back to the IP) — the same coalesce
+-- ml_report_apply uses to count agreement.
+create or replace function public.ml_admin_feedback(p_status text default 'open', p_limit int default 200)
+returns table (
+  id uuid, created_at timestamptz, kind text, message text, email text,
+  path text, status text, handled_at timestamptz, from_sender bigint
+)
+language sql stable set search_path = public, pg_temp as $fn$
+  select f.id, f.created_at, f.kind, f.message, f.email,
+         f.path, f.status, f.handled_at,
+         (select count(*) from ml_feedback f2
+           where coalesce(f2.sender, 'ip:' || f2.sender_ip, 'row:' || f2.id::text)
+               = coalesce(f.sender, 'ip:' || f.sender_ip, 'row:' || f.id::text))
+    from ml_feedback f
+   where case
+           when p_status is null or p_status = 'alle' then true
+           when p_status = 'open'                     then f.status = 'ny'
+           else f.status = p_status
+         end
+   order by f.created_at desc
+   limit greatest(1, least(coalesce(p_limit, 200), 500));
+$fn$;
+
+create or replace function public.ml_admin_set_feedback(p_id uuid, p_status text)
+returns void language sql volatile set search_path = public, pg_temp as $fn$
+  update ml_feedback
+     set status = p_status,
+         handled_at = case when p_status in ('behandlet', 'avvist') then now() else null end
+   where id = p_id and p_status in ('ny', 'behandlet', 'avvist');
 $fn$;
 
 revoke execute on function public.ml_admin_search(text, text, int)                             from anon, authenticated, public;
@@ -789,6 +832,8 @@ revoke execute on function public.ml_admin_reset(text, text)                    
 revoke execute on function public.ml_admin_set_report(uuid, text)                              from anon, authenticated, public;
 revoke execute on function public.ml_admin_apply_report(uuid)                                  from anon, authenticated, public;
 revoke execute on function public.ml_admin_stats()                                             from anon, authenticated, public;
+revoke execute on function public.ml_admin_feedback(text, int)                                 from anon, authenticated, public;
+revoke execute on function public.ml_admin_set_feedback(uuid, text)                            from anon, authenticated, public;
 grant execute on function public.ml_admin_search(text, text, int)                              to service_role;
 grant execute on function public.ml_admin_overrides(int)                                       to service_role;
 grant execute on function public.ml_admin_reports(text, int)                                   to service_role;
@@ -797,6 +842,8 @@ grant execute on function public.ml_admin_reset(text, text)                     
 grant execute on function public.ml_admin_set_report(uuid, text)                               to service_role;
 grant execute on function public.ml_admin_apply_report(uuid)                                   to service_role;
 grant execute on function public.ml_admin_stats()                                              to service_role;
+grant execute on function public.ml_admin_feedback(text, int)                                  to service_role;
+grant execute on function public.ml_admin_set_feedback(uuid, text)                             to service_role;
 
 -- ─────────────────────────────────────────────────────────────────────────────
 -- Tilbakemelding ("Gi tilbakemelding"-knappen nederst til høyre)

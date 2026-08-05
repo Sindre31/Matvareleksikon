@@ -723,6 +723,7 @@
     // dies with the tab; nothing here is readable without the password.
     adminSession: null, adminPw: '', adminBusy: false, adminError: '', adminMsg: '',
     adminTab: 'rapporter', adminStatus: 'open', adminQuery: '', adminStore: '',
+    adminFbStatus: 'open', adminFeedback: null,
     adminReports: null, adminProducts: null, adminStats: null, adminEdit: null,
     history: {},    // key -> 'loading' | [rows] — full rows, per product page
     listHistory: {} // key -> 'loading' | [rows] — trimmed rows for the list chart
@@ -1115,7 +1116,7 @@
     } else if (r.view === 'admin') {
       state.view = 'admin';
       // A session that survived a reload still has to fetch what it shows.
-      if (state.adminSession && state.adminReports == null && state.adminProducts == null) adminLoad();
+      if (state.adminSession && state.adminReports == null && state.adminProducts == null && state.adminFeedback == null) adminLoad();
     } else {
       state.view = 'home';
     }
@@ -3311,7 +3312,7 @@
     writeAdminToken(null);
     setState({
       adminSession: null, adminReports: null, adminProducts: null, adminStats: null,
-      adminEdit: null, adminMsg: '', adminError: '', adminPw: ''
+      adminFeedback: null, adminEdit: null, adminMsg: '', adminError: '', adminPw: ''
     });
   }
 
@@ -3343,6 +3344,10 @@
       adminCall('reports', { status: state.adminStatus })
         .then(function (b) { setState({ adminBusy: false, adminReports: b.reports || [] }); })
         .catch(fail);
+    } else if (state.adminTab === 'tilbakemeldinger') {
+      adminCall('feedback', { status: state.adminFbStatus })
+        .then(function (b) { setState({ adminBusy: false, adminFeedback: b.feedback || [] }); })
+        .catch(fail);
     } else if (state.adminTab === 'produkter') {
       adminCall('search', { q: state.adminQuery || null, store: state.adminStore || null })
         .then(function (b) { setState({ adminBusy: false, adminProducts: (b.products || []).map(normAdminProduct) }); })
@@ -3357,7 +3362,9 @@
     return function () {
       state.adminTab = tab;
       state.adminEdit = null; state.adminMsg = ''; state.adminError = '';
-      if (tab === 'rapporter') state.adminReports = null; else state.adminProducts = null;
+      if (tab === 'rapporter') state.adminReports = null;
+      else if (tab === 'tilbakemeldinger') state.adminFeedback = null;
+      else state.adminProducts = null;
       adminLoad();
     };
   }
@@ -3424,6 +3431,18 @@
     adminCall(action, action === 'apply_report' ? { id: r.id } : { id: r.id, status: status })
       .then(function () {
         setState({ adminBusy: false, adminMsg: action === 'apply_report' ? 'Rettelsen er tatt i bruk.' : (status === 'avvist' ? 'Rapporten er avvist.' : 'Rapporten er merket behandlet.') });
+        adminLoad();
+      })
+      .catch(function (err) { setState({ adminBusy: false, adminError: err.message }); });
+  }
+
+  function adminFeedbackAction(f, status) {
+    if (state.adminBusy) return;
+    setState({ adminBusy: true, adminError: '', adminMsg: '' });
+    adminCall('feedback_status', { id: f.id, status: status })
+      .then(function () {
+        setState({ adminBusy: false, adminMsg: status === 'avvist' ? 'Tilbakemeldingen er avvist.'
+          : (status === 'ny' ? 'Tilbakemeldingen er gjenåpnet.' : 'Tilbakemeldingen er merket behandlet.') });
         adminLoad();
       })
       .catch(function (err) { setState({ adminBusy: false, adminError: err.message }); });
@@ -3519,6 +3538,54 @@
     ]);
   }
 
+  // A tilbakemelding is prose, so the card is mostly the message. Nothing here
+  // is applied to anything — the only actions are "I have dealt with this" and,
+  // when an e-mail was left, a reply that opens in the admin's own mail client
+  // with the message quoted (there is no outbound mail from the server).
+  var FEEDBACK_KIND_LABEL = { feil: 'Noe er feil', onske: 'Ønske', ros: 'Ros', annet: 'Annet' };
+  function adminFeedbackCard(f) {
+    var open = f.status === 'ny';
+    var kind = FEEDBACK_KIND_LABEL[f.kind] || 'Annet';
+    var repeat = Number(f.from_sender || 0);
+    var mailto = null;
+    if (f.email) {
+      mailto = 'mailto:' + encodeURIComponent(f.email)
+        + '?subject=' + encodeURIComponent('Svar fra Prisboka')
+        + '&body=' + encodeURIComponent('\n\n— — —\nDu skrev til Prisboka:\n\n' + String(f.message || ''));
+    }
+    return h('div', { style: 'padding: 16px 20px; border-bottom: 1px solid color-mix(in srgb, var(--color-text) 8%, transparent); display: flex; flex-wrap: wrap; gap: 14px; align-items: flex-start; justify-content: space-between;' }, [
+      // Same min() floor as the report card: a bare 260px cannot shrink below
+      // itself, and inside a 20px-padded row on a 320px phone that runs past
+      // the frame's right border.
+      h('div', { style: 'flex: 1; min-width: min(260px, 100%);' }, [
+        h('div', { style: 'display: flex; flex-wrap: wrap; gap: 6px; align-items: center;' }, [
+          adminBadge(kind, f.kind === 'feil'),
+          f.status !== 'ny' ? adminBadge(f.status) : null,
+          // Not the IP — just the fact that this person has written before, so
+          // a flood is visible without the address being on screen.
+          repeat > 1 ? adminBadge(repeat + ' fra samme avsender') : null,
+          f.email ? null : adminBadge('anonym')
+        ]),
+        // pre-wrap so the paragraphs someone typed survive; anywhere so a
+        // pasted URL wraps instead of widening the row past the frame.
+        h('p', { style: 'margin: 10px 0 0; font-size: 15px; line-height: 22px; white-space: pre-wrap; overflow-wrap: anywhere;', text: f.message }),
+        h('p', { style: 'margin: 10px 0 0; font-size: 12px; color: ' + MUTED60 + '; overflow-wrap: anywhere;', text: dateDM(String(f.created_at || '').slice(0, 10))
+          + (f.path ? ' · ' + f.path : '')
+          + (f.email ? ' · ' + f.email : '') })
+      ]),
+      h('div', { style: 'display: flex; flex-wrap: wrap; gap: 8px; align-items: center;' }, [
+        mailto ? h('a', { cls: 'btn btn-ghost', href: mailto, text: 'Svar' }) : null,
+        f.path ? h('a', { cls: 'btn btn-ghost', href: f.path, text: 'Se siden' }) : null,
+        // "Merk behandlet", not "Behandlet": the status filter above the list
+        // has a chip by that exact name, and two controls one word apart that
+        // do entirely different things is a trap worth one extra word.
+        open ? h('button', { type: 'button', cls: 'btn btn-primary', disabled: state.adminBusy ? 'disabled' : false, onClick: function () { adminFeedbackAction(f, 'behandlet'); }, text: 'Merk behandlet' }) : null,
+        open ? h('button', { type: 'button', cls: 'btn btn-ghost', disabled: state.adminBusy ? 'disabled' : false, onClick: function () { adminFeedbackAction(f, 'avvist'); }, text: 'Avvis' }) : null,
+        open ? null : h('button', { type: 'button', cls: 'btn btn-ghost', disabled: state.adminBusy ? 'disabled' : false, onClick: function () { adminFeedbackAction(f, 'ny'); }, text: 'Gjenåpne' })
+      ])
+    ]);
+  }
+
   function adminEditForm() {
     var e = state.adminEdit;
     return h('div', { style: 'padding: 16px 20px; background: color-mix(in srgb, var(--color-accent) 5%, transparent); border-bottom: 1px solid color-mix(in srgb, var(--color-text) 8%, transparent);' }, [
@@ -3592,6 +3659,7 @@
     if (!state.adminSession) return adminLoginScreen();
     var st = state.adminStats || {};
     var tabs = [['rapporter', 'Rapporter' + (Number(st.open_reports || 0) ? ' (' + st.open_reports + ')' : '')],
+                ['tilbakemeldinger', 'Tilbakemeldinger' + (Number(st.open_feedback || 0) ? ' (' + st.open_feedback + ')' : '')],
                 ['produkter', 'Produkter'],
                 ['endringer', 'Endringer' + (Number(st.overrides || 0) ? ' (' + st.overrides + ')' : '')]];
     var head = h('div', { style: 'padding: 48px 0 20px;' }, [
@@ -3602,6 +3670,7 @@
       h('h1', { style: H1, text: 'Rediger leksikonet' }),
       h('p', { style: 'margin: 14px 0 0; font-size: 14px; color: ' + MUTED70 + ";", text: state.adminStats
         ? [plural(st.products, 'produktrad', 'produktrader'), plural(st.open_reports, 'åpen rapport', 'åpne rapporter'),
+           plural(st.open_feedback || 0, 'ulest tilbakemelding', 'uleste tilbakemeldinger'),
            plural(st.flagged, 'flagget vare', 'flaggede varer'),
            plural(st.overrides, 'endring', 'endringer') + ' (' + st.hidden + ' skjult)'].join(' · ')
         : 'Laster oversikt …' }),
@@ -3641,6 +3710,28 @@
               : [h('p', { style: 'margin: 0; padding: 20px; font-size: 14px; color: ' + MUTED60 + ';', text: 'Ingen rapporter her.' })])
         )),
         h('p', { style: 'margin: 16px 0 0; font-size: 13px; line-height: 19px; color: ' + MUTED60 + ';', text: 'Tre rapporter på samme vare flagger den. Tre som foreslår nøyaktig samme pris — eller samme navn — retter den av seg selv. «Bruk denne» gjør rettelsen med én gang, og låser varen mot regelen.' })
+      ]);
+    } else if (state.adminTab === 'tilbakemeldinger') {
+      var FB_STATUSES = [['open', 'Uleste'], ['behandlet', 'Behandlet'], ['avvist', 'Avvist'], ['alle', 'Alle']];
+      var fbFilter = h('div', { style: 'display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 18px;' }, FB_STATUSES.map(function (s) {
+        var on = state.adminFbStatus === s[0];
+        return h('button', {
+          type: 'button', cls: 'btn ' + (on ? 'btn-secondary' : 'btn-ghost'), 'aria-pressed': on ? 'true' : 'false',
+          onClick: function () { state.adminFbStatus = s[0]; state.adminFeedback = null; adminLoad(); }, text: s[1]
+        });
+      }));
+      var fb = state.adminFeedback;
+      body = h('div', {}, [
+        h('span', { style: KICKER, text: '01 · Tilbakemeldinger' }),
+        h('hr', { style: RULE }),
+        fbFilter,
+        h('div', { cls: 'blueprint', style: 'padding: 0;' }, corners().concat(
+          fb == null
+            ? [h('p', { style: 'margin: 0; padding: 20px; font-size: 14px; color: ' + MUTED60 + ';', text: 'Laster tilbakemeldinger …' })]
+            : (fb.length ? fb.map(adminFeedbackCard)
+              : [h('p', { style: 'margin: 0; padding: 20px; font-size: 14px; color: ' + MUTED60 + ';', text: state.adminFbStatus === 'open' ? 'Ingen uleste tilbakemeldinger.' : 'Ingen tilbakemeldinger her.' })])
+        )),
+        h('p', { style: 'margin: 16px 0 0; font-size: 13px; line-height: 19px; color: ' + MUTED60 + ';', text: 'Fritekst fra «Gi tilbakemelding»-knappen. Ingenting herfra endrer leksikonet — det er «Behandlet»/«Avvis» som rydder køen. La noen igjen e-post, åpner «Svar» et utkast i e-postprogrammet ditt med meldingen sitert; serveren sender ingen e-post selv. IP-adressen lagres for å stoppe søppelmeldinger, men vises ikke her — «N fra samme avsender» er nok til å se en flom.' })
       ]);
     } else {
       var products = state.adminProducts;
