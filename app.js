@@ -1757,7 +1757,15 @@
         // everything else gets a plain one rather than a Postgres error code.
         return res.json().then(function (b) { throw new Error((b && b.message) || ''); }, function () { throw new Error(''); });
       })
-      .then(function () { patchReport({ phase: 'done', error: null }); })
+      .then(function () {
+        // "Send rapport" is what had focus, and it is about to be replaced by
+        // the receipt screen — so focus would fall back to <body>, leaving the
+        // dialog open with no keyboard way out (the Escape handler sits on the
+        // overlay and only sees keys pressed inside it). Re-arm the one-shot so
+        // the render below moves focus to "Lukk".
+        reportFocused = false;
+        patchReport({ phase: 'done', error: null });
+      })
       .catch(function (err) {
         // The three guards in ml_report_prepare raise Norwegian prose meant for
         // the reporter; anything else is a Postgres code they can't act on.
