@@ -2236,7 +2236,26 @@
     shown.forEach(wantImages);
 
     var hero = h('div', { style: 'padding: 64px 0 40px;' }, [
-      h('h1', { style: 'margin: -0.052em 0 0; font-size: clamp(44px, 6vw, 76px); line-height: 1.04; letter-spacing: 0.01em; text-transform: uppercase;' }, ['Matvareleksikonet', h('br'), 'med ekte priser']),
+      // "Matvareleksikonet" is one 17-character word, and at the 44px floor it
+      // is 548px wide — against the 272-382px a phone actually has. So it hit
+      // the body's `overflow-wrap: break-word` and came out as "MATVARELEK /
+      // SIKONET": a hard cut mid-word, on the largest element of the front
+      // page, at every phone width.
+      //
+      // Two halves to the fix. The word is a compound, so U+00AD (soft hyphen)
+      // marks where it may be split — invisible unless the line actually breaks
+      // there, and then it sets a real hyphen: MATVARE- / LEKSIKONET. That is a
+      // break opportunity, so it is taken before break-word's last resort ever
+      // applies.
+      //
+      // That alone carries 375px and up. Below it the remaining half,
+      // "leksikonet", is still too wide, so the size is also capped against the
+      // column: measured, that half fits at 0.141 x the column width, and 0.135
+      // keeps a margin under it. The min() leaves the clamp untouched wherever
+      // it already fits — 44px from 375px up, 76px on a desktop — and only bites
+      // on the narrow phones that need it (36.7px at 320).
+      h('h1', { style: 'margin: -0.052em 0 0; font-size: min(clamp(44px, 6vw, 76px), calc((100vw - 48px) * 0.135)); line-height: 1.04; letter-spacing: 0.01em; text-transform: uppercase;' },
+        ['Matvare­leksikonet', h('br'), 'med ekte priser']),
       h('p', { style: 'margin: 20px 0 0; max-width: 60ch; font-size: 16px; line-height: 24px;' }, [
         'Ekte priser fra kjedenes tilbudsaviser. Søk opp en vare, se hvor den selges og til hvilken pris — og hva som er på tilbud denne uka.'
       ]),
