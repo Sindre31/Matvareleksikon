@@ -2458,7 +2458,14 @@
         var dims = {};
         hrows.forEach(function (r) { var a = rowAmount(r); if (a) dims[a.dim] = 1; });
         var dim = Object.keys(dims)[0] || 'enhet';
+        // A group that merges several of the server's own keys can hold many
+        // registrations for one chain on one day. The line plots the cheapest
+        // of them (see storeSeries) — said out loud, because a caption that
+        // just claims "ukentlige målepunkter" would be describing a fuller
+        // history than the line actually draws.
+        var collapsed = series.reduce(function (n, s) { return n + (s.collapsed || 0); }, 0);
         histNote = (ch.single ? 'Ett målepunkt så langt — prishistorikken bygges opp hver uke fra tilbudsavisene.' : 'Ukentlige målepunkter fra tilbudsavisene.')
+          + (collapsed ? ' Der en butikk har flere registreringer samme dato, vises den billigste.' : '')
           + (perUnit ? ' Vist per ' + dim + ', regnet om med pakningsstørrelsen hvert målepunkt faktisk gjelder' + (unitDropped ? ' — målepunkter uten oppgitt størrelse er utelatt' : '') + '.' : '')
           + (gsize !== 'alle' ? ' Bare målepunkter for ' + sizeLabel(gsize).toLowerCase() + (sizeDropped ? ' — ' + sizeDropped + ' punkt' + (sizeDropped === 1 ? '' : 'er') + ' for andre størrelser er utelatt' : '') + '.' : '');
         histBody = chartBlock(ch, null, histNote, 'Prishistorikk for ' + g.name);
@@ -2496,7 +2503,13 @@
     var lo = Infinity, hi = -Infinity;
     series.forEach(function (s) { s.points.forEach(function (p) { if (p.value < lo) lo = p.value; if (p.value > hi) hi = p.value; }); });
     if (!isFinite(lo)) { lo = 0; hi = 1; }
-    var pad = (hi - lo) * 0.15 || Math.max(hi * 0.05, 1); lo -= pad; hi += pad;
+    // Headroom above, but never a negative floor: every series this chart
+    // draws is money, and padding below the cheapest point put the bottom
+    // gridline at "-37 kr" on any product whose range was wide. A price axis
+    // that starts below zero reads as a bug to anyone who sees it, and these
+    // pages are the ones being put in front of search engines.
+    var pad = (hi - lo) * 0.15 || Math.max(hi * 0.05, 1);
+    lo = Math.max(0, lo - pad); hi += pad;
     var n = dates.length;
     var x = function (i) { return n <= 1 ? (pl + (W - pl - pr) / 2) : pl + (i / (n - 1)) * (W - pl - pr); };
     var y = function (v) { return pt + (1 - (v - lo) / (hi - lo)) * (H - pt - pb); };
@@ -2520,16 +2533,43 @@
 
   // Price-history rows → one series per store. `valueOf(row)` returns the
   // plotted number, or null to drop the point (e.g. no size to convert with).
+  //
+  // ONE POINT PER STORE PER DATE, and it has to be enforced here rather than
+  // assumed. ml_price_history keeps one row per (*server* group_key, store,
+  // day), but a client group can merge several server keys — mlGroupKey folds
+  // "Kjøttdeig Angus 14% 400g", "Kjøttdeig Storfe Økol. 400g" and
+  // "Kjøttdeig Av Storfe pr Kg" onto one page — so one store on one day can
+  // arrive as thirty rows spanning 0,80 to 252 kr. Fed to the chart one row at
+  // a time they became thirty points stacked on a single x, and the polyline
+  // drew a vertical scribble through all of them: not a price history at all,
+  // on ~580 of the ~5 000 pages meant to rank.
+  //
+  // The survivor is the CHEAPEST of the day. That is the same rule
+  // bestPerStore uses for the table right above the chart, so the line reads
+  // as "what this chain's cheapest was that week" — consistent with every
+  // other "billigst" on the page rather than a fourth thing the page means.
   function storeSeries(rows, valueOf) {
     var byStore = {};
     (rows || []).forEach(function (r) { (byStore[r.store_id] || (byStore[r.store_id] = [])).push(r); });
     return Object.keys(byStore).map(function (s) {
-      var pts = [];
+      var byDate = {}, order = [], dropped = 0;
       byStore[s].forEach(function (r) {
         var v = valueOf ? valueOf(r, s) : Number(r.price);
-        if (v != null && isFinite(v) && v > 0) pts.push({ date: r.observed_at, value: v });
+        if (v == null || !isFinite(v) || !(v > 0)) return;
+        var d = r.observed_at;
+        if (!(d in byDate)) { byDate[d] = v; order.push(d); return; }
+        dropped++;
+        if (v < byDate[d]) byDate[d] = v;
       });
-      return { id: s, name: STORE_NAME[s] || s, color: (STORE_STYLE[s] || {}).color || 'var(--color-accent)', dash: (STORE_STYLE[s] || {}).dash || '', points: pts };
+      var pts = order.map(function (d) { return { date: d, value: byDate[d] }; });
+      return {
+        id: s, name: STORE_NAME[s] || s,
+        color: (STORE_STYLE[s] || {}).color || 'var(--color-accent)', dash: (STORE_STYLE[s] || {}).dash || '',
+        // How many same-day rows this store's line stands in for, so a caller
+        // can say so instead of quietly showing a thinner history than it has.
+        collapsed: dropped,
+        points: pts
+      };
     }).filter(function (s) { return s.points.length; });
   }
 
@@ -2636,8 +2676,14 @@
     } else if (!hist.length) {
       histBlock = h('p', { style: 'font-size: 15px; color: ' + MUTED70 + ';', text: 'Ingen prishistorikk ennå. Den bygges opp fra uke til uke.' });
     } else {
-      var c = chartFrom(storeSeries(hist));
-      histBlock = chartBlock(c, v.storeId, c.single ? 'Ett målepunkt så langt — prishistorikken bygges opp hver uke fra tilbudsavisene.' : 'Ukentlige målepunkter fra tilbudsavisene.');
+      var vseries = storeSeries(hist);
+      var c = chartFrom(vseries);
+      // Same caveat as the group page: where a chain has several registrations
+      // on one date, the line is the cheapest of them.
+      var vCollapsed = vseries.reduce(function (n, s) { return n + (s.collapsed || 0); }, 0);
+      histBlock = chartBlock(c, v.storeId,
+        (c.single ? 'Ett målepunkt så langt — prishistorikken bygges opp hver uke fra tilbudsavisene.' : 'Ukentlige målepunkter fra tilbudsavisene.')
+        + (vCollapsed ? ' Der en butikk har flere registreringer samme dato, vises den billigste.' : ''));
     }
 
     // ── Registreringer: the recorded price points behind the chart ─────────
@@ -4233,7 +4279,7 @@
       coveredStores: coveredStores, staleDaysFor: staleDaysFor,
       sizeIdOf: sizeIdOf, sizeLabel: sizeLabel, sizeOptions: sizeOptions, bestPerStore: bestPerStore,
       entryId: entryId, parseEntry: parseEntry, moveEntry: moveEntry, swapEntry: swapEntry,
-      chartFrom: chartFrom, rowSizeId: rowSizeId, listStoreSeries: listStoreSeries,
+      chartFrom: chartFrom, storeSeries: storeSeries, rowSizeId: rowSizeId, listStoreSeries: listStoreSeries,
       slugFor: slugFor, keyFromSlug: keyFromSlug, groupPath: groupPath, variantPath: variantPath,
       parsePath: parsePath, parseSharedList: parseSharedList, legacyHashPath: legacyHashPath,
       parsePrice: parsePrice, reportPayload: reportPayload, feedbackPayload: feedbackPayload,
