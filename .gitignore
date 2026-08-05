@@ -6,3 +6,4 @@ node_modules/
 # catalogue on every deploy. They are output, not source: committing them would
 # bury real diffs and ship last week's prices to anyone reading the repo.
 /gruppe/
+/kategori/

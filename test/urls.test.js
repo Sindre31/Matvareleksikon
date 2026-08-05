@@ -115,3 +115,12 @@ test('legacyHashPath — a group whose name held a space survives the round trip
   assert.equal(path, '/gruppe/kast-mindre-frukt-gront-pr-kg');
   assert.deepEqual(lib.parsePath(path), { view: 'gruppe', groupKey: key });
 });
+
+test('categoryPath / parsePath — a category is its own screen', () => {
+  assert.equal(lib.categoryPath('egg'), '/kategori/egg');
+  assert.deepEqual(lib.parsePath('/kategori/egg'), { view: 'kategori', slug: 'egg' });
+  assert.deepEqual(lib.parsePath('/kategori/egg/'), { view: 'kategori', slug: 'egg' });
+  // Not a category route: too deep, or missing the slug.
+  assert.deepEqual(lib.parsePath('/kategori'), { view: 'home' });
+  assert.deepEqual(lib.parsePath('/kategori/egg/ekstra'), { view: 'home' });
+});
