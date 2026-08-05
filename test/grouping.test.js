@@ -91,6 +91,52 @@ test('minceKey — non-mince and disguised products are excluded', () => {
   assert.equal(lib.minceKey('vegetar kjottdeig'), null);   // veg imitation
 });
 
+test('minceKey — the meat decides the group, the fat percentage does not', () => {
+  // The product decision this encodes: 10 % and 14 % beef mince are the same
+  // thing to compare, pork and beef are not. foldName strips "14%" before
+  // this ever sees it, so the two differ only by a number that is gone.
+  assert.equal(lib.ckey('Kjøttdeig Storfe Magrere 10% 600g Meny'), lib.ckey('Kjøttdeig 14% Fett 400g First Price'));
+  assert.equal(lib.ckey('Kjøttdeig Storfe Magrere 10% 600g Meny'), 'kjottdeig storfe');
+  assert.notEqual(lib.ckey('Kjøttdeig Svin 9% 1kg Folkets'), lib.ckey('Kjøttdeig 14% Fett 400g First Price'));
+  assert.equal(lib.ckey('Kjøttdeig Svin 9% 1kg Folkets'), 'kjottdeig svin');
+});
+
+test('typePresent — a meat type must be a word or a compound edge, not any substring', () => {
+  // "Kjøttdeig Helgø" folds to "kjottdeig helgo", and h-e-l-g-o contains
+  // "elg": a butcher's own-brand beef mince was filed as elk and given a
+  // product page of its own. The same trap is one letter away all over this
+  // list — "rein" sits inside "protein", "lam" inside "flambert".
+  assert.equal(lib.minceKey('kjottdeig helgo'), 'kjottdeig storfe');
+  assert.equal(lib.minceKey('kjottdeig flambert'), 'kjottdeig storfe');
+  // Where the type really does sit, it still counts: as a whole word, as the
+  // head of a compound, and as its tail.
+  assert.equal(lib.minceKey('kjottdeig av elg'), 'kjottdeig elg');
+  assert.equal(lib.minceKey('elgkjottdeig'), 'kjottdeig elg');
+  assert.equal(lib.minceKey('kyllingkjottdeig'), 'kjottdeig kylling');
+  assert.equal(lib.minceKey('heldiggris kjottdeig'), 'kjottdeig svin');   // tail
+  assert.equal(lib.minceKey('kjottdeig frilandsgris'), 'kjottdeig svin'); // tail
+});
+
+test('minceKey — mince as an ingredient is not mince', () => {
+  // "Børek m/Kjøttdeig 100g United Bakeries" is a filled pastry. It was
+  // putting a 19,90 snack on the kjøttdeig page beside 400 g packs of raw
+  // beef, and dragging the page's "billigst" down with it.
+  assert.equal(lib.minceKey('borek m kjottdeig united bakeries'), null);
+  assert.equal(lib.minceKey('borek kjottdeig 4x united bakeries'), null);
+  assert.equal(lib.minceKey('pai med kjottdeig'), null);
+  assert.equal(lib.minceKey('m karbonadedeig'), null);
+  // The mince itself is never named "with mince", so nothing real is lost.
+  assert.equal(lib.minceKey('kjottdeig av storfe uten salt og vann'), 'kjottdeig storfe');
+});
+
+test('minceKey — things that are not food stay out of the meat aisle', () => {
+  // "Kjøttdeig Hakker Plast Hack-It" is a mince chopper. It was being priced
+  // against beef.
+  assert.equal(lib.minceKey('kjottdeig hakker plast hack it'), null);
+  // 'hakker' the tool, not 'hakket' the adjective — real mince, must stay.
+  assert.equal(lib.minceKey('kjottdeig hakket folkets'), 'kjottdeig storfe');
+});
+
 test('ckey — pork and beef mince land in distinct groups regardless of brand', () => {
   assert.equal(lib.ckey('Rema 1000 Kjøttdeig av storfe 400g 14%'), 'kjottdeig storfe');
   assert.equal(lib.ckey('Gilde Kjøttdeig Svin 400g'), 'kjottdeig svin');
