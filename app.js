@@ -1588,7 +1588,7 @@
       'aria-pressed': on ? 'true' : 'false',
       'aria-label': (on ? 'Fjern fra handlelisten' : 'Legg i handlelisten'),
       title: (on ? 'Fjern fra handlelisten' : 'Legg i handlelisten'),
-      style: 'position: absolute; top: 8px; right: 8px; z-index: 2; width: 34px; height: 34px; padding: 0; cursor: pointer; display: flex; align-items: center; justify-content: center; font-size: 17px; line-height: 1; background: color-mix(in srgb, var(--color-bg) 88%, transparent); color: ' + (on ? 'var(--color-accent-700)' : MUTED60) + ';',
+      style: 'position: absolute; top: 8px; right: 8px; z-index: 2; width: var(--tap-icon, 34px); height: var(--tap-icon, 34px); padding: 0; cursor: pointer; display: flex; align-items: center; justify-content: center; font-size: 17px; line-height: 1; background: color-mix(in srgb, var(--color-bg) 88%, transparent); color: ' + (on ? 'var(--color-accent-700)' : MUTED60) + ';',
       onClick: function (e) { e.stopPropagation(); toggleList(key); },
       onKeydown: function (e) { if (e.key === 'Enter' || e.key === ' ' || e.key === 'Spacebar') e.stopPropagation(); }
     }, on ? '★' : '☆');
@@ -1822,7 +1822,7 @@
               h('span', { style: 'display: block; font-size: 12px; letter-spacing: 0.08em; text-transform: uppercase; font-weight: 600; color: ' + MUTED70 + '; margin-bottom: 6px;', text: 'Riktig pris' }),
               h('input', {
                 cls: 'input', type: 'text', inputmode: 'decimal', placeholder: 'f.eks. 24,90',
-                value: d.priceValue, 'data-focus-id': 'report-price', style: 'width: 100%; min-height: 40px; font-size: 16px;',
+                value: d.priceValue, 'data-focus-id': 'report-price', style: 'width: 100%; min-height: var(--tap-row, 40px); font-size: 16px;',
                 onInput: function (e) { patchReport({ priceValue: e.target.value }); }
               }),
               h('span', { style: 'display: block; margin-top: 6px; font-size: 12px; color: ' + MUTED60 + ';', text: 'Prisen slik den står på hylla hos ' + d.storeName + ' — står det nå ' + nf(d.price) + '.' })
@@ -1831,7 +1831,7 @@
               h('span', { style: 'display: block; font-size: 12px; letter-spacing: 0.08em; text-transform: uppercase; font-weight: 600; color: ' + MUTED70 + '; margin-bottom: 6px;', text: 'Riktig produkt' }),
               h('input', {
                 cls: 'input', type: 'text', maxlength: '120', placeholder: 'Varenavnet slik det står i butikken',
-                value: d.nameValue, 'data-focus-id': 'report-name', style: 'width: 100%; min-height: 40px; font-size: 16px;',
+                value: d.nameValue, 'data-focus-id': 'report-name', style: 'width: 100%; min-height: var(--tap-row, 40px); font-size: 16px;',
                 onInput: function (e) { patchReport({ nameValue: e.target.value }); }
               }),
               h('span', { style: 'display: block; margin-top: 6px; font-size: 12px; color: ' + MUTED60 + ';', text: 'Står nå som «' + d.rawName + '».' })
@@ -1884,7 +1884,7 @@
     var label = 'Rapporter feil pris eller feil produkt for ' + v.storeName + ', ' + v.rawName;
     return h('button', {
       type: 'button', cls: 'blueprint', title: 'Rapporter feil', 'aria-label': label,
-      style: 'width: 32px; height: 32px; padding: 0; cursor: pointer; display: flex; align-items: center; justify-content: center; font-size: 14px; line-height: 1; background: transparent; color: ' + MUTED60 + ';',
+      style: 'width: var(--tap-icon, 32px); height: var(--tap-icon, 32px); padding: 0; cursor: pointer; display: flex; align-items: center; justify-content: center; font-size: 14px; line-height: 1; background: transparent; color: ' + MUTED60 + ';',
       onClick: openReport(g, v),
       onKeydown: function (e) { if (e.key === 'Enter' || e.key === ' ' || e.key === 'Spacebar') e.stopPropagation(); }
     }, '⚠');
@@ -2033,7 +2033,7 @@
             cls: 'input', type: 'email', inputmode: 'email', autocomplete: 'email', maxlength: '254',
             placeholder: 'bare hvis du vil ha svar',
             value: d.email, 'data-focus-id': 'feedback-email',
-            style: 'width: 100%; min-height: 40px; font-size: 16px;',
+            style: 'width: 100%; min-height: var(--tap-row, 40px); font-size: 16px;',
             onInput: function (e) { patchFeedback({ email: e.target.value }); }
           })
         ]),
@@ -2212,7 +2212,7 @@
         'Ekte priser fra kjedenes tilbudsaviser. Søk opp en vare, se hvor den selges og til hvilken pris — og hva som er på tilbud denne uka.'
       ]),
       h('div', { style: 'display: flex; gap: 10px; margin-top: 28px; max-width: 640px;' }, [
-        h('input', { cls: 'input', type: 'search', placeholder: 'Søk i leksikonet — f.eks. laks, kaffe, brokkoli …', value: state.query, 'aria-label': 'Søk etter matvare', 'data-focus-id': 'search', style: 'flex: 1; min-height: 40px; font-size: 16px;', onInput: function (e) { setState({ query: e.target.value }); } }),
+        h('input', { cls: 'input', type: 'search', placeholder: 'Søk i leksikonet — f.eks. laks, kaffe, brokkoli …', value: state.query, 'aria-label': 'Søk etter matvare', 'data-focus-id': 'search', style: 'flex: 1; min-height: var(--tap-row, 40px); font-size: 16px;', onInput: function (e) { setState({ query: e.target.value }); } }),
         h('button', { type: 'button', cls: 'btn btn-ghost', onClick: function () { setState({ query: '' }); }, text: 'Nullstill' })
       ])
     ]);
@@ -2248,7 +2248,7 @@
 
     var storeChips = ['Alle'].concat(STORES.map(function (s) { return s.name; }));
     var chips = h('div', { role: 'group', 'aria-label': 'Filtrer på butikk', style: 'display: flex; flex-wrap: wrap; gap: 10px;' }, storeChips.map(function (c) {
-      return h('button', { type: 'button', cls: 'btn ' + (c === sf ? 'btn-primary' : 'btn-ghost'), 'aria-pressed': c === sf ? 'true' : 'false', onClick: function () { setState({ storeFilter: c }); }, style: 'min-height: 34px; padding: 4px 14px; font-size: 13px; letter-spacing: 0.06em; text-transform: uppercase;', text: c });
+      return h('button', { type: 'button', cls: 'btn ' + (c === sf ? 'btn-primary' : 'btn-ghost'), 'aria-pressed': c === sf ? 'true' : 'false', onClick: function () { setState({ storeFilter: c }); }, style: 'min-height: var(--tap-row, 34px); padding: 4px 14px; font-size: 13px; letter-spacing: 0.06em; text-transform: uppercase;', text: c });
     }));
     // Vis-pris toggle: per kg/l (jamførpris) vs enhetspris (pack price).
     var PMODES = [['kilo', 'Per kg/l'], ['enhet', 'Enhetspris']];
@@ -2256,13 +2256,13 @@
       'Vis pris',
       h('div', { role: 'group', 'aria-label': 'Vis pris per', style: 'display: inline-flex; border: 1px solid var(--color-divider);' }, PMODES.map(function (o, idx) {
         var on = state.priceMode === o[0];
-        return h('button', { type: 'button', 'aria-pressed': on ? 'true' : 'false', onClick: function () { setState({ priceMode: o[0] }); }, style: 'min-height: 34px; padding: 4px 12px; font-size: 12px; letter-spacing: 0.06em; text-transform: uppercase; font-weight: 600; cursor: pointer; border: 0;' + (idx > 0 ? ' border-left: 1px solid var(--color-divider);' : '') + (on ? ' background: var(--color-accent); color: var(--color-bg);' : ' background: transparent; color: var(--color-text);'), text: o[1] });
+        return h('button', { type: 'button', 'aria-pressed': on ? 'true' : 'false', onClick: function () { setState({ priceMode: o[0] }); }, style: 'min-height: var(--tap-row, 34px); padding: 4px 12px; font-size: 12px; letter-spacing: 0.06em; text-transform: uppercase; font-weight: 600; cursor: pointer; border: 0;' + (idx > 0 ? ' border-left: 1px solid var(--color-divider);' : '') + (on ? ' background: var(--color-accent); color: var(--color-bg);' : ' background: transparent; color: var(--color-text);'), text: o[1] });
       }))
     ]);
     var SORTS = [['standard', q ? 'Beste treff' : 'Nyeste først'], ['tilbud', 'Tilbud først'], ['billigst', 'Billigst'], ['dyrest', 'Dyrest'], ['navn', 'Navn A–Å']];
     var sortControl = h('label', { style: 'display: flex; align-items: center; gap: 8px; font-size: 12px; letter-spacing: 0.08em; text-transform: uppercase; font-weight: 600; color: ' + MUTED70 + '; white-space: nowrap;' }, [
       'Sorter',
-      h('select', { cls: 'input', 'aria-label': 'Sorter varene', style: 'min-height: 34px; width: auto;', value: state.sort, onChange: function (e) { setState({ sort: e.target.value }); } },
+      h('select', { cls: 'input', 'aria-label': 'Sorter varene', style: 'min-height: var(--tap-row, 34px); width: auto;', value: state.sort, onChange: function (e) { setState({ sort: e.target.value }); } },
         SORTS.map(function (o) { return h('option', { value: o[0], selected: state.sort === o[0] ? 'selected' : false, text: o[1] }); }))
     ]);
     var rightControls = h('div', { style: 'display: flex; flex-wrap: wrap; gap: 16px 24px; align-items: center;' }, [priceModeControl, sortControl]);
@@ -2362,7 +2362,7 @@
     var chipRow = function (label, values, current, onPick, caps) {
       return h('div', { role: 'group', 'aria-label': label, style: 'display: flex; flex-wrap: wrap; gap: 8px;' }, values.map(function (o) {
         var on = o.id === current;
-        return h('button', { type: 'button', cls: 'btn ' + (on ? 'btn-primary' : 'btn-ghost'), 'aria-pressed': on ? 'true' : 'false', style: 'min-height: 32px; padding: 3px 12px; font-size: 12px; letter-spacing: 0.06em;' + (caps === false ? '' : ' text-transform: uppercase;'), onClick: function () { onPick(o.id); }, text: o.label });
+        return h('button', { type: 'button', cls: 'btn ' + (on ? 'btn-primary' : 'btn-ghost'), 'aria-pressed': on ? 'true' : 'false', style: 'min-height: var(--tap-row, 32px); padding: 3px 12px; font-size: 12px; letter-spacing: 0.06em;' + (caps === false ? '' : ' text-transform: uppercase;'), onClick: function () { onPick(o.id); }, text: o.label });
       }));
     };
     var storeChoices = [{ id: 'Alle', label: 'Alle butikker' }].concat(g.variants.map(function (v) { return { id: v.storeName, label: v.storeName }; }));
@@ -2374,7 +2374,7 @@
       ]),
       h('label', { style: 'display: flex; align-items: center; gap: 8px; font-size: 12px; letter-spacing: 0.08em; text-transform: uppercase; font-weight: 600; color: ' + MUTED70 + '; white-space: nowrap;' }, [
         'Sorter',
-        h('select', { cls: 'input', 'aria-label': 'Sorter butikkene', style: 'min-height: 34px; width: auto;', value: state.groupSort, onChange: function (e) { setState({ groupSort: e.target.value }); } },
+        h('select', { cls: 'input', 'aria-label': 'Sorter butikkene', style: 'min-height: var(--tap-row, 34px); width: auto;', value: state.groupSort, onChange: function (e) { setState({ groupSort: e.target.value }); } },
           GSORTS.map(function (o) { return h('option', { value: o[0], selected: state.groupSort === o[0] ? 'selected' : false, text: o[1] }); }))
       ])
     ]);
@@ -2476,7 +2476,7 @@
       'Vis pris',
       h('div', { role: 'group', 'aria-label': 'Vis prishistorikk per', style: 'display: inline-flex; border: 1px solid var(--color-divider);' }, HMODES.map(function (o, idx) {
         var on = (state.histMode === 'kilo') === (o[0] === 'kilo');
-        return h('button', { type: 'button', 'aria-pressed': on ? 'true' : 'false', onClick: function () { setState({ histMode: o[0] }); }, style: 'min-height: 34px; padding: 4px 12px; font-size: 12px; letter-spacing: 0.06em; text-transform: uppercase; font-weight: 600; cursor: pointer; border: 0;' + (idx > 0 ? ' border-left: 1px solid var(--color-divider);' : '') + (on ? ' background: var(--color-accent); color: var(--color-bg);' : ' background: transparent; color: var(--color-text);'), text: o[1] });
+        return h('button', { type: 'button', 'aria-pressed': on ? 'true' : 'false', onClick: function () { setState({ histMode: o[0] }); }, style: 'min-height: var(--tap-row, 34px); padding: 4px 12px; font-size: 12px; letter-spacing: 0.06em; text-transform: uppercase; font-weight: 600; cursor: pointer; border: 0;' + (idx > 0 ? ' border-left: 1px solid var(--color-divider);' : '') + (on ? ' background: var(--color-accent); color: var(--color-bg);' : ' background: transparent; color: var(--color-text);'), text: o[1] });
       }))
     ]);
     var histSection = h('div', { style: 'margin-top: 40px;' }, [
@@ -2804,13 +2804,13 @@
       var controls = h('div', { style: 'display: flex; flex-wrap: wrap; gap: 16px; align-items: flex-end;' }, [
         h('label', { style: 'display: flex; flex-direction: column; gap: 6px; font-size: 12px; letter-spacing: 0.08em; text-transform: uppercase; font-weight: 600;' }, [
           'Butikk',
-          h('select', { cls: 'input', 'data-focus-id': 'scan-store', style: 'min-height: 38px; min-width: 180px;', value: state.scanStore, onChange: function (e) {
+          h('select', { cls: 'input', 'data-focus-id': 'scan-store', style: 'min-height: var(--tap-row, 38px); min-width: 180px;', value: state.scanStore, onChange: function (e) {
             setState({ scanStore: e.target.value });
           } }, ALL_STORES.map(function (s) { return h('option', { value: s.name, selected: s.name === state.scanStore ? 'selected' : false, text: s.name }); }))
         ]),
         h('label', { style: 'display: flex; flex-direction: column; gap: 6px; font-size: 12px; letter-spacing: 0.08em; text-transform: uppercase; font-weight: 600;' }, [
           'Dato',
-          h('input', { cls: 'input', type: 'date', 'data-focus-id': 'scan-date', style: 'min-height: 38px; min-width: 160px;', value: state.scanDate || '', max: new Date().toISOString().slice(0, 10), onInput: function (e) { setState({ scanDate: e.target.value }); } })
+          h('input', { cls: 'input', type: 'date', 'data-focus-id': 'scan-date', style: 'min-height: var(--tap-row, 38px); min-width: 160px;', value: state.scanDate || '', max: new Date().toISOString().slice(0, 10), onInput: function (e) { setState({ scanDate: e.target.value }); } })
         ])
       ]);
       // The lines stand exactly as the scanner read them off the receipt. A
@@ -2827,7 +2827,7 @@
           h('div', { style: 'display: grid; grid-template-columns: 1fr auto 38px; gap: 10px; align-items: baseline;' }, [
             h('span', { style: 'font-size: 15px; line-height: 22px; overflow-wrap: anywhere;', text: name }),
             h('span', { style: "font-size: 15px; line-height: 22px; text-align: right; font-feature-settings: 'tnum' 1;", text: isFinite(priceNum) ? nf(priceNum) : '—' }),
-            h('button', { type: 'button', cls: 'btn btn-ghost btn-icon', 'aria-label': 'Fjern ' + name + ' fra kvitteringen', title: 'Fjern varelinjen', 'data-focus-id': 'scan-remove-' + i, style: 'min-height: 38px;', onClick: function () { setState({ scanItems: state.scanItems.filter(function (x, j) { return j !== i; }) }); }, text: '✕' })
+            h('button', { type: 'button', cls: 'btn btn-ghost btn-icon', 'aria-label': 'Fjern ' + name + ' fra kvitteringen', title: 'Fjern varelinjen', 'data-focus-id': 'scan-remove-' + i, style: 'min-height: var(--tap-row, 38px);', onClick: function () { setState({ scanItems: state.scanItems.filter(function (x, j) { return j !== i; }) }); }, text: '✕' })
           ]),
           hint ? h('span', { style: 'font-size: 12px; color: ' + MUTED60 + '; padding-left: 2px;', text: hint }) : null
         ]);
@@ -2859,7 +2859,7 @@
       var matchBlock = matched.length ? h('div', { style: 'margin-top: 22px;' }, [
         h('span', { style: 'display: block; font-size: 12px; letter-spacing: 0.08em; text-transform: uppercase; font-weight: 600; color: ' + MUTED60 + '; margin-bottom: 10px;', text: 'Se varene i leksikonet' }),
         h('div', { style: 'display: flex; flex-wrap: wrap; gap: 8px;' }, matched.slice(0, 8).map(function (g) {
-          return h('button', Object.assign({ type: 'button', cls: 'btn btn-secondary', style: 'min-height: 32px; padding: 4px 12px; font-size: 13px; text-transform: uppercase; letter-spacing: 0.04em;' }, activate(openGroup(g.key), 'Åpne ' + g.name + ' i leksikonet')), g.name);
+          return h('button', Object.assign({ type: 'button', cls: 'btn btn-secondary', style: 'min-height: var(--tap-row, 32px); padding: 4px 12px; font-size: 13px; text-transform: uppercase; letter-spacing: 0.04em;' }, activate(openGroup(g.key), 'Åpne ' + g.name + ' i leksikonet')), g.name);
         }))
       ]) : null;
       body = h('div', { cls: 'blueprint', style: 'max-width: 560px; padding: 28px;' }, corners().concat([
@@ -3074,10 +3074,10 @@
       'Vis pris',
       h('div', { role: 'group', 'aria-label': 'Vis pris per', style: 'display: inline-flex; border: 1px solid var(--color-divider);' }, LPMODES.map(function (o, idx) {
         var on = listKilo === (o[0] === 'kilo');
-        return h('button', { type: 'button', 'aria-pressed': on ? 'true' : 'false', onClick: function () { setState({ listPriceMode: o[0] }); }, style: 'min-height: 34px; padding: 4px 12px; font-size: 12px; letter-spacing: 0.06em; text-transform: uppercase; font-weight: 600; cursor: pointer; border: 0;' + (idx > 0 ? ' border-left: 1px solid var(--color-divider);' : '') + (on ? ' background: var(--color-accent); color: var(--color-bg);' : ' background: transparent; color: var(--color-text);'), text: o[1] });
+        return h('button', { type: 'button', 'aria-pressed': on ? 'true' : 'false', onClick: function () { setState({ listPriceMode: o[0] }); }, style: 'min-height: var(--tap-row, 34px); padding: 4px 12px; font-size: 12px; letter-spacing: 0.06em; text-transform: uppercase; font-weight: 600; cursor: pointer; border: 0;' + (idx > 0 ? ' border-left: 1px solid var(--color-divider);' : '') + (on ? ' background: var(--color-accent); color: var(--color-bg);' : ' background: transparent; color: var(--color-text);'), text: o[1] });
       }))
     ]);
-    var onlyUnitControl = noUnit ? h('button', { type: 'button', cls: 'btn ' + (state.listOnlyUnit ? 'btn-primary' : 'btn-ghost'), 'aria-pressed': state.listOnlyUnit ? 'true' : 'false', onClick: function () { setState({ listOnlyUnit: !state.listOnlyUnit }); }, style: 'min-height: 34px; padding: 4px 14px; font-size: 13px; letter-spacing: 0.06em; text-transform: uppercase;', text: 'Bare med kg/l-pris' }) : null;
+    var onlyUnitControl = noUnit ? h('button', { type: 'button', cls: 'btn ' + (state.listOnlyUnit ? 'btn-primary' : 'btn-ghost'), 'aria-pressed': state.listOnlyUnit ? 'true' : 'false', onClick: function () { setState({ listOnlyUnit: !state.listOnlyUnit }); }, style: 'min-height: var(--tap-row, 34px); padding: 4px 14px; font-size: 13px; letter-spacing: 0.06em; text-transform: uppercase;', text: 'Bare med kg/l-pris' }) : null;
     var listControls = h('div', { style: 'display: flex; flex-wrap: wrap; gap: 16px 24px; align-items: center; justify-content: space-between; margin-bottom: 20px;' }, [
       onlyUnitControl || h('span', {}),
       listPriceModeControl
@@ -3104,7 +3104,7 @@
       var sub = (listKilo && hasUnit) ? nf(it.minPrice) : (hasUnit ? nfUnit(it.unitPrice, it.unitDim) : (listKilo ? 'ingen kg/l-pris' : ''));
       return h('div', { 'data-lid': it.id, cls: 'row-hover', style: 'display: grid; grid-template-columns: auto auto 1fr auto auto; gap: 10px; align-items: center; padding: 12px 16px 12px 8px; border-bottom: 1px solid color-mix(in srgb, var(--color-text) 8%, transparent);' }, [
         dragHandle(it, idx, visible.length),
-        h('button', { type: 'button', cls: 'btn btn-ghost', 'aria-label': 'Fjern ' + it.name + ' fra handlelisten', title: 'Fjern fra handlelisten', style: 'width: 34px; height: 34px; padding: 0; font-size: 16px; color: var(--color-accent-700);', onClick: function () { removeFromList(it.key); render(); }, text: '★' }),
+        h('button', { type: 'button', cls: 'btn btn-ghost', 'aria-label': 'Fjern ' + it.name + ' fra handlelisten', title: 'Fjern fra handlelisten', style: 'width: var(--tap-icon, 34px); height: var(--tap-icon, 34px); padding: 0; font-size: 16px; color: var(--color-accent-700);', onClick: function () { removeFromList(it.key); render(); }, text: '★' }),
         // The name opens the product; the size button below it is its own
         // control, so it sits outside the clickable name rather than nested in
         // it (a button inside a button is neither clickable nor announceable).
@@ -3530,7 +3530,7 @@
   function adminInput(label, props, hint) {
     return h('label', { style: 'display: block;' }, [
       h('span', { style: ADMIN_LABEL, text: label }),
-      h('input', Object.assign({ cls: 'input', type: 'text', style: 'width: 100%; min-height: 40px; font-size: 15px;' }, props)),
+      h('input', Object.assign({ cls: 'input', type: 'text', style: 'width: 100%; min-height: var(--tap-row, 40px); font-size: 15px;' }, props)),
       hint ? h('span', { style: 'display: block; margin-top: 5px; font-size: 12px; color: ' + MUTED60 + ';', text: hint }) : null
     ]);
   }
@@ -3755,7 +3755,7 @@
         var on = state.adminTab === t[0];
         return h('button', {
           type: 'button', 'aria-pressed': on ? 'true' : 'false',
-          style: 'min-height: 38px; padding: 6px 16px; font-size: 12px; letter-spacing: 0.06em; text-transform: uppercase; font-weight: 600; cursor: pointer; border: 0;'
+          style: 'min-height: var(--tap-row, 38px); padding: 6px 16px; font-size: 12px; letter-spacing: 0.06em; text-transform: uppercase; font-weight: 600; cursor: pointer; border: 0;'
             + (i > 0 ? ' border-left: 1px solid var(--color-divider);' : '')
             + (on ? ' background: var(--color-accent); color: var(--color-bg);' : ' background: transparent; color: var(--color-text);'),
           onClick: adminTab(t[0]), text: t[1]
@@ -3817,11 +3817,11 @@
             h('input', {
               cls: 'input', type: 'search', placeholder: 'Søk etter produktnavn …', value: state.adminQuery,
               'aria-label': 'Søk etter produkt', 'data-focus-id': 'admin-search',
-              style: 'flex: 1; min-width: min(220px, 100%); min-height: 40px; font-size: 15px;',
+              style: 'flex: 1; min-width: min(220px, 100%); min-height: var(--tap-row, 40px); font-size: 15px;',
               onInput: function (e) { state.adminQuery = e.target.value; }
             }),
             h('select', {
-              cls: 'input', 'aria-label': 'Butikk', style: 'width: auto; min-height: 40px;',
+              cls: 'input', 'aria-label': 'Butikk', style: 'width: auto; min-height: var(--tap-row, 40px);',
               value: state.adminStore, onChange: function (e) { state.adminStore = e.target.value; adminLoad(); }
             }, [h('option', { value: '', selected: state.adminStore ? false : 'selected', text: 'Alle butikker' })].concat(
               ALL_STORES.map(function (s) { return h('option', { value: s.id, selected: state.adminStore === s.id ? 'selected' : false, text: s.name }); })
