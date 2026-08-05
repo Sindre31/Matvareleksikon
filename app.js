@@ -855,6 +855,35 @@
     });
   }
   function corners() { return [h('i', { cls: 'corner tl' }), h('i', { cls: 'corner tr' }), h('i', { cls: 'corner bl' }), h('i', { cls: 'corner br' })]; }
+
+  // The shell every modal card is built from: a blueprint frame that does NOT
+  // scroll, wrapping one child that does.
+  //
+  // They cannot be the same element. A .blueprint draws its four registration
+  // marks 6 px OUTSIDE its own box (see styles.css), and `overflow: auto`
+  // counts anything outside the box as scrollable content — so a card that was
+  // both frame and scroller handed every dialog a horizontal scrollbar with
+  // nothing behind it but the corner marks, and a vertical one that appeared
+  // 12 px before the content actually needed it. styles.css already forces
+  // `overflow: visible` where a blueprint shares a wrapper with the image
+  // treatments, for the same reason.
+  //
+  // Splitting them leaves the corners free to sit outside the frame, and the
+  // scrollbar (when the content genuinely is taller than the viewport allows)
+  // inside it, against the content it scrolls.
+  function dialogCard(label, maxVh, children) {
+    return h('div', {
+      cls: 'blueprint', role: 'dialog', 'aria-modal': 'true', 'aria-label': label,
+      style: 'width: min(520px, 100%); max-height: ' + maxVh + 'vh; background: var(--color-bg); padding: 0;'
+        + ' display: flex; flex-direction: column;',
+      onClick: function (e) { e.stopPropagation(); }
+    }, corners().concat([
+      // min-height: 0 so this flex item may shrink below its content's height.
+      // Without it a flex item's floor is its content, the item never shrinks,
+      // and the card grows straight past max-height instead of scrolling.
+      h('div', { style: 'min-height: 0; overflow-y: auto; overflow-x: hidden;' }, children)
+    ]));
+  }
   function storeLine(color, dash, w) {
     return h('svg', { width: w, height: '6', 'aria-hidden': 'true' },
       h('line', { x1: '0', y1: '3', x2: String(w), y2: '3', stroke: color, 'stroke-width': '2.5', 'stroke-dasharray': dash }));
@@ -1606,11 +1635,7 @@
       return sizeRow(o.id, o.label, o.storeCount + (o.storeCount === 1 ? ' butikk' : ' butikker'), o.minPrice);
     });
     rows.push(sizeRow('alle', 'Alle størrelser', 'sammenlign på billigst per kg/l uansett pakning', g.minPrice));
-    var card = h('div', {
-      cls: 'blueprint', role: 'dialog', 'aria-modal': 'true', 'aria-label': (editing ? 'Endre størrelse for ' : 'Velg størrelse for ') + g.name,
-      style: 'width: min(520px, 100%); max-height: 80vh; overflow: auto; background: var(--color-bg); padding: 0;',
-      onClick: function (e) { e.stopPropagation(); }
-    }, corners().concat([
+    var card = dialogCard((editing ? 'Endre størrelse for ' : 'Velg størrelse for ') + g.name, 80, [
       h('div', { style: 'padding: 20px 16px 12px;' }, [
         h('span', { style: KICKER + ' margin-bottom: 6px;', text: editing ? 'Endre størrelse' : 'Velg størrelse' }),
         h('span', { style: 'display: block; font-family: var(--font-heading); font-weight: 600; font-size: 22px; letter-spacing: 0.02em; text-transform: uppercase;', text: softBreaks(g.name) }),
@@ -1620,7 +1645,7 @@
       h('div', { style: 'padding: 14px 16px;' }, [
         h('button', { type: 'button', cls: 'btn btn-ghost', 'data-focus-id': 'size-cancel', onClick: close, text: 'Avbryt' })
       ])
-    ]));
+    ]);
     return h('div', {
       style: 'position: fixed; inset: 0; z-index: 50; background: color-mix(in srgb, var(--color-text) 45%, transparent); display: flex; align-items: center; justify-content: center; padding: 20px;',
       onClick: close,
@@ -1823,18 +1848,14 @@
       ]);
     }
 
-    var card = h('div', {
-      cls: 'blueprint', role: 'dialog', 'aria-modal': 'true', 'aria-label': 'Rapporter feil for ' + d.name,
-      style: 'width: min(520px, 100%); max-height: 85vh; overflow: auto; background: var(--color-bg); padding: 0;',
-      onClick: function (e) { e.stopPropagation(); }
-    }, corners().concat([
+    var card = dialogCard('Rapporter feil for ' + d.name, 85, [
       h('div', { style: 'padding: 20px 16px 12px;' }, [
         h('span', { style: KICKER + ' margin-bottom: 6px;', text: 'Rapporter feil' }),
         h('span', { style: 'display: block; font-family: var(--font-heading); font-weight: 600; font-size: 22px; letter-spacing: 0.02em; text-transform: uppercase;', text: softBreaks(d.name) }),
         h('p', { style: 'margin: 8px 0 0; font-size: 14px; line-height: 20px; color: ' + MUTED70 + ';', text: d.storeName + ' · ' + d.rawName + ' · ' + nf(d.price) })
       ]),
       body
-    ]));
+    ]);
     return h('div', {
       style: 'position: fixed; inset: 0; z-index: 50; background: color-mix(in srgb, var(--color-text) 45%, transparent); display: flex; align-items: center; justify-content: center; padding: 20px;',
       onClick: close,
@@ -2017,18 +2038,14 @@
       ]);
     }
 
-    var card = h('div', {
-      cls: 'blueprint', role: 'dialog', 'aria-modal': 'true', 'aria-label': 'Gi tilbakemelding',
-      style: 'width: min(520px, 100%); max-height: 85vh; overflow: auto; background: var(--color-bg); padding: 0;',
-      onClick: function (e) { e.stopPropagation(); }
-    }, corners().concat([
+    var card = dialogCard('Gi tilbakemelding', 85, [
       h('div', { style: 'padding: 20px 16px 12px;' }, [
         h('span', { style: KICKER + ' margin-bottom: 6px;', text: 'Tilbakemelding' }),
         h('span', { style: 'display: block; font-family: var(--font-heading); font-weight: 600; font-size: 22px; letter-spacing: 0.02em; text-transform: uppercase;', text: 'Si hva du mener' }),
         h('p', { style: 'margin: 8px 0 0; font-size: 14px; line-height: 20px; color: ' + MUTED70 + ';', text: 'Feil pris på én vare? Bruk «Rapporter feil» på varen — den retter seg selv når nok folk melder fra. Alt annet hører hjemme her.' })
       ]),
       body
-    ]));
+    ]);
     return h('div', {
       style: 'position: fixed; inset: 0; z-index: 50; background: color-mix(in srgb, var(--color-text) 45%, transparent); display: flex; align-items: center; justify-content: center; padding: 20px;',
       onClick: close,
