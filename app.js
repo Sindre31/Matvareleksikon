@@ -1840,7 +1840,10 @@
           h('span', { style: 'display: block; font-size: 12px; letter-spacing: 0.08em; text-transform: uppercase; font-weight: 600; color: ' + MUTED70 + '; margin-bottom: 6px;', text: 'Kommentar (valgfritt)' }),
           h('textarea', {
             cls: 'input', rows: '2', maxlength: '500', placeholder: 'Noe mer vi bør vite?',
-            value: d.comment, 'data-focus-id': 'report-comment', style: 'width: 100%; font-size: 15px; font-family: inherit;',
+            // 16px, not 15: iOS zooms the page in when a focused field's text
+            // is under 16px and never zooms back out, leaving the reporter to
+            // pinch their way back. The two fields above are already 16 for it.
+            value: d.comment, 'data-focus-id': 'report-comment', style: 'width: 100%; font-size: 16px; font-family: inherit;',
             onInput: function (e) { patchReport({ comment: e.target.value }); }
           })
         ]),
@@ -3265,7 +3268,10 @@
   function renderFooter() {
     var sep = function () { return h('span', { style: 'color: ' + MUTED60 + ';', text: ' · ' }); };
     return h('footer', { style: 'border-top: 1px solid var(--color-divider); margin-top: 24px;' }, [
-      h('div', { style: 'max-width: 1160px; margin: 0 auto; padding: 28px 24px 48px; display: flex; flex-wrap: wrap; gap: 8px 16px; align-items: baseline; justify-content: space-between; font-size: 13px; color: ' + MUTED70 + ';' }, [
+      // The bottom padding carries --fab-gutter (see index.html): on a phone the
+      // floating tilbakemelding button sits over this corner, and the footer is
+      // the one thing on the page that never scrolls out from under it.
+      h('div', { style: 'max-width: 1160px; margin: 0 auto; padding: 28px 24px calc(48px + var(--fab-gutter, 0px)); display: flex; flex-wrap: wrap; gap: 8px 16px; align-items: baseline; justify-content: space-between; font-size: 13px; color: ' + MUTED70 + ';' }, [
         h('span', { style: 'display: flex; flex-wrap: wrap; gap: 4px; align-items: baseline;' }, [
           h('a', { href: '/om', onClick: nav('om'), text: 'Om' }), sep(),
           h('a', { href: '/om', onClick: nav('om'), text: 'Kilder' }), sep(),
