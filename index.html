@@ -136,9 +136,17 @@
       .feedback-fab-text { display: none; }
     }
     /* The footer is the one thing the button can cover for good — everything
-       else scrolls past it. Keep a button's worth of room under the last row. */
+       else scrolls past it — so the last row needs a button's worth of room
+       under it.
+       This has to travel as a custom property rather than a rule of its own:
+       renderFooter() sets the footer's padding as an inline `style` attribute,
+       and an inline declaration beats any stylesheet selector no matter how
+       specific, so `footer > div { padding-bottom: … }` here never applied.
+       The inline value reads the variable instead, and the media query below
+       is what changes it. */
+    :root { --fab-gutter: 0px; }
     @media (max-width: 560px) {
-      footer > div { padding-bottom: 84px; }
+      :root { --fab-gutter: 44px; }   /* 48px button + 12px inset, less the 48px the footer already has, rounded up */
     }
 
     /* Small screens: let the top bar wrap instead of overflowing. */
