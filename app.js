@@ -76,6 +76,14 @@
     // multipack: "4 x 1.5l", "6x33cl"
     var mp = s.match(/(\d+(?:\.\d+)?)\s*[x×]\s*(\d+(?:\.\d+)?)\s*(kg|hg|g|dl|cl|ml|l)(?![a-zæøå])/);
     if (mp) { var b = baseAmount(mp[2], mp[3]); if (b) return { value: b.value * parseFloat(mp[1]), dim: b.dim }; }
+    // multipack with the count AFTER the size: "22g x 70stk", "0,33lx20bx",
+    // "175gx2stk". The rule above only reads the count-first spelling, so these
+    // fell through to the largest-single-token rule and priced a 70-cup box of
+    // leverpostei as one 22 g cup — 20 009 kr/kg against the source's 285,80.
+    // Requiring the [x×] immediately after the unit is what keeps it tight; no
+    // ordinary name puts a bare multiplier there.
+    var tp = s.match(/(\d+(?:\.\d+)?)\s*(kg|hg|g|dl|cl|ml|l)\s*[x×]\s*(\d+)\s*(?:stk|pk|pakk|stykk|bx)(?![a-zæøå])/);
+    if (tp) { var bt = baseAmount(tp[1], tp[2]); var tn = parseFloat(tp[3]); if (bt && tn > 0) return { value: bt.value * tn, dim: bt.dim }; }
     // fraction size: "1/4 l" = 0.25 l, "1/2l", "3/4 kg" — must run before the
     // single-token match, which would otherwise read the "4l" in "1/4l" as 4 l.
     var fr = s.match(/(\d+)\s*\/\s*(\d+)\s*(kg|hg|g|dl|cl|ml|l)(?![a-zæøå])/);
@@ -527,11 +535,34 @@
 
   // Build one variant object from an offer row, incl. its price-per-unit
   // (parsed from the name, or the source's own unit price as a fallback).
+  var UNIT_PRICE_MAX_DISAGREEMENT = 3;
   function buildVariant(o) {
     var st = o.store_id, price = Number(o.price);
     var amt = parseAmount(o.product_name);
     var perUnit = amt ? price / amt.value : null, unitDim = amt ? amt.dim : null;
-    if (perUnit == null && o.unit_price != null) { var nd = normUnit(o.unit_price_unit || o.unit); var up = Number(o.unit_price); if (nd && up > 0) { perUnit = up; unitDim = nd; } }
+    var srcDim = normUnit(o.unit_price_unit || o.unit), srcUnit = Number(o.unit_price);
+    var haveSrc = !!srcDim && srcUnit > 0;
+    if (perUnit == null && haveSrc) { perUnit = srcUnit; unitDim = srcDim; }
+    // TWO INDEPENDENT ESTIMATES, AND A DISAGREEMENT IS A FAULT REPORT.
+    // One is parsed from the name, the other supplied by the source, and on
+    // 10 797 rows where both exist in the same dimension they agree within 2 %
+    // on 97,2 %. Where they diverge far enough, one of them is wrong and we
+    // cannot tell which: sometimes the source is off by a factor of 1000
+    // ("Ostekake 380g" at 210 263 kr/kg), sometimes the name is
+    // ("0,33lx20bx Brett" read as a single can). Rather than pick a winner,
+    // the pack keeps its shelf price and claims no price per kilo at all.
+    //
+    // The factor is 3 because BELOW it the disagreements are not faults —
+    // they are drained weight against total weight, which is exactly how
+    // canned goods are labelled: "Agurker Hele 580g Nora" is 63,60/kg by the
+    // jar and 136,70/kg by what you eat, and both numbers are true. 262 of
+    // the 297 disagreements sit under 3 and are that; the 35 above it are
+    // broken. A jar cannot be more than about two-thirds liquid, so 3 is
+    // where the physical explanation runs out.
+    if (perUnit != null && haveSrc && unitDim === srcDim) {
+      var ratio = perUnit > srcUnit ? perUnit / srcUnit : srcUnit / perUnit;
+      if (ratio > UNIT_PRICE_MAX_DISAGREEMENT) { perUnit = null; unitDim = null; }
+    }
     return {
       storeId: st, storeName: STORE_NAME[st] || st,
       color: (STORE_STYLE[st] || {}).color || 'var(--color-accent)', dash: (STORE_STYLE[st] || {}).dash || '',
