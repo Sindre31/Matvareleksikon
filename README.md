@@ -596,13 +596,29 @@ lose the submission for good. Leaving no manifest instead makes the next
 production build see a `404`, treat it as a first run, and send the lot. That is
 also what covers the chicken-and-egg on the very first deploy — the key file is
 a static asset that ships *with* the deploy, so it is not servable while that
-deploy's build is still running, and the build checks it is live before pinging. Only `VERCEL_ENV=production` pings at all — a preview
-build renders the same URLs from the same catalogue, and letting it submit would
-tell Bing production changed when nothing shipped. The ping is wrapped so it can
-never fail a deploy: the pages are already written and served by then.
+deploy's build is still running, and the build checks it is live before pinging.
+
+Only `VERCEL_ENV=production` pings at all — a preview build renders the same URLs
+from the same catalogue, and letting it submit would tell Bing production changed
+when nothing shipped. The ping is wrapped so it can never fail a deploy: the
+pages are already written and served by then.
 
 Rotating the key means changing `INDEXNOW_KEY` and renaming `<key>.txt` in one
 commit — they are two halves of the same proof of ownership.
+
+**Expect the first ping on a new key to come back `403`, and do not go looking
+for a bug.** `403` is "invalid key", but the key file being live is not the same
+as Bing having fetched it: the build's own `keyIsLive()` check passes while the
+submission is still rejected, because the two look at it from different ends.
+Measured when this shipped — the key went live at 08:30, the build submitted
+4 948 URLs at 08:37 and got `403`, and the identical request returned `200` four
+minutes later. Nothing was wrong and nothing needed fixing.
+
+This is the case the receipt rule above exists for. The rejected ping wrote no
+manifest, which left the next production build looking at a `404` and sending
+the whole set again — so the recovery is automatic and the right move is to wait
+for the next deploy. Had the manifest been written anyway, those ~4 900 URLs
+would have been lost for good behind one line in a build log.
 
 Asset URLs in `index.html` must stay **root-relative**: on `/gruppe/helmelk` a
 bare `app.js` resolves to `/gruppe/app.js`, which falls through to the SPA
