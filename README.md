@@ -50,8 +50,9 @@ when it can't reach it. The output is gitignored.
 | `og.png` | 1200×630 social preview card |
 | `build.mjs` | Deploy-time build: prerenders a static HTML page per indexable product group into `gruppe/` and regenerates `sitemap.xml` from the live catalogue |
 | `robots.txt`, `sitemap.xml` | Crawler hints. The committed sitemap is a three-URL fallback; `build.mjs` overwrites it with every product worth indexing |
+| `<key>.txt` | IndexNow ownership proof. Public by design — it must match `INDEXNOW_KEY` in `build.mjs` |
 | `gruppe/` | Build output (gitignored) — one prerendered page per product group |
-| `test/` | Unit tests (`node --test`): the pure price/grouping helpers, the "Ukas tilbud" selection, the cold-start offer paging, the on-demand photo loader, the client mirror of `ml_group_key`, and the error-report validation |
+| `test/` | Unit tests (`node --test`): the pure price/grouping helpers, the "Ukas tilbud" selection, the cold-start offer paging, the on-demand photo loader, the client mirror of `ml_group_key`, the error-report validation, and the IndexNow change-detection |
 | `design/` | The imported Claude Design source, kept for provenance |
 
 ## Screens (each on its own URL)
@@ -566,6 +567,32 @@ The build is **fail-soft** — no network, no Supabase, a shape change — it wa
 exits 0, and leaves the committed fallback sitemap in place, because a price
 site that cannot deploy when its database blinks is worse off than one serving
 last week's prerender.
+
+**IndexNow.** A sitemap is an invitation; IndexNow is a push, and it is how Bing
+— and ChatGPT Search, which reads Bing's index — hears about a price change in
+hours rather than days. The last thing `build.mjs` does is submit the URLs that
+actually moved.
+
+*Actually moved* is the whole design. Prices refresh weekly
+(`supabase/cron.sql`, Monday 04:00 UTC) while the build runs on every push, so
+submitting all ~4 900 URLs each time would be mostly "nothing changed" pings and
+eventually a `429`. So each page gets a **fingerprint of the answer it gives** —
+the name and every chain's price, store-sorted — not of the bytes it ships;
+hashing the HTML would mark all ~4 900 pages dirty the moment anyone touched the
+shell in `index.html`. The fingerprints are written to `indexnow-manifest.txt`
+alongside the pages, and the next build reads the previous copy **off the live
+site**, since Vercel builds from a fresh clone and nothing else survives.
+
+Three outcomes, deliberately different: a `404` on that manifest means the first
+run and everything is new, so everything is submitted; a network failure means
+we do not know what changed, and the safe answer is to submit nothing; anything
+else is a normal diff. Only `VERCEL_ENV=production` pings at all — a preview
+build renders the same URLs from the same catalogue, and letting it submit would
+tell Bing production changed when nothing shipped. The ping is wrapped so it can
+never fail a deploy: the pages are already written and served by then.
+
+Rotating the key means changing `INDEXNOW_KEY` and renaming `<key>.txt` in one
+commit — they are two halves of the same proof of ownership.
 
 Asset URLs in `index.html` must stay **root-relative**: on `/gruppe/helmelk` a
 bare `app.js` resolves to `/gruppe/app.js`, which falls through to the SPA

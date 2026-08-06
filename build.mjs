@@ -22,9 +22,20 @@
  * the build logs it and exits 0 with the committed sitemap left in place. A
  * price site that cannot deploy because its database blinked is worse off than
  * one serving last week's prerender.
+ *
+ * Last step, once the pages are written: IndexNow. A sitemap is an invitation
+ * a crawler answers whenever it feels like it; IndexNow is a push, and Bing —
+ * and therefore ChatGPT Search, which reads Bing's index — picks the change up
+ * in hours instead of days. What it must not become is a firehose: prices move
+ * once a week (supabase/cron.sql, Monday 04:00 UTC) while this build runs on
+ * every push, so submitting all ~4 900 URLs each time would be thousands of
+ * "nothing changed" pings and a 429 for spam. Hence the manifest — see
+ * changedUrls() below for how the build works out what actually moved.
  */
 import { createRequire } from 'node:module';
 import { mkdir, writeFile, readFile } from 'node:fs/promises';
+import { createHash } from 'node:crypto';
+import { pathToFileURL } from 'node:url';
 import path from 'node:path';
 
 const require = createRequire(import.meta.url);
@@ -40,6 +51,15 @@ const COLS = 'store_id,product_name,price,pre_price,unit,unit_price,unit_price_u
 const PAGE = 1000;         // PostgREST caps a response at 1000 rows
 const MIN_STORES = 2;      // prerender + sitemap threshold
 const OUT = path.dirname(new URL(import.meta.url).pathname);
+
+// IndexNow. The key is not a secret — the whole scheme is "prove you control
+// the host by serving this string at a URL only you can write to", so the file
+// and the constant have to match and both are public by design. Rotating means
+// changing both in one commit.
+const INDEXNOW_KEY = 'f7da145dc277cd658c2a75e91aeb6f32';
+const INDEXNOW_ENDPOINT = 'https://api.indexnow.org/indexnow';
+const INDEXNOW_BATCH = 10000;              // hard cap in the spec
+const MANIFEST = 'indexnow-manifest.txt';  // written to OUT, served from the site root
 
 const headers = { apikey: SUPABASE_KEY, Authorization: `Bearer ${SUPABASE_KEY}` };
 
@@ -265,6 +285,123 @@ ${urls.map((u) => `  <url>
 `;
 }
 
+// ---------------------------------------------------------------- IndexNow
+
+// What makes a page "changed" is the answer it gives, not the bytes it ships.
+// Hashing the rendered HTML would mark all ~4 900 pages dirty the moment
+// anyone touches the shell in index.html — a CSS class rename would submit the
+// whole site. So the fingerprint covers exactly the facts the page asserts:
+// the name and every chain's price. Sorted by store, because buildGroups()
+// orders variants by whatever came back from PostgREST first and a reordering
+// is not a price change.
+const fingerprint = (parts) => createHash('sha1').update(parts.join('\u0000')).digest('hex').slice(0, 12);
+
+export function groupFingerprint(g) {
+  const variants = g.variants
+    .map((v) => `${v.storeId}:${v.price}:${v.perUnit ?? ''}`)
+    .sort();
+  return fingerprint([g.name, ...variants]);
+}
+
+export function categoryFingerprint(c, groups) {
+  return fingerprint([c.title, ...groups.map((g) => `${g.key}:${g.minPrice}`).sort()]);
+}
+
+export const serialiseManifest = (m) => [...m].map(([url, fp]) => `${url} ${fp}`).join('\n') + '\n';
+
+export function parseManifest(text) {
+  const map = new Map();
+  for (const line of text.split('\n')) {
+    const cut = line.lastIndexOf(' ');
+    if (cut > 0) map.set(line.slice(0, cut), line.slice(cut + 1));
+  }
+  return map;
+}
+
+// The previous manifest comes off the live site, because that is the only copy
+// that survives: Vercel builds from a fresh clone, and the manifest is build
+// output, not source. One request buys the diff.
+//
+// The three outcomes are deliberately different. A 404 means this is the first
+// build with IndexNow wired up and Bing has never seen these URLs — everything
+// is new, submit it all. A network failure means we simply do not know what
+// changed, and the safe answer there is to submit nothing: a missed ping costs
+// a few days of latency, while guessing "everything" on every flaky fetch is
+// the firehose we are trying to avoid.
+async function previousManifest() {
+  let res;
+  try {
+    res = await fetch(`${ORIGIN}/${MANIFEST}`);
+  } catch (err) {
+    return { map: null, why: err.message };
+  }
+  if (res.status === 404) return { map: new Map(), why: 'ingen manifest ennå — første kjøring' };
+  if (!res.ok) return { map: null, why: `HTTP ${res.status}` };
+  try {
+    return { map: parseManifest(await res.text()) };
+  } catch (err) {
+    return { map: null, why: err.message };
+  }
+}
+
+export function changedUrls(current, previous) {
+  const changed = [];
+  for (const [url, fp] of current) if (previous.get(url) !== fp) changed.push(url);
+  // The front page lists the movers, so it is stale exactly when something
+  // else is. It carries no fingerprint of its own — deriving one would mean
+  // hashing the whole catalogue to learn what the pages already told us.
+  if (changed.length) changed.unshift(`${ORIGIN}/`);
+  return changed;
+}
+
+async function pingIndexNow(urls) {
+  for (let i = 0; i < urls.length; i += INDEXNOW_BATCH) {
+    const batch = urls.slice(i, i + INDEXNOW_BATCH);
+    const res = await fetch(INDEXNOW_ENDPOINT, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json; charset=utf-8' },
+      body: JSON.stringify({
+        host: new URL(ORIGIN).host,
+        key: INDEXNOW_KEY,
+        keyLocation: `${ORIGIN}/${INDEXNOW_KEY}.txt`,
+        urlList: batch
+      })
+    });
+    // 200 accepted, 202 accepted with the key check still pending. Anything
+    // else is worth seeing in the deploy log: 403 is a key file that does not
+    // match, 422 a URL that is not on this host, 429 too many submissions.
+    const level = res.ok ? 'log' : 'warn';
+    console[level](`build: IndexNow ${batch.length} URL-er → ${res.status}`);
+  }
+}
+
+// Runs after the pages are on disk, and only for a real deploy. A preview
+// build renders the same URLs from the same catalogue, so letting it ping
+// would tell Bing production changed when nothing shipped — and would poison
+// the manifest diff for the deploy that follows.
+async function submitToIndexNow(current) {
+  await writeFile(path.join(OUT, MANIFEST), serialiseManifest(current));
+
+  if (process.env.VERCEL_ENV !== 'production') {
+    console.log(`build: hopper over IndexNow (VERCEL_ENV=${process.env.VERCEL_ENV ?? 'unset'}), manifest skrevet.`);
+    return;
+  }
+
+  const { map: previous, why } = await previousManifest();
+  if (!previous) {
+    console.warn(`build: fant ikke forrige IndexNow-manifest (${why}) — hopper over pingen denne gangen.`);
+    return;
+  }
+  if (why) console.log(`build: ${why}.`);
+
+  const changed = changedUrls(current, previous);
+  if (!changed.length) {
+    console.log('build: ingen priser eller varer endret seg — ingen IndexNow-ping.');
+    return;
+  }
+  await pingIndexNow(changed);
+}
+
 async function main() {
   const shell = await readFile(path.join(OUT, 'index.html'), 'utf8');
 
@@ -299,10 +436,15 @@ async function main() {
 
   await writeFile(path.join(OUT, 'sitemap.xml'), sitemapXml(indexable, categories));
 
+  // Fingerprint as we render, so the manifest can only ever describe pages
+  // that actually made it to disk.
+  const manifest = new Map();
+
   await mkdir(path.join(OUT, 'kategori'), { recursive: true });
   for (const c of categories) {
     const gs = app.categoryGroups(c.slug);
     await writeFile(path.join(OUT, 'kategori', `${c.slug}.html`), renderCategoryPage(shell, c, gs));
+    manifest.set(`${ORIGIN}${app.categoryPath(c.slug)}`, categoryFingerprint(c, gs));
   }
 
   await mkdir(path.join(OUT, 'gruppe'), { recursive: true });
@@ -321,14 +463,30 @@ async function main() {
     }
     // cleanUrls serves gruppe/<slug>.html at /gruppe/<slug>.
     await writeFile(path.join(OUT, 'gruppe', `${app.slugFor(g.key)}.html`), renderPage(shell, g, related));
+    manifest.set(`${ORIGIN}${app.groupPath(g.key)}`, groupFingerprint(g));
   }
 
   console.log(`build: ${rows.length} rader → ${groups.length} grupper, `
     + `${indexable.length} produktsider (≥${MIN_STORES} butikker) og ${categories.length} kategorisider `
     + `forhåndsrendret og lagt i sitemap.`);
+
+  // Never let the ping take the deploy down with it — the pages are already
+  // written and served by this point, and Bing finding out a day later via the
+  // sitemap is a far smaller problem than a failed build.
+  try {
+    await submitToIndexNow(manifest);
+  } catch (err) {
+    console.warn(`build: IndexNow feilet (${err.message}) — sitemap og sider er upåvirket.`);
+  }
 }
 
-main().catch((err) => {
-  // Never fail the deploy over the SEO layer.
-  console.warn(`build: ${err && err.stack ? err.stack : err}`);
-});
+// Only when run as the build (`node build.mjs`), never on import. test/ pulls
+// the fingerprint and manifest helpers in directly, and importing a module
+// whose top level fetches 50 000 catalogue rows would turn `node --test` into
+// a network job.
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+  main().catch((err) => {
+    // Never fail the deploy over the SEO layer.
+    console.warn(`build: ${err && err.stack ? err.stack : err}`);
+  });
+}
