@@ -586,7 +586,17 @@ site**, since Vercel builds from a fresh clone and nothing else survives.
 Three outcomes, deliberately different: a `404` on that manifest means the first
 run and everything is new, so everything is submitted; a network failure means
 we do not know what changed, and the safe answer is to submit nothing; anything
-else is a normal diff. Only `VERCEL_ENV=production` pings at all — a preview
+else is a normal diff.
+
+The manifest is a **receipt, not a log** — it is written only when the ping went
+through, or when there was nothing to send. Writing it after a skipped ping is
+the one mistake that makes the whole thing quietly stop working: the next build
+would diff against a baseline Bing never received, conclude nothing changed, and
+lose the submission for good. Leaving no manifest instead makes the next
+production build see a `404`, treat it as a first run, and send the lot. That is
+also what covers the chicken-and-egg on the very first deploy — the key file is
+a static asset that ships *with* the deploy, so it is not servable while that
+deploy's build is still running, and the build checks it is live before pinging. Only `VERCEL_ENV=production` pings at all — a preview
 build renders the same URLs from the same catalogue, and letting it submit would
 tell Bing production changed when nothing shipped. The ping is wrapped so it can
 never fail a deploy: the pages are already written and served by then.
