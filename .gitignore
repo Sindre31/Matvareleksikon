@@ -7,3 +7,8 @@ node_modules/
 # bury real diffs and ship last week's prices to anyone reading the repo.
 /gruppe/
 /kategori/
+
+# IndexNow fingerprints, written next to the pages above. Build output for the
+# same reason: it describes the prices of one deploy. The copy that matters is
+# the one on the live site, which is where the next build reads it from.
+/indexnow-manifest.txt
