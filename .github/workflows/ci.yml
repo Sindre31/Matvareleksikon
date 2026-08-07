@@ -11,6 +11,16 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # Pinned, not left to whatever the runner image happens to ship: the
+      # Edge Function tests read the shipped TypeScript and strip its types with
+      # node:module's stripTypeScriptTypes, which needs Node >= 22.13. On an
+      # older Node those tests would ERROR rather than quietly skip, but the
+      # runner's default has moved before and the rest of the suite should not
+      # be at the mercy of it either.
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
       - name: Syntax-check the front end (app.js, sw.js, build.mjs)
         run: |
           node --check app.js

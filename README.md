@@ -488,8 +488,43 @@ group/variant pages, the list totals, the history chart and Registreringer:
 | Meny | 40 551 | yes |
 | Kiwi | 5 785 | yes |
 | Rema 1000 | 1 869 | yes |
-| Oda | 1 237 | no — below the bar |
+| Oda | 1 244 → 4 735 | was below the bar; see below |
 | Coop Extra | 120 | no — and no route past it |
+
+**Oda** was below the bar for want of paging, not for want of a source. The
+ingest called Oda's `/search/mixed/` once per term and kept what page 1 held —
+33 items of mixed types, so roughly 20 products a term — 1 244 rows in
+`ml_offers`, measured 2026-08-07.
+Reading the products-only `/search/` endpoint and paging it to the end of each
+term yields **4 913 unique products** over the same 56 terms. A full live sweep
+on 2026-08-07 ran its 274 requests in **137 s** and produced **4 735 rows** —
+the difference is products sold out or priced below `MIN_PRICE_NOK`. Every row
+carried a unit price, 4 734 of 4 735 carried an image, and **91** were on a real
+markdown (median 30 % off) where the old ingest found none at all. That is three
+times over the threshold, and it makes Oda the second-best-covered chain.
+
+**What it does not buy.** Oda is still mostly its own catalogue rather than a
+column in someone else's comparison. Sampling 118 of the sweep's 4 601
+`group_key`s against `ml_offers`, **9 (7.6 %)** matched a group another chain
+already carries. That is not a regression — it is what this scheme does across
+differently-named catalogues, and it is a slight improvement on where Oda sits
+today:
+
+| Store | Groups | Shared with another chain |
+| --- | ---: | ---: |
+| Meny | 35 552 | 13.9 % |
+| Kiwi | 5 496 | 88.9 % |
+| Rema 1000 | 1 798 | 9.0 % |
+| Oda (today) | 1 232 | 6.3 % |
+| Coop Extra | 142 | 15.5 % |
+
+Kiwi's 88.9 % is the outlier for a dull reason: Kiwi and Meny both come from
+Kassalapp and so share its naming. Scaled up, the sweep takes Oda from 77
+cross-store groups to roughly 350 — a real gain, but the honest headline is
+"Oda's prices are now visible at all", not "everything now compares".
+
+The row count above is a live measurement of the ingest, taken without writing
+to the database. Re-measure `ml_offers` itself after the first scheduled sweep.
 
 For **Coop Extra** the cause is the source, not the ingest: **Coop publishes no
 shelf prices anywhere.** There is no Coop dagligvare-nettbutikk, coop.no and
@@ -721,9 +756,13 @@ visits identical instead of forcing the 12 h cache to be invalidated.
 
 Two things measured and *not* done:
 
-- **Filtering out rows the client discards.** There are none — all five chains
-  clear `MIN_STORE_PRICES` (meny 40 555, kiwi 5 783, rema 1 868, oda 1 246,
-  extra 132), so nothing is downloaded and thrown away.
+- **Filtering out rows the client discards.** There are none — the five chains'
+  rows are all wanted (meny 40 555, kiwi 5 783, rema 1 868, oda 1 246,
+  extra 132), so nothing is downloaded and thrown away. Those counts are the
+  snapshot this measurement was taken against; `oda` in particular grows about
+  fourfold once the rewritten ingest sweeps, so the payload figures quoted here
+  are a floor. The conclusion is unchanged — the extra rows are ones the client
+  wants — but re-measure the sizes before quoting them again.
 - **Brotli.** Supabase serves it, and it would take 1208 kB → 1128 kB (7 %). But
   when a browser offers `br, gzip` the server picks gzip, and `fetch()` cannot
   override `Accept-Encoding` — it is a forbidden header name. Not reachable from
@@ -905,11 +944,64 @@ group as the offers):
   images) from NorgesGruppen's public **ngdata** API (keyless, browser
   `User-Agent`), the same source `billigkurv` uses for Meny/Spar.
 - **`ml-ingest-oda`** — [Oda](https://oda.com) (the online supermarket,
-  formerly Kolonial.no) via its public search API (keyless), with product
-  images. Oda is a single online store → the `oda` chain.
+  formerly Kolonial.no) via its public product search API (keyless), with
+  product images. Oda is a single online store → the `oda` chain. It
+  **self-chains** like the Kassalapp sweep, checkpointing a term index in
+  `ml_sweep_state` under `name='oda'`, because paging every term is 274
+  requests — measured at 137 s end to end, which one invocation's 95 s budget
+  does not hold. Two links in practice, not the three or four first estimated
+  from a slower sample.
+
+  Four things the rewrite fixed, each of which had been losing rows or
+  inventing them:
+
+  - **Paging.** `/search/mixed/` returned 33 items of mixed types (categories
+    and recipes among them) and the ingest kept page 1. `/search/?q=` is
+    products-only, reports `total_hits`, and pages 40 at a time: 1 244 → 4 735 rows
+    products. Two limits found by probing and respected in the code: page 50
+    answers **422** (so ~1 960 products is the ceiling for any one query), and
+    `filters=`/`category=` are accepted and silently **ignored** — there is no
+    category listing endpoint, so a term list is the only way in.
+  - **Identity.** Oda's `full_name` does not state the pack size — it lives in
+    `name_extra` — so "Tine Lettmelk 1% fett" is *both* the 1 l and the 1,75 l
+    carton. The old `external_id` was a slug of that name: 106 slugs collided
+    and **117 products were silently dropped**. The row now keys on Oda's own
+    numeric `id`, which is unique across all 4 913.
+  - **The size in the name.** Only the bare size token from `name_extra` is
+    appended ("… 1,75 l"), never the whole field. `name_extra` also carries
+    purchase limits ("Maks 10 per kunde") and hedges ("ca."), and folding those
+    in moved the `group_key` of **301 of 4 913** products — Pepsi Max, Solo,
+    Grandiosa, Norvegia among them — which would have unpicked exactly the
+    popular lines from every other chain's rows in their group. Appending the
+    size alone is invisible to `group_key`, which strips sizes: measured 0 keys
+    changed, and 0 duplicate names left.
+  - **Before-prices.** The old comment said Oda exposes none. It exposes three
+    kinds and only one is a markdown: `price_discount` (130 seen, 110 quoting a
+    genuinely higher `undiscounted_gross_price`) against `fixed_price_bundle`
+    (60) and `mix_and_match` (54), which quote undiscounted **equal to** the
+    shelf price because the saving needs three in the basket. Only
+    `price_discount` becomes a `pre_price`, so Oda offers now chart and badge
+    like the other chains' without inventing a drop that never happened.
+
+  It also stops sending a copied Chrome `User-Agent`. oda.com/robots.txt asks
+  crawlers in so many words for a UA carrying "bot", a program name and a
+  contact, and for exponential backoff honouring `Retry-After` on 429/5xx —
+  both of which the function now does.
+
+  **Measured and not done: sweeping Oda's own category taxonomy.** Oda's
+  sitemap publishes all 814 categories, and searching their names does reach
+  further — 100 of them took the union to 6 392 of the ~7 214 products Oda
+  will admit to. It cost **2 393 requests for 1 479 new products** (0.6 per
+  request, against the curated terms' 17.9), because category names are broad
+  and each one pages 24 deep into the same goods the last one found. The tail
+  it buys is also largely not food: the taxonomy includes `barneboker`,
+  `pocket`, `quiz-og-sudoku`, `spill-og-puslespill` and `blomster-og-planter`.
+  Thirty times the requests for a worse catalogue, so the term list stays
+  curated.
 
 All run weekly via `pg_cron` (offers 04:00, Kassalapp 04:10, ngdata 04:20,
-Oda 04:30 UTC every Monday = ~06:00–06:30 Oslo). See `supabase/cron.sql`.
+Oda 04:30 UTC every Monday = ~06:00–06:30 Oslo), and both self-chaining sweeps
+have a `*/10 4-9 * * 1` watchdog behind them. See `supabase/cron.sql`.
 
 ## Deployment
 

@@ -115,6 +115,17 @@ create table if not exists ml_sweep_state (
 alter table ml_sweep_state enable row level security;  -- service-role only, no policies
 insert into ml_sweep_state (name) values ('kassalapp') on conflict (name) do nothing;
 
+-- The Oda sweep chains for the same reason and checkpoints in the same table.
+-- next_page holds a TERM INDEX there, not a page: the column is the sweep's
+-- position in whatever it walks, and ml-ingest-oda walks its search terms
+-- (paging each one to exhaustion inside the term). It starts at 0, not 1, since
+-- that position is an array index.
+insert into ml_sweep_state (name, next_page) values ('oda', 0) on conflict (name) do nothing;
+
+comment on column ml_sweep_state.next_page is
+  'Where the named sweep resumes. A 1-based PAGE for kassalapp, a 0-based index '
+  'into TERMS for oda — whatever that sweep walks.';
+
 -- Cold-start payload split into two views, so the boot download stops carrying
 -- the product photos. image_url was 498 kB of the 1697 kB gzipped catalogue
 -- (29 %) and cannot be compressed away — gzip already collapses the shared host
