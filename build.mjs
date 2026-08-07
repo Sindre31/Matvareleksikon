@@ -133,11 +133,44 @@ function productLd(g) {
   };
 }
 
+// Næringsinnhold, in the prerendered markup for the same reason the prices
+// are: "hvor mye protein er det i kyllingfilet" is a query, and an answer that
+// only exists after the app has booted and fetched 500 kB is an answer no
+// crawler waits for. Same matcher as the running app (app.matchNutrition), so
+// the static page and the live one name the same food — and, like the app,
+// nothing at all when the match isn't confident.
+//
+// Deliberately outside groupFingerprint(): these values move when Mattilsynet
+// publishes a new edition, roughly once a year, and re-submitting ~5 000 URLs
+// to IndexNow because a vitamin figure shifted is precisely the firehose the
+// manifest exists to prevent. A product whose NAME changed moves its
+// fingerprint already, and that is the change worth telling Bing about.
+function nutritionHtml(nut, g) {
+  if (!nut) return '';
+  const hit = app.matchNutrition(nut.index, g.key);
+  if (!hit) return '';
+  const f = hit.food;
+  const rows = [`<li>Energi — ${esc(app.nutNum(f.kcal, 0))} kcal (${esc(app.nutNum(f.kJ, 0))} kJ)</li>`];
+  nut.index.nutrients.forEach((n, i) => {
+    if (!n.decl) return;
+    rows.push(`<li>${esc(n.indent ? `herav ${n.name.toLowerCase()}` : n.name)} — `
+      + `${esc(app.nutNum(f.values[i], n.dec))} ${esc(n.unit)}</li>`);
+  });
+  return `<h2>Næringsinnhold per 100 g</h2>
+    <p>Nærmeste oppslag i Matvaretabellen er
+       <a href="https://www.matvaretabellen.no/${esc(f.slug)}/">${esc(f.name)}</a> — en generisk matvare,
+       ikke varedeklarasjonen på akkurat denne pakningen.</p>
+    <ul>
+      ${rows.join('\n      ')}
+    </ul>
+    <p>Kilde: ${esc(nut.index.source)}.</p>`;
+}
+
 // The visible fallback. Real content rather than a spinner: the name as the
 // page's one <h1>, every chain's price as text, and anchors a crawler can walk
 // to the per-store pages and onward to related products. The app clears all of
 // it on first render, so this is what non-JS clients and slow renderers see.
-function bodyHtml(g, related) {
+function bodyHtml(g, related, nut) {
   const rows = g.variants
     .slice()
     .sort((a, b) => a.price - b.price)
@@ -158,6 +191,7 @@ function bodyHtml(g, related) {
       ${rows}
     </ul>
     <p><a href="/liste">Handleliste</a> · <a href="/skann">Bidra med priser</a> · <a href="/om">Om Prisboka</a></p>
+    ${nutritionHtml(nut, g)}
     <h2>Andre varer i leksikonet</h2>
     <ul>
       ${links}
@@ -169,7 +203,7 @@ function bodyHtml(g, related) {
 // the <head>. The shell owns the design system, the CSP-safe script tags and
 // the preconnects; duplicating it here would mean every future change to
 // index.html silently skipping ~5 000 pages.
-function renderPage(shell, g, related) {
+function renderPage(shell, g, related, nut) {
   const m = pageMeta(g);
   let html = shell;
   const swap = (re, replacement) => { html = html.replace(re, replacement); };
@@ -188,7 +222,7 @@ function renderPage(shell, g, related) {
   // carries the offer into a search result.
   const ld = `<script type="application/ld+json" id="ld-product">${JSON.stringify(productLd(g))}</script>`;
   swap(/<\/head>/, `  ${ld}\n</head>`);
-  swap(/<div id="app"><\/div>/, `<div id="app">${bodyHtml(g, related)}</div>`);
+  swap(/<div id="app"><\/div>/, `<div id="app">${bodyHtml(g, related, nut)}</div>`);
   return html;
 }
 
@@ -435,8 +469,23 @@ async function submitToIndexNow(current) {
   if (await pingIndexNow(changed)) await write();
 }
 
+// The committed table, or null if it is missing or unreadable — in which case
+// the pages simply render without the nutrition block, the way they did before
+// it existed. Same fail-soft rule as the rest of this build.
+async function loadNutrition() {
+  try {
+    const index = app.buildNutrition(JSON.parse(await readFile(path.join(OUT, 'nutrition.json'), 'utf8')));
+    if (!index) throw new Error('uventet format');
+    return { index };
+  } catch (err) {
+    console.warn(`build: nutrition.json ikke lest (${err.message}) — sidene skrives uten næringsinnhold.`);
+    return null;
+  }
+}
+
 async function main() {
   const shell = await readFile(path.join(OUT, 'index.html'), 'utf8');
+  const nut = await loadNutrition();
 
   let stores, rows;
   try {
@@ -481,6 +530,7 @@ async function main() {
   }
 
   await mkdir(path.join(OUT, 'gruppe'), { recursive: true });
+  let matched = 0;
   for (let i = 0; i < indexable.length; i++) {
     const g = indexable[i];
     // A handful of neighbours in the sorted list, so every prerendered page
@@ -495,13 +545,15 @@ async function main() {
       if (!before && !after) break;
     }
     // cleanUrls serves gruppe/<slug>.html at /gruppe/<slug>.
-    await writeFile(path.join(OUT, 'gruppe', `${app.slugFor(g.key)}.html`), renderPage(shell, g, related));
+    await writeFile(path.join(OUT, 'gruppe', `${app.slugFor(g.key)}.html`), renderPage(shell, g, related, nut));
     manifest.set(`${ORIGIN}${app.groupPath(g.key)}`, groupFingerprint(g));
+    if (nut && app.matchNutrition(nut.index, g.key)) matched++;
   }
 
   console.log(`build: ${rows.length} rader → ${groups.length} grupper, `
     + `${indexable.length} produktsider (≥${MIN_STORES} butikker) og ${categories.length} kategorisider `
-    + `forhåndsrendret og lagt i sitemap.`);
+    + `forhåndsrendret og lagt i sitemap`
+    + (nut ? `, ${matched} med næringsinnhold fra Matvaretabellen ${nut.index.edition}.` : '.'));
 
   // Never let the ping take the deploy down with it — the pages are already
   // written and served by this point, and Bing finding out a day later via the

@@ -49,10 +49,12 @@ when it can't reach it. The output is gitignored.
 | `icon-192.png`, `icon-512.png` | PWA/app icons (rasterised from the favicon) |
 | `og.png` | 1200×630 social preview card |
 | `build.mjs` | Deploy-time build: prerenders a static HTML page per indexable product group into `gruppe/` and regenerates `sitemap.xml` from the live catalogue |
+| `nutrition.json` | Matvaretabellen, distilled — 2 121 foods × 36 nutrients, ~510 kB. Committed, fetched lazily by the product page. See **Næringsinnhold** below |
+| `tools/build-nutrition.mjs` | Regenerates `nutrition.json` from Mattilsynet's open API. Run by hand when a new edition lands, not at deploy time |
 | `robots.txt`, `sitemap.xml` | Crawler hints. The committed sitemap is a three-URL fallback; `build.mjs` overwrites it with every product worth indexing |
 | `<key>.txt` | IndexNow ownership proof. Public by design — it must match `INDEXNOW_KEY` in `build.mjs` |
 | `gruppe/` | Build output (gitignored) — one prerendered page per product group |
-| `test/` | Unit tests (`node --test`): the pure price/grouping helpers, the "Ukas tilbud" selection, the cold-start offer paging, the on-demand photo loader, the client mirror of `ml_group_key`, the error-report validation, and the IndexNow change-detection |
+| `test/` | Unit tests (`node --test`): the pure price/grouping helpers, the "Ukas tilbud" selection, the cold-start offer paging, the on-demand photo loader, the client mirror of `ml_group_key`, the error-report validation, the IndexNow change-detection, and the Matvaretabellen matcher |
 | `design/` | The imported Claude Design source, kept for provenance |
 
 ## Screens (each on its own URL)
@@ -189,6 +191,13 @@ when it can't reach it. The output is gitignored.
   week. **Per kg/l** therefore divides by *that row's* size, never by the pack
   the store sells today; points with no stated size are dropped and the caption
   says so.
+  Under the chart, **"03 · Næringsinnhold"** — energy and the ten declaration
+  lines per 100 g (or per one of the food's own household portions: *1 glass
+  (190 g)*, *1 skive*), with vitamins and minerals a click away. The numbers
+  come from **Matvaretabellen**, they describe a *generic* food rather than
+  this pack, and the section says so and names and links the food it matched.
+  It is absent — not empty — for the ~80 % of the leksikon Mattilsynet's table
+  does not cover. See **Næringsinnhold** below.
   The group and variant pages each carry a **"Kopier lenke"** button (the URLs
   are already shareable) and the shopping-list star.
 - **Produktside (variant)** `/vare/:slug/:butikk` — one store's product with, when
@@ -869,6 +878,85 @@ tracks a current Gemini Flash vision model; older pinned ids like
 `gemini-2.0-flash` may be quota-limited or `gemini-2.5-flash` deprecated for
 new keys). Until the secret is set the function returns a clear
 "AI-tjenesten er ikke konfigurert" message.
+
+### Næringsinnhold (Matvaretabellen)
+
+**Where it comes from.** Mattilsynet publishes the Norwegian food composition
+table as open data at `https://www.matvaretabellen.no/api/` — 2 121 foods, ~100
+measured constituents each, **13,6 MB of JSON**, revised about once a year.
+`tools/build-nutrition.mjs` fetches it, throws away what a price site cannot
+use (the ~60 individual fatty acids, LanguaL codes, latin names, per-value
+source ids) and writes `nutrition.json`: 2 121 foods × 36 nutrients, one food
+per line, **510 kB** — ~120 kB gzipped over the wire.
+
+That file is **committed, not built at deploy time**. The table moves yearly
+while this repo deploys several times a week, a committed copy makes the tests
+hermetic, and a line-per-food layout means a regeneration shows up in review as
+*"salt in kjøttdeig went from 1,1 to 0,9"* rather than as one 510 kB line.
+Regenerating is the update path:
+
+```bash
+node tools/build-nutrition.mjs --dry   # print the diff, write nothing
+node tools/build-nutrition.mjs         # rewrite nutrition.json
+```
+
+Attribution is not optional — Mattilsynet requires a visible source line — so
+the citation travels *inside* the payload (`source`) and the product page
+prints it verbatim: **Matvaretabellen 2026. Mattilsynet. www.matvaretabellen.no**.
+
+The app fetches `/nutrition.json` **once, lazily**, on the first product page a
+visit opens; the service worker then caches it like any other same-origin asset
+(stale-while-revalidate), so it is free on every later visit and works offline.
+Nothing on the front page, the list or the category pages pays for it.
+
+**Joining two datasets that share no key.** The leksikon holds ~37 500 branded
+packs (*"Kyllingfilet Naturell 800g Prior"*); Matvaretabellen holds 2 121
+generic foods (*"Kylling, filet, uten skinn, rå"*). No EAN, id or key joins
+them — only the names. So `matchNutrition` is a heuristic, and it is built to
+be **right or silent**: a shopper reading a nutrition table has no way to tell
+a good match from a confident-looking wrong one.
+
+1. **The head gate.** The first word of a Matvaretabellen name is what the food
+   *is*; everything after the first comma only qualifies it. If the product
+   name does not carry that word, this is not that food — however many
+   qualifiers happen to line up. The compound rules are the ones `POPULAR`
+   already matches categories with, for the same reason: Norwegian puts the
+   meaning in the **tail** of a compound, so `lettmelk` is milk and
+   `melkesjokolade` is not. The one exception is the shape a Norwegian product
+   name actually uses — `kyllingfilet` for *"Kylling, filet"* — and it counts
+   only when **both** halves of the compound are that food's own words, which
+   is exactly what keeps `melkesjokolade` off the milk entry.
+2. **Scoring.** A qualifier that lands is worth more than one that misses
+   costs, or the table's most precisely described foods could never win. A miss
+   in the head segment costs double (*"Fløtegratinerte poteter"* is not
+   poteter) and an unmatched **preparation** costs triple — someone buying a
+   fillet wants the raw numbers, not the pan-fried ones. Ties go to raw over
+   cooked, generic over branded, bought over home-made, then the shortest name.
+3. **Coverage.** Half of what the product says has to be explained by the food.
+   Matvaretabellen has a mango and *"Jordan mango mint tannkrem"* says "mango",
+   but a toothpaste is not a mango.
+4. **A floor.** `MIN_SCORE = 12`, calibrated against the 5 075 groups at least
+   two chains carry. The band just underneath is where a box of Carlsberg wants
+   to be *"Dessert-topping på boks"* and a halogen bulb wants to be a *pære*.
+
+**963 of the 4 926 prerendered product pages** (~20 %) clear all four. The rest
+get no section at all, which is the correct answer for a table that does not
+contain branded snacks, soft drinks or washing-up brushes. `test/nutrition.test.js`
+pins both directions — the matches that must land, and the six near-misses that
+must not — against the committed `nutrition.json`, so a regeneration that broke
+either is caught by `node --test`.
+
+**On the page,** the match is always **named and linked** to its page on
+matvaretabellen.no, above a note that the numbers are a generic food and not
+this pack's own declaration. A value the table never analysed for that food
+prints as **"–"**, never as 0 — they are not the same claim. The same matcher
+runs in `build.mjs`, so the prerendered HTML carries the table too (*"hvor mye
+protein er det i kyllingfilet"* is a query, and an answer that only exists
+after 500 kB has downloaded is one no crawler waits for) and the static page
+names the same food the live one does. Nutrition is deliberately **outside**
+`groupFingerprint`: a new edition of the table would otherwise re-submit ~5 000
+URLs to IndexNow because a vitamin figure moved, which is the firehose the
+manifest exists to prevent.
 
 ### Tilbudsaviser & product images
 
