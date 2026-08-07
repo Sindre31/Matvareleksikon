@@ -1929,18 +1929,43 @@
     return { food: f, score: score };
   }
 
+  // When a runner-up this close disagrees with the winner about energy by this
+  // much, the name cannot tell them apart — see matchNutrition.
+  var TIE_MARGIN = 2.0;
+  var TIE_DIVERGENCE = 0.25;
+
   // The best food for a group key, or null. Pure and exported: test/nutrition
   // .test.js drives it with the committed nutrition.json.
   function matchNutrition(index, key) {
     if (!index) return null;
     var P = foldName(key).split(' ').filter(Boolean);
     if (!P.length) return null;
-    var best = null;
+    var best = null, second = null;
     for (var i = 0; i < index.foods.length; i++) {
       var r = scoreNutrition(P, index.foods[i]);
-      if (r && (!best || r.score > best.score)) best = r;
+      if (!r) continue;
+      if (!best || r.score > best.score) { second = best; best = r; }
+      else if (!second || r.score > second.score) second = r;
     }
-    return (best && best.score >= MIN_SCORE) ? best : null;
+    if (!best || best.score < MIN_SCORE) return null;
+
+    // Abstain when the name genuinely cannot decide. Matvaretabellen carries a
+    // food in every state it is sold in, and the states are not small
+    // differences: "Erter, tørre" is 334 kcal and "Erter, fryst" is 65, and a
+    // bag labelled "Erter" scores within two points of both. A Norwegian
+    // shopper buys those peas frozen, but nothing in the product NAME says so
+    // — so picking the higher-scoring one is a coin flip on the single number
+    // most people read, and the table's own "Fiskesuppe, av pulver" (39 kcal)
+    // and "Fiskesuppe, pulver" (372) tie exactly.
+    //
+    // This is the matcher's whole contract in one rule: right or silent. It
+    // costs ~10 % of the matches and removes the errors that were worth
+    // multiples rather than percents.
+    if (second && second.score >= best.score - TIE_MARGIN) {
+      var a = best.food.kcal, b = second.food.kcal;
+      if (a != null && b != null && Math.abs(a - b) / Math.max(a, b, 1) > TIE_DIVERGENCE) return null;
+    }
+    return best;
   }
 
   // Memoised per group key — a match is ~2 ms and render() runs on every state

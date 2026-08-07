@@ -938,13 +938,35 @@ a good match from a confident-looking wrong one.
 4. **A floor.** `MIN_SCORE = 12`, calibrated against the 5 075 groups at least
    two chains carry. The band just underneath is where a box of Carlsberg wants
    to be *"Dessert-topping på boks"* and a halogen bulb wants to be a *pære*.
+5. **Abstaining on a tie.** The floor does not catch the worst error the table
+   can produce, because that error scores *well*. Matvaretabellen carries a food
+   in every state it is sold in, and the states are not small differences:
+   *"Erter, tørre"* is **334 kcal** and *"Erter, fryst"* is **65**, and a bag
+   labelled simply "Erter" scores within two points of both. A Norwegian shopper
+   buys those peas frozen — but nothing in the product *name* says so, so
+   picking the higher-scoring one is a coin flip on the single number most
+   people read. (*"Fiskesuppe, av pulver"* at 39 kcal and *"Fiskesuppe, pulver"*
+   at 372 tie **exactly**.) So when a runner-up within `TIE_MARGIN` disagrees
+   about energy by more than `TIE_DIVERGENCE`, the section does not appear. It
+   costs ~10 % of the matches and removes the errors that were worth multiples
+   rather than percents.
 
-**963 of the 4 926 prerendered product pages** (~20 %) clear all four. The rest
+**911 of the 5 075 multi-store groups** (~18 %) clear all five. The rest
 get no section at all, which is the correct answer for a table that does not
-contain branded snacks, soft drinks or washing-up brushes. `test/nutrition.test.js`
-pins both directions — the matches that must land, and the six near-misses that
-must not — against the committed `nutrition.json`, so a regeneration that broke
-either is caught by `node --test`.
+contain branded snacks, soft drinks or washing-up brushes.
+
+What the rules do **not** catch is the product that *contains* a food the table
+knows rather than *being* it: a raspberry jelly mix matching raw raspberries, a
+hamburger dressing matching a hamburger. The winner and the runner-up agree in
+those cases — they are both the same wrong food — so no tie rule can see it. A
+blind sample of 80 accepted matches ran roughly 59 clearly right, 10
+right-family-wrong-variant and a handful of these; naming and linking the
+matched food is what lets a reader catch the rest, and the ⚠ button reports it.
+
+`test/nutrition.test.js` pins every direction — the matches that must land, the
+near-misses that must not, and the three ties that must abstain — against the
+committed `nutrition.json`, so a regeneration that broke any of it is caught by
+`node --test`.
 
 **On the page,** the match is always **named and linked** to its page on
 matvaretabellen.no, above a note that the numbers are a generic food and not

@@ -107,6 +107,29 @@ for (const key of MISSES) {
   });
 }
 
+// ── Abstaining when the name cannot decide ────────────────────────────────
+// Matvaretabellen carries a food in every state it is sold in, and the states
+// are not small differences. A bag labelled "Erter" scores within two points
+// of both "Erter, tørre" (334 kcal) and "Erter, fryst" (65) — nothing in the
+// product name says which, so showing either is a coin flip on the number most
+// people read. These three were live on the page before the tie rule existed.
+const TIES = ['erter', 'kikerter', 'fiskesuppe'];
+
+for (const key of TIES) {
+  test(`"${key}" abstains — the table disagrees with itself about the energy`, () => {
+    assert.equal(lib.matchNutrition(INDEX, key), null);
+  });
+}
+
+test('a close runner-up that agrees about energy is not a tie', () => {
+  // The rule must only fire on genuine ambiguity. Milk has several entries
+  // within a point of each other and they all say ~40 kcal, so the page still
+  // gets its table.
+  const milk = lib.matchNutrition(INDEX, 'lettmelk');
+  assert.ok(milk, 'lettmelk lost its match to the tie rule');
+  assert.ok(milk.food.kcal > 30 && milk.food.kcal < 55);
+});
+
 test('a compound is what its tail says it is, not its head', () => {
   // The rule the whole gate rests on: Norwegian puts the meaning at the end of
   // a compound. "Lettmelk" is milk; "melkesjokolade" is chocolate, and reading
