@@ -17,16 +17,17 @@
 // ── Why this reads /search/ and pages it ────────────────────────────────────
 // It used to call /search/mixed/ once per term and keep whatever page 1 held —
 // 33 items of MIXED types (categories and recipes among them), so ~20 products
-// per term and 1 237 products in total. That left Oda under `MIN_STORE_PRICES`
-// (1500) and therefore hidden from the whole app: no grid rows, no filter chip,
-// no line in "hva koster lista i hver butikk".
+// per term and 1 244 rows in ml_offers (measured 2026-08-07). That left Oda
+// under `MIN_STORE_PRICES` (1500) and therefore hidden from the whole app: no
+// grid rows, no filter chip, no line in "hva koster lista i hver butikk".
 //
 // /search/?q=<term> is the products-only endpoint. It reports `total_hits`,
 // returns 40 products per page and pages properly, so a term now yields every
 // product it matches instead of the first screenful. Measured 2026-08-07 over
-// the same 56 terms: 274 requests, **4 913 unique products**, of which 4 750
-// survive the floor and the availability check below and become rows — 4x the
-// old figure and three times over the coverage bar.
+// the same 56 terms: 274 requests, **4 913 unique products**. A full live sweep
+// on 2026-08-07 ran those 274 requests in 137 s and produced **4 735 rows**
+// after the floor and the availability check below — against the 1 244 rows in
+// ml_offers at the time. 4x the catalogue and three times over the coverage bar.
 //
 // Two hard limits found by probing, both respected below:
 //   • a page beyond 49 answers 422, so ~1 960 products is the most any single
@@ -361,7 +362,7 @@ Deno.serve(async (req: Request) => {
   // The sweep deletes the previous week's rows ONCE, at restart, and every link
   // after that accumulates — deleting per invocation would wipe the rows the
   // earlier links just wrote. That leaves Oda partially stocked for the few
-  // minutes a sweep runs (Monday ~06:30 Oslo, three or four links), which is
+  // minutes a sweep runs (Monday ~06:30 Oslo; 137 s measured, so two links), which is
   // the price of not carrying last week's prices forward as if they were
   // today's. The resume watchdog is what keeps that window from becoming a week.
   let deleteFirst = body.deleteFirst === true;

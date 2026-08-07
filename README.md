@@ -488,21 +488,43 @@ group/variant pages, the list totals, the history chart and Registreringer:
 | Meny | 40 551 | yes |
 | Kiwi | 5 785 | yes |
 | Rema 1000 | 1 869 | yes |
-| Oda | 1 237 → ~4 750 | was below the bar; see below |
+| Oda | 1 244 → 4 735 | was below the bar; see below |
 | Coop Extra | 120 | no — and no route past it |
 
 **Oda** was below the bar for want of paging, not for want of a source. The
 ingest called Oda's `/search/mixed/` once per term and kept what page 1 held —
-33 items of mixed types, so roughly 20 products a term and 1 237 in total.
+33 items of mixed types, so roughly 20 products a term — 1 244 rows in
+`ml_offers`, measured 2026-08-07.
 Reading the products-only `/search/` endpoint and paging it to the end of each
-term yields **4 913 unique products** over the same 56 terms (measured against
-the API on 2026-08-07, 274 requests), of which **4 750** become rows — the rest
-are sold out or priced below `MIN_PRICE_NOK`. That is three times over the
-threshold, and it makes Oda the second-best-covered chain in the leksikon.
+term yields **4 913 unique products** over the same 56 terms. A full live sweep
+on 2026-08-07 ran its 274 requests in **137 s** and produced **4 735 rows** —
+the difference is products sold out or priced below `MIN_PRICE_NOK`. Every row
+carried a unit price, 4 734 of 4 735 carried an image, and **91** were on a real
+markdown (median 30 % off) where the old ingest found none at all. That is three
+times over the threshold, and it makes Oda the second-best-covered chain.
 
-The figure above is what the API returns, not yet what the table holds: the row
-count moves when the rewritten `ml-ingest-oda` first sweeps in anger. Re-measure
-it then rather than trusting this paragraph.
+**What it does not buy.** Oda is still mostly its own catalogue rather than a
+column in someone else's comparison. Sampling 118 of the sweep's 4 601
+`group_key`s against `ml_offers`, **9 (7.6 %)** matched a group another chain
+already carries. That is not a regression — it is what this scheme does across
+differently-named catalogues, and it is a slight improvement on where Oda sits
+today:
+
+| Store | Groups | Shared with another chain |
+| --- | ---: | ---: |
+| Meny | 35 552 | 13.9 % |
+| Kiwi | 5 496 | 88.9 % |
+| Rema 1000 | 1 798 | 9.0 % |
+| Oda (today) | 1 232 | 6.3 % |
+| Coop Extra | 142 | 15.5 % |
+
+Kiwi's 88.9 % is the outlier for a dull reason: Kiwi and Meny both come from
+Kassalapp and so share its naming. Scaled up, the sweep takes Oda from 77
+cross-store groups to roughly 350 — a real gain, but the honest headline is
+"Oda's prices are now visible at all", not "everything now compares".
+
+The row count above is a live measurement of the ingest, taken without writing
+to the database. Re-measure `ml_offers` itself after the first scheduled sweep.
 
 For **Coop Extra** the cause is the source, not the ingest: **Coop publishes no
 shelf prices anywhere.** There is no Coop dagligvare-nettbutikk, coop.no and
@@ -925,15 +947,17 @@ group as the offers):
   formerly Kolonial.no) via its public product search API (keyless), with
   product images. Oda is a single online store → the `oda` chain. It
   **self-chains** like the Kassalapp sweep, checkpointing a term index in
-  `ml_sweep_state` under `name='oda'`, because paging every term is ~274
-  requests at ~1 s each and one invocation's wall clock does not hold that.
+  `ml_sweep_state` under `name='oda'`, because paging every term is 274
+  requests — measured at 137 s end to end, which one invocation's 95 s budget
+  does not hold. Two links in practice, not the three or four first estimated
+  from a slower sample.
 
   Four things the rewrite fixed, each of which had been losing rows or
   inventing them:
 
   - **Paging.** `/search/mixed/` returned 33 items of mixed types (categories
     and recipes among them) and the ingest kept page 1. `/search/?q=` is
-    products-only, reports `total_hits`, and pages 40 at a time: 1 237 → 4 913
+    products-only, reports `total_hits`, and pages 40 at a time: 1 244 → 4 735 rows
     products. Two limits found by probing and respected in the code: page 50
     answers **422** (so ~1 960 products is the ceiling for any one query), and
     `filters=`/`category=` are accepted and silently **ignored** — there is no

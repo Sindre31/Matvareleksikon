@@ -104,8 +104,8 @@ select cron.schedule(
 -- Like the Kassalapp sweep this SELF-CHAINS: one trigger starts at the first
 -- search term and each invocation dispatches the next range when its time
 -- budget runs out. It has to. The term list is swept with paging now instead of
--- keeping page 1 and moving on, which is what took Oda from 1 237 products to
--- 4 913 — but that is 274 requests at ~1 s each, three or four times what one
+-- keeping page 1 and moving on, which is what took Oda from 1 244 rows to
+-- 4 735 rows — but that is 274 requests, measured at 137 s, more than what one
 -- invocation's wall clock allows. {restart:true} also wipes last week's oda
 -- rows once, at the head of the chain; the links after it accumulate.
 select cron.schedule(
@@ -131,8 +131,8 @@ select cron.schedule(
 -- The window matters more here than it does for Kassalapp. Kassalapp
 -- accumulates and never deletes, so a dead chain leaves last week's prices
 -- standing; this sweep deletes at restart, so a chain that dies at 40 % leaves
--- Oda at 40 % of its catalogue until something resumes it. The sweep itself is
--- ~4 minutes, so 04:00-09:59 Monday is a six-hour window over it — but a sweep
+-- Oda at 40 % of its catalogue until something resumes it. The sweep itself
+-- measured 137 s, so 04:00-09:59 Monday is a six-hour window over it — but a sweep
 -- started by hand on another day runs without a watchdog behind it. Widen the
 -- hours, or re-run {resume:true} yourself, if that ever matters.
 select cron.schedule(
