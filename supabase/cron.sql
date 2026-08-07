@@ -98,8 +98,16 @@ select cron.schedule(
   $cmd$
 );
 
--- Real Oda (oda.com) shelf prices via Oda's public search API (keyless),
--- 30 min after the offers job. Oda is a single online store → 'oda'.
+-- Real Oda (oda.com) shelf prices via Oda's public product search API
+-- (keyless), 30 min after the offers job. Oda is a single online store → 'oda'.
+--
+-- Like the Kassalapp sweep this SELF-CHAINS: one trigger starts at the first
+-- search term and each invocation dispatches the next range when its time
+-- budget runs out. It has to. The term list is swept with paging now instead of
+-- keeping page 1 and moving on, which is what took Oda from 1 237 products to
+-- 4 913 — but that is 274 requests at ~1 s each, three or four times what one
+-- invocation's wall clock allows. {restart:true} also wipes last week's oda
+-- rows once, at the head of the chain; the links after it accumulate.
 select cron.schedule(
   'ml-ingest-oda-weekly',
   '30 4 * * 1',
@@ -107,7 +115,34 @@ select cron.schedule(
   select net.http_post(
     url := 'https://jiaxeedguivvhixychcg.supabase.co/functions/v1/ml-ingest-oda',
     headers := jsonb_build_object('Content-Type','application/json','Authorization','Bearer <SUPABASE_ANON_KEY>'),
-    body := '{}'::jsonb,
+    body := jsonb_build_object('restart', true, 'autochain', true),
+    timeout_milliseconds := 170000
+  );
+  $cmd$
+);
+
+-- Watchdog for the Oda chain, same bargain as the Kassalapp one above:
+-- dispatchNext is fire-and-forget, so a link killed on the wall-clock before it
+-- fires the next range ends the sweep silently. Every 10 minutes this resumes
+-- from ml_sweep_state.next_page (a TERM index for this sweep). It no-ops while
+-- the chain is alive (checkpoint younger than 4 min) and once the sweep is
+-- finished, so an idle tick is one primary-key read and nothing else.
+--
+-- The window matters more here than it does for Kassalapp. Kassalapp
+-- accumulates and never deletes, so a dead chain leaves last week's prices
+-- standing; this sweep deletes at restart, so a chain that dies at 40 % leaves
+-- Oda at 40 % of its catalogue until something resumes it. The sweep itself is
+-- ~4 minutes, so 04:00-09:59 Monday is a six-hour window over it — but a sweep
+-- started by hand on another day runs without a watchdog behind it. Widen the
+-- hours, or re-run {resume:true} yourself, if that ever matters.
+select cron.schedule(
+  'ml-ingest-oda-resume',
+  '*/10 4-9 * * 1',
+  $cmd$
+  select net.http_post(
+    url := 'https://jiaxeedguivvhixychcg.supabase.co/functions/v1/ml-ingest-oda',
+    headers := jsonb_build_object('Content-Type','application/json','Authorization','Bearer <SUPABASE_ANON_KEY>'),
+    body := jsonb_build_object('resume', true, 'autochain', true),
     timeout_milliseconds := 170000
   );
   $cmd$
