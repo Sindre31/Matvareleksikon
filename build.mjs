@@ -11,12 +11,32 @@
  * #app), so a visitor still gets the live, interactive version and prices that
  * are never staler than the network.
  *
- * Which pages: the groups at least two chains carry. Those are the ones that
- * answer the question the site exists for ("who has this cheapest?") and the
- * ones people search for. The ~34 000 single-store groups stay crawlable on
- * their own paths but are left out of both the prerender and the sitemap —
- * submitting 39 000 near-empty pages from a young domain buys crawl budget
- * spent on the weakest thing the site has. Change MIN_STORES to widen it.
+ * WHAT GETS PRERENDERED AND WHAT GETS SUBMITTED ARE TWO DIFFERENT QUESTIONS,
+ * and conflating them is what went wrong the first time round.
+ *
+ * Prerendering is cheap and defensive: any URL a crawler can reach should
+ * answer with real markup rather than an empty shell. So the prerender covers
+ * the groups at least two chains carry PLUS every group a category page links
+ * to, whatever its store count. That second clause is not optional — a
+ * category page lists every product in the category, and 82 % of those links
+ * used to point at single-store groups with no prerendered page, so following
+ * one got the crawler an empty <div id="app"> and (until this build stopped
+ * emitting it) a canonical pointing at the front page. Roughly 1 500 links off
+ * the site's most valuable pages, every one of them a dead end that said "this
+ * is really the home page".
+ *
+ * A sitemap is a different thing: a claim that these pages are worth the crawl
+ * budget. Submitting ~4 900 near-identical product stubs from a young domain
+ * is how the entire catalogue ended up parked in Search Console under
+ * "Oppdaget – ikke indeksert" — 4 916 URLs against 4 926 submitted, i.e.
+ * Google found every page and judged not one of them worth fetching. So the
+ * sitemap is now the ~900 pages that answer a question this site is the best
+ * answer to; see sitemapGroups() for the rule. The other ~6 200 prerendered
+ * pages stay crawlable, linked and indexable — they are simply not submitted.
+ *
+ * The ~34 000 single-store groups no category links to keep their paths and
+ * the app renders them as before; they get neither a prerender nor a sitemap
+ * entry.
  *
  * Fail-soft by design: no network, no Supabase, a shape change in the API —
  * the build logs it and exits 0 with the committed sitemap left in place. A
@@ -49,8 +69,20 @@ const SUPABASE_KEY = 'sb_publishable_trP_tgjyaPU-2eJ7n9JX4w_Q7kIvDPC';
 // hands over to would be worse than no prerender.
 const COLS = 'store_id,product_name,price,pre_price,unit,unit_price,unit_price_unit,offer_days,valid_until,has_image';
 const PAGE = 1000;         // PostgREST caps a response at 1000 rows
-const MIN_STORES = 2;      // prerender + sitemap threshold
+const MIN_STORES = 2;      // prerender threshold — the sitemap has its own, below
 const OUT = path.dirname(new URL(import.meta.url).pathname);
+
+// What earns a place in the sitemap. Three chains carrying a product is a
+// comparison worth a crawl on its own; two is worth it when the product is one
+// of the everyday staples a category page already covers, because that is a
+// query someone actually types. Two chains on a product nobody searches for is
+// a page with nothing to say, however honest its prices are.
+//
+// Raise the coverage or drop the thresholds once the submitted set is indexed —
+// the pages already exist, so widening the sitemap is a one-line change and no
+// re-render.
+const SITEMAP_MIN_STORES = 3;
+const SITEMAP_CATEGORY_MIN_STORES = 2;
 
 // IndexNow. The key is not a secret — the whole scheme is "prove you control
 // the host by serving this string at a URL only you can write to", so the file
@@ -199,10 +231,36 @@ function bodyHtml(g, related, nut) {
   </article>`;
 }
 
+// index.html is both the shell every page is templated from and the file that
+// serves the front page — and this build now writes a prerendered front page
+// back into it. So the first thing done with it is emptying #app again, or a
+// second run in the same checkout would template all 7 000 pages from a shell
+// with the front page's markup already inside it. (Vercel clones fresh, so this
+// only bites locally — which is exactly where it would go unnoticed.)
+//
+// Non-greedy is exact here because no prerendered body contains a <div>: they
+// are all <article> with <h1>/<p>/<ul> inside. Keep it that way, or this match
+// stops at the wrong </div>.
+export function shellFrom(html) {
+  return html.replace(/<div id="app">[\s\S]*?<\/div>/, '<div id="app"></div>');
+}
+
+// The shell carries no canonical of its own any more — see the comment in
+// index.html — so every prerendered page injects its own, and the routes that
+// fall through to the shell are left to self-canonicalise on the URL that was
+// requested. Written replace-or-insert rather than as a swap() so that putting
+// a canonical back into index.html cannot silently produce two of them.
+export function setCanonical(html, url) {
+  const tag = `<link rel="canonical" href="${esc(url)}">`;
+  return /<link rel="canonical"/.test(html)
+    ? html.replace(/<link rel="canonical" href="[^"]*">/, tag)
+    : html.replace(/<\/head>/, `  ${tag}\n</head>`);
+}
+
 // Rewrites the committed index.html rather than templating a second copy of
 // the <head>. The shell owns the design system, the CSP-safe script tags and
 // the preconnects; duplicating it here would mean every future change to
-// index.html silently skipping ~5 000 pages.
+// index.html silently skipping ~7 000 pages.
 function renderPage(shell, g, related, nut) {
   const m = pageMeta(g);
   let html = shell;
@@ -210,7 +268,7 @@ function renderPage(shell, g, related, nut) {
 
   swap(/<title>[\s\S]*?<\/title>/, `<title>${esc(m.title)}</title>`);
   swap(/<meta name="description" content="[^"]*">/, `<meta name="description" content="${esc(m.desc)}">`);
-  swap(/<link rel="canonical" href="[^"]*">/, `<link rel="canonical" href="${esc(m.canonical)}">`);
+  html = setCanonical(html, m.canonical);
   swap(/<meta property="og:title" content="[^"]*">/, `<meta property="og:title" content="${esc(m.title)}">`);
   swap(/<meta property="og:description" content="[^"]*">/, `<meta property="og:description" content="${esc(m.desc)}">`);
   swap(/<meta property="og:url" content="[^"]*">/, `<meta property="og:url" content="${esc(m.canonical)}">`);
@@ -285,7 +343,7 @@ function renderCategoryPage(shell, c, groups) {
   const swap = (re, replacement) => { html = html.replace(re, replacement); };
   swap(/<title>[\s\S]*?<\/title>/, `<title>${esc(title)}</title>`);
   swap(/<meta name="description" content="[^"]*">/, `<meta name="description" content="${esc(desc)}">`);
-  swap(/<link rel="canonical" href="[^"]*">/, `<link rel="canonical" href="${esc(url)}">`);
+  html = setCanonical(html, url);
   swap(/<meta property="og:title" content="[^"]*">/, `<meta property="og:title" content="${esc(title)}">`);
   swap(/<meta property="og:description" content="[^"]*">/, `<meta property="og:description" content="${esc(desc)}">`);
   swap(/<meta property="og:url" content="[^"]*">/, `<meta property="og:url" content="${esc(url)}">`);
@@ -294,6 +352,141 @@ function renderCategoryPage(shell, c, groups) {
   swap(/<\/head>/, `  <script type="application/ld+json" id="ld-product">${JSON.stringify(ld)}</script>\n</head>`);
   swap(/<div id="app"><\/div>/, `<div id="app">${body}</div>`);
   return html;
+}
+
+// ── The three pages that are not a product or a category ─────────────────
+// All three were serving the bare shell: no markup at all inside #app, and the
+// shell's hardcoded canonical claiming each of them was the front page. /om and
+// /skann are in the sitemap, so that combination asked Google to index two URLs
+// and then told it both were duplicates of a third.
+//
+// The front page matters for a second reason. It had no links whatsoever
+// without JavaScript, which left the 21 category pages — the only crawl path
+// into the catalogue — reachable from the sitemap alone. Every internal link on
+// the site pointed *up* or *sideways*, none pointed down from the root. So the
+// front page now carries the categories and the products with the widest
+// coverage, which is also the order of importance we want a crawler to read.
+const listOf = (items) => `<ul>\n      ${items.join('\n      ')}\n    </ul>`;
+
+function homeBodyHtml(categories, top, storeNames) {
+  const chains = storeNames.length > 1
+    ? `${storeNames.slice(0, -1).join(', ')} og ${storeNames[storeNames.length - 1]}`
+    : (storeNames[0] || 'norske dagligvarekjeder');
+  return `<article>
+    <h1>Prisboka — matvarepriser fra norske dagligvarekjeder</h1>
+    <p>Et matvareleksikon med ekte priser fra ${esc(chains)} — hentet fra kjedenes
+       tilbudsaviser og fra kvitteringer folk skanner. Søk opp en vare, se hva den
+       koster i hver butikk, hvilken pakning som er billigst per kilo eller liter,
+       og hvor prisen er på vei. Gratis, uten konto.</p>
+    <h2>Hva koster …</h2>
+    ${listOf(categories.map((c) => `<li><a href="${esc(app.categoryPath(c.slug))}">Hva koster ${esc(c.title.toLowerCase())}?</a></li>`))}
+    <h2>Varer flest kjeder har</h2>
+    ${listOf(top.map((g) => `<li><a href="${esc(app.groupPath(g.key))}">${esc(g.name)}</a>`
+      + ` — fra ${esc(nf(g.minPrice))} i ${g.storeCount} butikker</li>`))}
+    <p><a href="/liste">Handleliste</a> · <a href="/skann">Bidra med priser</a> · <a href="/om">Om Prisboka</a></p>
+  </article>`;
+}
+
+// The one prerendered page that gets NO canonical injected, and the reason is
+// the whole point of the change: index.html is not only the front page, it is
+// also the file vercel.json rewrites every unprerendered route to. Writing
+// href="https://prisboka.no/" in here would move the bug rather than fix it —
+// /liste, /vare/* and ~34 000 single-store groups would go straight back to
+// claiming they are the front page. With no canonical, every one of those URLs
+// self-canonicalises on itself and "/" self-canonicalises on "/", which is the
+// right answer in all of those cases at once. Title, description and og:url in
+// the shell are already the front page's own, so the body is all that changes.
+function renderHomePage(shell, categories, top, storeNames) {
+  return shell.replace(/<div id="app"><\/div>/, `<div id="app">${homeBodyHtml(categories, top, storeNames)}</div>`);
+}
+
+// /om and /skann. Condensed against the app's own screens (renderAbout,
+// renderScan) rather than re-worded, so the static page and the live one make
+// the same claims about sources, privacy and what the prices do not cover —
+// same rule the product pages follow.
+const OM_BODY = `<article>
+    <p><a href="/">Prisboka</a> › Om</p>
+    <h1>Om Prisboka</h1>
+    <p>Et matvareleksikon med ekte priser fra norske dagligvarekjeder — og hvor
+       prisen er på vei. Gratis, uten konto. Prisboka er et uavhengig
+       hobbyprosjekt, og er ikke tilknyttet, eid av eller godkjent av noen av
+       kjedene.</p>
+    <h2>Kilder</h2>
+    <p>Prisene hentes automatisk hver uke, og suppleres med priser fellesskapet
+       bidrar med:</p>
+    <ul>
+      <li><strong>Tilbudsaviser</strong> — ukens tilbud fra kjedenes egne tilbudsaviser.</li>
+      <li><strong>Kvitteringsskann</strong> — priser fellesskapet bidrar med fra kvitteringene sine, merket «Skannet» i prishistorikken.</li>
+      <li><strong>Rettelser</strong> — feil pris eller feil produkt kan meldes inn på hver vare. Melder tre personer inn den samme rettelsen, oppdateres varen automatisk.</li>
+    </ul>
+    <p>Næringsinnholdet på produktsidene kommer fra
+       <a href="https://www.matvaretabellen.no/">Matvaretabellen</a> (Mattilsynet),
+       som er åpne data. Vi kobler varen i butikken til den matvaren i tabellen som
+       ligner mest, og skriver alltid hvilken det er — tallene gjelder en generisk
+       matvare, ikke varedeklarasjonen på pakningen.</p>
+    <p>En butikk vises først når den har nok priser til at en sammenligning betyr
+       noe. Coop-kjedene (Extra, Prix, Mega, Obs) mangler helt, fordi Coop ikke
+       publiserer hyllepriser noe sted — de finnes bare i ukens kundeavis.</p>
+    <p>Prisene kan være unøyaktige eller utdaterte, og kan variere mellom butikker
+       i samme kjede. Sjekk alltid prisen i butikken før du handler.</p>
+    <h2>Personvern</h2>
+    <ul>
+      <li>Ingen konto og ingen sporing for annonser. Vi selger ikke data.</li>
+      <li>Handlelisten din lagres bare lokalt i nettleseren din, og sendes aldri til oss.</li>
+      <li>Kvitteringsbilder sendes til Google Gemini for tekstgjenkjenning og lagres ikke hos oss.</li>
+      <li>Priser du bidrar med, blir en del av det offentlige leksikonet.</li>
+    </ul>
+    <h2>Kontakt</h2>
+    <p>Feil pris eller feil produkt? Bruk «Rapporter feil» på varen det gjelder.
+       Er det noe annet, send en e-post til
+       <a href="mailto:support@prisboka.no">support@prisboka.no</a>. Prisboka er et
+       hobbyprosjekt, så svaret kan ta noen dager.</p>
+    <p><a href="/">Leksikonet</a> · <a href="/skann">Bidra med priser</a> · <a href="/liste">Handleliste</a></p>
+  </article>`;
+
+const SKANN_BODY = `<article>
+    <p><a href="/">Prisboka</a> › Skann kvittering</p>
+    <h1>Skann en kvittering</h1>
+    <p>Bidra med ekte priser: last opp eller ta bilde av en kvittering. Vi leser
+       varelinjene med AI, du fjerner det som er feillest, og prisene lagres slik
+       de står på kvitteringen. Ingen konto, ingen personopplysninger.</p>
+    <h2>Slik gjør du det</h2>
+    <ul>
+      <li><strong>Last opp bilde</strong> — velg et foto av kvitteringen fra enheten din.</li>
+      <li><strong>Eller bruk kameraet</strong> — ta bildet direkte på mobil. Hold kvitteringen flatt og i godt lys.</li>
+      <li><strong>Se over</strong> — du får varelinjene til gjennomsyn før noe lagres, og kan fjerne det som er lest feil.</li>
+    </ul>
+    <p>Bildet sendes til Google Gemini for tekstgjenkjenning og lagres ikke hos
+       oss. Prisene du bidrar med, blir en del av det offentlige leksikonet — ta
+       bare med varelinjene, ikke personlig informasjon du ikke vil dele.</p>
+    <p>Skanning krever JavaScript. Er det slått av, viser denne siden bare denne
+       teksten.</p>
+    <p><a href="/">Leksikonet</a> · <a href="/om">Om Prisboka</a> · <a href="/liste">Handleliste</a></p>
+  </article>`;
+
+function renderStaticPage(shell, { title, desc, url, body }) {
+  let html = setCanonical(shell, url);
+  const swap = (re, replacement) => { html = html.replace(re, replacement); };
+  swap(/<title>[\s\S]*?<\/title>/, `<title>${esc(title)}</title>`);
+  swap(/<meta name="description" content="[^"]*">/, `<meta name="description" content="${esc(desc)}">`);
+  swap(/<meta property="og:title" content="[^"]*">/, `<meta property="og:title" content="${esc(title)}">`);
+  swap(/<meta property="og:description" content="[^"]*">/, `<meta property="og:description" content="${esc(desc)}">`);
+  swap(/<meta property="og:url" content="[^"]*">/, `<meta property="og:url" content="${esc(url)}">`);
+  swap(/<meta name="twitter:title" content="[^"]*">/, `<meta name="twitter:title" content="${esc(title)}">`);
+  swap(/<meta name="twitter:description" content="[^"]*">/, `<meta name="twitter:description" content="${esc(desc)}">`);
+  swap(/<div id="app"><\/div>/, `<div id="app">${body}</div>`);
+  return html;
+}
+
+// ── What earns a sitemap entry ────────────────────────────────────────────
+// See SITEMAP_MIN_STORES above for the thresholds, and app.isNonGrocery for the
+// last clause: a dagligvarekjede sells tannkrem and lyspærer next to the melk,
+// and a price leksikon has no business asking to rank for either. Of the 921
+// groups that clear the store thresholds, 27 are non-food.
+export function sitemapGroups(groups, categoryKeys) {
+  return groups.filter((g) => !app.isNonGrocery(g.key)
+    && (g.storeCount >= SITEMAP_MIN_STORES
+      || (g.storeCount >= SITEMAP_CATEGORY_MIN_STORES && categoryKeys.has(g.key))));
 }
 
 function sitemapXml(groups, categories) {
@@ -484,7 +677,7 @@ async function loadNutrition() {
 }
 
 async function main() {
-  const shell = await readFile(path.join(OUT, 'index.html'), 'utf8');
+  const shell = shellFrom(await readFile(path.join(OUT, 'index.html'), 'utf8'));
   const nut = await loadNutrition();
 
   let stores, rows;
@@ -508,18 +701,29 @@ async function main() {
   const groups = (Array.isArray(built) ? built : Object.values(built))
     .filter((g) => g && g.key && g.name && g.variants && g.variants.length);
 
-  const indexable = groups
-    .filter((g) => g.storeCount >= MIN_STORES)
-    .sort((a, b) => a.key.localeCompare(b.key, 'nb'));
-
   // Only categories that actually have products — an empty page is worse than
   // no page, and it would be the one a search lands on.
   const categories = app.CATEGORIES.filter((c) => app.categoryGroups(c.slug).length > 0);
 
-  await writeFile(path.join(OUT, 'sitemap.xml'), sitemapXml(indexable, categories));
+  // Every group a category page links to. Same call the category page renders
+  // from, so the prerender set cannot drift from what the links actually point
+  // at — which is the whole point of collecting it.
+  const categoryKeys = new Set();
+  for (const c of categories) for (const g of app.categoryGroups(c.slug)) categoryKeys.add(g.key);
+
+  const prerendered = groups
+    .filter((g) => g.storeCount >= MIN_STORES || categoryKeys.has(g.key))
+    .sort((a, b) => a.key.localeCompare(b.key, 'nb'));
+
+  const submitted = sitemapGroups(prerendered, categoryKeys);
+  const submittedKeys = new Set(submitted.map((g) => g.key));
+
+  await writeFile(path.join(OUT, 'sitemap.xml'), sitemapXml(submitted, categories));
 
   // Fingerprint as we render, so the manifest can only ever describe pages
-  // that actually made it to disk.
+  // that actually made it to disk. Only the submitted pages go in it: IndexNow
+  // is the same claim as a sitemap, pushed rather than waited for, so pinging
+  // Bing about 7 000 pages has exactly the problem this change is undoing.
   const manifest = new Map();
 
   await mkdir(path.join(OUT, 'kategori'), { recursive: true });
@@ -531,29 +735,57 @@ async function main() {
 
   await mkdir(path.join(OUT, 'gruppe'), { recursive: true });
   let matched = 0;
-  for (let i = 0; i < indexable.length; i++) {
-    const g = indexable[i];
+  for (let i = 0; i < prerendered.length; i++) {
+    const g = prerendered[i];
     // A handful of neighbours in the sorted list, so every prerendered page
-    // links onward to others. Without that the pages are 5 000 orphans that
+    // links onward to others. Without that the pages are 7 000 orphans that
     // only the sitemap knows about, and internal links are most of what tells
     // a crawler which of them matter.
     const related = [];
-    for (let d = 1; related.length < 6 && d < indexable.length; d++) {
-      const before = indexable[i - d], after = indexable[i + d];
+    for (let d = 1; related.length < 6 && d < prerendered.length; d++) {
+      const before = prerendered[i - d], after = prerendered[i + d];
       if (before) related.push(before);
       if (after && related.length < 6) related.push(after);
       if (!before && !after) break;
     }
     // cleanUrls serves gruppe/<slug>.html at /gruppe/<slug>.
     await writeFile(path.join(OUT, 'gruppe', `${app.slugFor(g.key)}.html`), renderPage(shell, g, related, nut));
-    manifest.set(`${ORIGIN}${app.groupPath(g.key)}`, groupFingerprint(g));
+    if (submittedKeys.has(g.key)) manifest.set(`${ORIGIN}${app.groupPath(g.key)}`, groupFingerprint(g));
     if (nut && app.matchNutrition(nut.index, g.key)) matched++;
   }
 
+  // The front page, /om and /skann. Written after the product pages so that a
+  // crash while rendering those leaves index.html as the committed shell — a
+  // front page with no prerendered body, which is what it was until now, rather
+  // than a half-written file.
+  const shownStores = new Set(prerendered.flatMap((g) => g.variants.map((v) => v.storeId)));
+  const storeNames = stores.filter((s) => s && shownStores.has(s.id)).map((s) => s.name || String(s.id));
+  // Widest coverage first: the same order of importance we want a crawler to
+  // take from the page, and a tie broken by name so the list is stable between
+  // builds when no price moved.
+  const top = submitted
+    .slice()
+    .sort((a, b) => b.storeCount - a.storeCount || a.name.localeCompare(b.name, 'nb'))
+    .slice(0, 60);
+  await writeFile(path.join(OUT, 'om.html'), renderStaticPage(shell, {
+    title: 'Om Prisboka — hvor prisene kommer fra',
+    desc: 'Hvor tallene i Prisboka kommer fra, hvordan varer grupperes på tvers av kjeder, og hva prisene ikke dekker.',
+    url: `${ORIGIN}/om`,
+    body: OM_BODY
+  }));
+  await writeFile(path.join(OUT, 'skann.html'), renderStaticPage(shell, {
+    title: 'Skann kvittering — bidra med priser | Prisboka',
+    desc: 'Last opp en kvittering, så leses prisene inn i leksikonet. Ingen konto, ingen personopplysninger.',
+    url: `${ORIGIN}/skann`,
+    body: SKANN_BODY
+  }));
+  await writeFile(path.join(OUT, 'index.html'), renderHomePage(shell, categories, top, storeNames));
+
   console.log(`build: ${rows.length} rader → ${groups.length} grupper, `
-    + `${indexable.length} produktsider (≥${MIN_STORES} butikker) og ${categories.length} kategorisider `
-    + `forhåndsrendret og lagt i sitemap`
-    + (nut ? `, ${matched} med næringsinnhold fra Matvaretabellen ${nut.index.edition}.` : '.'));
+    + `${prerendered.length} produktsider forhåndsrendret (≥${MIN_STORES} butikker `
+    + `eller lenket fra en kategori) og ${categories.length} kategorisider`
+    + (nut ? `, ${matched} med næringsinnhold fra Matvaretabellen ${nut.index.edition}` : '')
+    + `. Sitemap: ${submitted.length} produktsider + ${categories.length} kategorisider + forside/om/skann.`);
 
   // Never let the ping take the deploy down with it — the pages are already
   // written and served by this point, and Bing finding out a day later via the

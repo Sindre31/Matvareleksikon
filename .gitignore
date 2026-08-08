@@ -2,11 +2,19 @@ node_modules/
 .DS_Store
 *.log
 
-# Prerendered product pages — build.mjs writes ~5 000 of these from the live
+# Prerendered product pages — build.mjs writes ~7 000 of these from the live
 # catalogue on every deploy. They are output, not source: committing them would
 # bury real diffs and ship last week's prices to anyone reading the repo.
 /gruppe/
 /kategori/
+
+# The prerendered /om and /skann. No catalogue data in either, but both are
+# templated from index.html, so a committed copy would silently drift from the
+# shell every time index.html changed — the same trap the build's own comment
+# warns about. index.html is the exception: it has to stay committed because it
+# IS the shell, so the build empties #app before templating from it.
+/om.html
+/skann.html
 
 # IndexNow fingerprints, written next to the pages above. Build output for the
 # same reason: it describes the prices of one deploy. The copy that matters is

@@ -21,7 +21,22 @@
   <link rel="icon" href="/favicon.svg" type="image/svg+xml">
   <link rel="icon" href="/icon-192.png" type="image/png" sizes="192x192">
   <link rel="apple-touch-icon" href="/icon-192.png">
-  <link rel="canonical" href="https://prisboka.no/">
+
+  <!-- NO rel="canonical" HERE, deliberately. This file is the shell every
+       prerendered page is templated from *and* the fallback vercel.json rewrites
+       every unprerendered route to — /liste, /vare/*, and the ~34 000
+       single-store /gruppe/* pages. A hardcoded href="https://prisboka.no/" was
+       therefore telling Google that tens of thousands of distinct URLs were all
+       duplicates of the front page, /om and /skann among them (both in the
+       sitemap, so we asked for them to be indexed and denied them in the same
+       breath). With no canonical here, an unprerendered route self-canonicalises
+       on the URL that was requested — which is the correct answer — and app.js
+       writes the real one in as soon as it renders.
+       build.mjs injects an explicit canonical into every page it prerenders as a
+       file of its own — om.html, skann.html, kategori/*.html, gruppe/*.html. It
+       deliberately does NOT inject one when it writes the prerendered front page
+       back into this file, because these same bytes are what the fallthrough
+       routes are served: see renderHomePage() there. -->
 
   <!-- Installable PWA -->
   <link rel="manifest" href="/manifest.webmanifest">

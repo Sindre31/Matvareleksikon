@@ -1,10 +1,12 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!--
-  Fallback only. build.mjs overwrites this at deploy time with every product
-  group at least two chains carry (~4 900 URLs). This committed copy is what
-  ships if the catalogue is unreachable during a build, so the site is never
-  left without a sitemap at all. Do not paste the generated file in here: it
-  would be stale within the week and would bury every real diff to this repo.
+  Fallback only. build.mjs overwrites this at deploy time with the categories
+  plus the product pages that clear the sitemap thresholds (~900 URLs — see
+  sitemapGroups() there for why it is not all ~7 000 prerendered pages). This
+  committed copy is what ships if the catalogue is unreachable during a build,
+  so the site is never left without a sitemap at all. Do not paste the generated
+  file in here: it would be stale within the week and would bury every real diff
+  to this repo.
 -->
 <urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
   <url>
