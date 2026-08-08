@@ -304,6 +304,80 @@
     return null;
   }
 
+  // ── Non-grocery ──────────────────────────────────────────────────────────
+  // A dagligvarekjede sells tannkrem, kattemat and lyspærer next to the food,
+  // and nothing in the data says which is which: ml_catalog has no category
+  // column, only a product name. This is what the build uses to keep
+  // "Sensodyne tannkrem original" out of the sitemap. The pages still exist and
+  // still work — they are simply not what the site asks Google to rank it for,
+  // because a price leksikon that submits toothpaste is competing where it has
+  // nothing to say.
+  //
+  // An exclusion list rather than a food whitelist, because non-food in a
+  // grocery catalogue is a small closed vocabulary — hygiene, cleaning, paper,
+  // pet, household — while "all food" is open-ended and would need a new entry
+  // every time a chain lists something we hadn't thought of. POPULAR above is
+  // NOT that whitelist, tempting as it looks: it ranks the weekly basket for
+  // the front page, so it has no term for eddik, honning, tunfisk or rapsolje
+  // and using it as a food test drops all four.
+  //
+  // Matched against a group key with the same word rules as POPULAR — 5+
+  // letters anywhere in a word, 4 only as the head, 1-3 as the whole word — so
+  // terms are spelled folded: "toyvask", "gronnsape", "kjokkenrull". A leading
+  // "=" forces whole-word matching for a term that would otherwise collide;
+  // "balsam" anywhere in a word also matches balsamicoeddik.
+  var NON_GROCERY_WORDS = [
+    // Hygiene og personlig pleie. "sape" as a head covers gronnsape, dusjsape
+    // and handsape; "tann" is not a term of its own because the head rule wants
+    // the token to END with it, and no product is named just "tann".
+    'tannkrem', 'tannbors', 'tanntrad', 'tannstikker', 'tannpirker', 'munnskyll',
+    'shampoo', 'shampo', 'sjampo', '=balsam', 'sape', 'deodorant', 'antiperspirant',
+    'barberblad', 'barberskum', 'barberhovel', 'barbermaskin', 'harspray', 'harfarge',
+    'neglelakk', 'sminke', 'mascara', 'leppestift', 'solkrem', 'hudkrem', 'handkrem',
+    'fotkrem', 'bodylotion', 'bleie', 'bleier', 'truseinnlegg', 'sanitetsbind',
+    'tampong', 'vatpinn', 'bomullspad', 'munnbind', 'plaster', 'kondom',
+    // Vask og rengjøring. "oppvask" and "rengjoring" carry their own compounds
+    // (oppvaskmiddel, oppvaskborste, rengjoringsmiddel) on the 5+ rule.
+    'vaskemiddel', 'vaskepulver', 'toyvask', 'toymykner', 'skyllemiddel', 'oppvask',
+    'rengjoring', 'rensemiddel', 'allrent', 'klorin', 'salmiakk', 'flekkfjerner',
+    'kalkfjerner', 'avlopsapner', 'torkemiddel', 'glansmiddel', 'mopp', 'svamp',
+    'klut', 'stalull', 'gulvvask', 'badrens', 'baderomsspray', 'toalettrens',
+    'luktfjerning', 'intimvask', 'antibac', 'desinfeksjon',
+    // Papir og engangsartikler. "=tallerken" is whole-word on purpose: a
+    // juletallerken and a koldtallerken are food, so the disposable ones are
+    // spelled out instead.
+    'serviett', 'toalettpapir', 'kjokkenrull', 'torkerull', 'husholdningspapir',
+    'bakepapir', 'aluminiumsfolie', 'plastfolie', 'matpapir', 'soppel', 'bestikk',
+    '=tallerken', 'papptallerken', 'plasttallerken', 'engangstallerken',
+    // Dyremat. NOT_A_STAPLE covers some of these for the front-page ranking;
+    // repeated here because that list is about what headlines a row, not about
+    // what belongs in a sitemap. No 'felix' — Felix is ketchup here as well as
+    // cat food, and the ketchup is food.
+    // "hund" as a head covers the bare "Tørrfor hund"; "fôr" is animal feed in
+    // Norwegian and never a human meal, so torrfor/vatfor are safe on their own.
+    'hund', 'hundemat', 'hundefor', 'hundegodbit', 'hundepolse', 'torrfor', 'vatfor',
+    'kattemat', 'kattesand', 'kattesnacks', 'dyrefor', 'whiskas', 'pedigree',
+    'purina', 'dreamies', 'sheba', 'frolic', 'tyggepinne', 'tyggebein',
+    // Hus og hjem. Never a bare 'paere' — that is a pear — and never a bare
+    // 'lys', which is how half the catalogue spells "light-coloured"
+    // ("Kokesjokolade lys", "Melblanding lys glutenfri").
+    'batteri', 'lyspaere', 'halogenpaere', 'sparepaere', 'lysror', 'lysstoffror',
+    'nesespray', 'fyrstikk',
+    'telys', 'stearinlys', 'kubbelys', 'grillkull', 'tennvaeske', 'tennbriketter',
+    'blomsternaering', 'blomsterjord', 'gjodsel', 'gavepose', 'gavekort', 'gavepapir',
+    'tekstil', 'sokk', 'strompebukse', 'votter', 'handkle', 'sengetoy',
+    // No 'matboks': "Skinkeost i matboksen" is cheese, not a lunchbox.
+    'stovsuger', 'sugeror', 'oppbevaringsboks', 'drikkeflaske', 'termos',
+    'kaffefilter', 'filterpose', 'snus', 'sigarett', 'roykepapir', 'lighter', 'penn'
+  ];
+  var NON_GROCERY_RE = new RegExp('(^| )(?:' + NON_GROCERY_WORDS.map(function (w) {
+    if (w.charAt(0) === '=') return w.slice(1);
+    if (w.length >= 5) return '[a-z]*' + w + '[a-z]*';
+    if (w.length === 4) return '[a-z]*' + w;
+    return w;
+  }).join('|') + ')( |$)');
+  function isNonGrocery(key) { return NON_GROCERY_RE.test(key || ''); }
+
   // ── Categories ───────────────────────────────────────────────────────────
   // A category is a page for the words people actually type: "hva koster egg",
   // "smørpris". The leksikon had no such page for any of them. Groups are keyed
@@ -5036,7 +5110,7 @@
       parseAmount: parseAmount, normUnit: normUnit, foldName: foldName,
       minceKey: minceKey, ckey: ckey, canonLabel: canonLabel,
       buildStores: buildStores, buildGroups: buildGroups, searchRank: searchRank,
-      popularityOf: popularityOf, pickWeeklyOffers: pickWeeklyOffers,
+      popularityOf: popularityOf, pickWeeklyOffers: pickWeeklyOffers, isNonGrocery: isNonGrocery,
       coveredStores: coveredStores, staleDaysFor: staleDaysFor,
       sizeIdOf: sizeIdOf, sizeLabel: sizeLabel, sizeOptions: sizeOptions, bestPerStore: bestPerStore,
       entryId: entryId, parseEntry: parseEntry, moveEntry: moveEntry, swapEntry: swapEntry,

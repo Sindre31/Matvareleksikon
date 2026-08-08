@@ -21,6 +21,30 @@
   <link rel="icon" href="/favicon.svg" type="image/svg+xml">
   <link rel="icon" href="/icon-192.png" type="image/png" sizes="192x192">
   <link rel="apple-touch-icon" href="/icon-192.png">
+
+  <!-- Correct for "/", and deliberately kept for what else this file serves.
+       index.html is three things at once: the shell build.mjs templates every
+       page from, the front page, and — through the vercel.json rewrites — what
+       /liste, /vare/* and every unprerendered /gruppe/* fall back to. So this
+       one line answers for tens of thousands of URLs, and the question is which
+       answer is least wrong for them.
+       It used to be badly wrong, because the pages that needed a canonical of
+       their own did not have a file of their own: /om and /skann were in the
+       sitemap and served from here, so we asked Google to index them and told it
+       they were duplicates of the front page in the same breath, and the ~1 500
+       single-store groups the category pages link to were doing the same. All of
+       those are prerendered as their own file now, and setCanonical() in
+       build.mjs gives each an explicit canonical that replaces this one.
+       What is left behind the rewrites is /liste (a private basket), /admin, and
+       the /vare/* pages — 14 000-21 000 of those are reachable, two or three off
+       every product page. They are all served these exact bytes, which since the
+       front page became prerendered means they are served the FRONT PAGE'S
+       markup. Pointing them at "/" is therefore not a lie, it is a description:
+       consolidating an unbounded set of identical pages onto the one real page
+       among them is the outcome we want, and dropping the line instead left
+       Google a 20 000-page duplicate cluster to sort out — the same crawl-budget
+       waste the rest of this change exists to stop.
+       Keep it. A page that needs its own canonical needs its own file. -->
   <link rel="canonical" href="https://prisboka.no/">
 
   <!-- Installable PWA -->
