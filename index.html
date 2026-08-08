@@ -22,21 +22,30 @@
   <link rel="icon" href="/icon-192.png" type="image/png" sizes="192x192">
   <link rel="apple-touch-icon" href="/icon-192.png">
 
-  <!-- NO rel="canonical" HERE, deliberately. This file is the shell every
-       prerendered page is templated from *and* the fallback vercel.json rewrites
-       every unprerendered route to — /liste, /vare/*, and the ~34 000
-       single-store /gruppe/* pages. A hardcoded href="https://prisboka.no/" was
-       therefore telling Google that tens of thousands of distinct URLs were all
-       duplicates of the front page, /om and /skann among them (both in the
-       sitemap, so we asked for them to be indexed and denied them in the same
-       breath). With no canonical here, an unprerendered route self-canonicalises
-       on the URL that was requested — which is the correct answer — and app.js
-       writes the real one in as soon as it renders.
-       build.mjs injects an explicit canonical into every page it prerenders as a
-       file of its own — om.html, skann.html, kategori/*.html, gruppe/*.html. It
-       deliberately does NOT inject one when it writes the prerendered front page
-       back into this file, because these same bytes are what the fallthrough
-       routes are served: see renderHomePage() there. -->
+  <!-- Correct for "/", and deliberately kept for what else this file serves.
+       index.html is three things at once: the shell build.mjs templates every
+       page from, the front page, and — through the vercel.json rewrites — what
+       /liste, /vare/* and every unprerendered /gruppe/* fall back to. So this
+       one line answers for tens of thousands of URLs, and the question is which
+       answer is least wrong for them.
+       It used to be badly wrong, because the pages that needed a canonical of
+       their own did not have a file of their own: /om and /skann were in the
+       sitemap and served from here, so we asked Google to index them and told it
+       they were duplicates of the front page in the same breath, and the ~1 500
+       single-store groups the category pages link to were doing the same. All of
+       those are prerendered as their own file now, and setCanonical() in
+       build.mjs gives each an explicit canonical that replaces this one.
+       What is left behind the rewrites is /liste (a private basket), /admin, and
+       the /vare/* pages — 14 000-21 000 of those are reachable, two or three off
+       every product page. They are all served these exact bytes, which since the
+       front page became prerendered means they are served the FRONT PAGE'S
+       markup. Pointing them at "/" is therefore not a lie, it is a description:
+       consolidating an unbounded set of identical pages onto the one real page
+       among them is the outcome we want, and dropping the line instead left
+       Google a 20 000-page duplicate cluster to sort out — the same crawl-budget
+       waste the rest of this change exists to stop.
+       Keep it. A page that needs its own canonical needs its own file. -->
+  <link rel="canonical" href="https://prisboka.no/">
 
   <!-- Installable PWA -->
   <link rel="manifest" href="/manifest.webmanifest">

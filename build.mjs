@@ -245,11 +245,12 @@ export function shellFrom(html) {
   return html.replace(/<div id="app">[\s\S]*?<\/div>/, '<div id="app"></div>');
 }
 
-// The shell carries no canonical of its own any more — see the comment in
-// index.html — so every prerendered page injects its own, and the routes that
-// fall through to the shell are left to self-canonicalise on the URL that was
-// requested. Written replace-or-insert rather than as a swap() so that putting
-// a canonical back into index.html cannot silently produce two of them.
+// Every page prerendered as a file of its own replaces the shell's front-page
+// canonical with its own. That is the whole fix for /om, /skann and the ~1 500
+// single-store groups a category links to: they were served the shell, so they
+// inherited its canonical and claimed to be the front page. Now each is a file.
+// Replace-or-insert rather than a plain swap() so this keeps working whichever
+// way index.html goes, and can never leave two canonicals in one head.
 export function setCanonical(html, url) {
   const tag = `<link rel="canonical" href="${esc(url)}">`;
   return /<link rel="canonical"/.test(html)
@@ -387,15 +388,17 @@ function homeBodyHtml(categories, top, storeNames) {
   </article>`;
 }
 
-// The one prerendered page that gets NO canonical injected, and the reason is
-// the whole point of the change: index.html is not only the front page, it is
-// also the file vercel.json rewrites every unprerendered route to. Writing
-// href="https://prisboka.no/" in here would move the bug rather than fix it —
-// /liste, /vare/* and ~34 000 single-store groups would go straight back to
-// claiming they are the front page. With no canonical, every one of those URLs
-// self-canonicalises on itself and "/" self-canonicalises on "/", which is the
-// right answer in all of those cases at once. Title, description and og:url in
-// the shell are already the front page's own, so the body is all that changes.
+// The one prerendered page that injects no canonical: the shell's own is
+// already the front page's, and it has to stay there for the routes that fall
+// back to these same bytes — see the long note in index.html. Title,
+// description and og:url in the shell are the front page's too, so the body is
+// all that changes here.
+//
+// Worth knowing what this page being prerendered does to those fallback routes:
+// /liste, /admin and the /vare/* pages are now served the front page's markup
+// rather than an empty <div id="app">. That is why the canonical in the shell is
+// load-bearing rather than merely harmless — it is what keeps ~20 000 URLs
+// serving identical bytes from being 20 000 pages Google has to cluster.
 function renderHomePage(shell, categories, top, storeNames) {
   return shell.replace(/<div id="app"><\/div>/, `<div id="app">${homeBodyHtml(categories, top, storeNames)}</div>`);
 }

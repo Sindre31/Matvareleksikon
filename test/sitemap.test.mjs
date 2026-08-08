@@ -108,14 +108,25 @@ test('setCanonical inserts when absent and replaces when present', () => {
   assert.match(twice, /href="https:\/\/prisboka\.no\/skann"/);
 });
 
-test('the committed shell carries no canonical of its own', async () => {
-  // Load-bearing, and the kind of line someone re-adds meaning well. index.html
-  // is what vercel.json rewrites /liste, /vare/* and every unprerendered
-  // /gruppe/* to; a canonical here tells Google all ~34 000 of them are the
-  // front page. build.mjs gives each page it writes as a file of its own an
-  // explicit canonical instead — see renderHomePage() for why the front page is
-  // the deliberate exception.
+test('the committed shell is the front page and templatable', async () => {
+  // Exactly one canonical, and it is the front page's. index.html is the shell,
+  // the front page, and what vercel.json rewrites /liste, /vare/* and every
+  // unprerendered /gruppe/* to — and since the front page became prerendered
+  // those routes are served the front page's markup, so consolidating them on
+  // "/" is a description rather than a lie. Every page that needs a canonical of
+  // its own is written as a file of its own and gets one from setCanonical().
   const html = await readFile(new URL('../index.html', import.meta.url), 'utf8');
-  assert.doesNotMatch(html, /<link rel="canonical"/);
+  const canonicals = html.match(/<link rel="canonical" href="([^"]*)">/g) ?? [];
+  assert.deepEqual(canonicals, ['<link rel="canonical" href="https://prisboka.no/">']);
   assert.match(html, /<div id="app"><\/div>/, 'shell must have an empty #app to template from');
+});
+
+test('a prerendered page overrides the shell canonical rather than adding one', async () => {
+  // The regression this guards: inheriting the shell's front-page canonical is
+  // what had /om, /skann and 1 500 category-linked products claiming to be the
+  // front page, and two canonicals in one head is just as bad as the wrong one.
+  const shell = await readFile(new URL('../index.html', import.meta.url), 'utf8');
+  const page = setCanonical(shell, 'https://prisboka.no/gruppe/kneippbrod');
+  const canonicals = page.match(/<link rel="canonical" href="([^"]*)">/g) ?? [];
+  assert.deepEqual(canonicals, ['<link rel="canonical" href="https://prisboka.no/gruppe/kneippbrod">']);
 });
