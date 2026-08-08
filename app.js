@@ -2062,7 +2062,10 @@
   var MUTED60 = 'color-mix(in srgb, var(--color-text) 60%, transparent)';
   var MUTED70 = 'color-mix(in srgb, var(--color-text) 70%, transparent)';
   var MUTED78 = 'color-mix(in srgb, var(--color-text) 78%, transparent)';
-  var KICKER = 'display: block; font-size: 13px; line-height: 12px; letter-spacing: 0.08em; text-transform: uppercase; font-weight: 600; color: var(--color-accent-700); margin-bottom: 12px;';
+  // line-height must not be under the font-size: at 12px/13px the glyph box is
+  // taller than the line box, so the text bleeds out of its own element and
+  // collides with whatever sits above it (the kategori-chipsene on forsiden).
+  var KICKER = 'display: block; font-size: 13px; line-height: 16px; letter-spacing: 0.08em; text-transform: uppercase; font-weight: 600; color: var(--color-accent-700); margin-bottom: 10px;';
   var RULE = 'height: 1px; border: 0; margin: 0 0 24px; background: var(--color-divider);';
   var NAME_STYLE = 'font-family: var(--font-heading); font-weight: 600; font-size: 18px; letter-spacing: 0.02em; text-transform: uppercase;';
   // Same weight, but never upper-cased: "1,75 l" must not read as "1,75 L".
@@ -2885,7 +2888,9 @@
       ]));
     }));
 
-    var catalog = h('div', {}, [
+    // 48 px above, same as every other seksjonsskille on the front page —
+    // without it the kicker sits flush against the kategori-chipsene above.
+    var catalog = h('div', { style: 'margin-top: 48px;' }, [
       h('span', { style: KICKER, text: q ? 'Treff i leksikonet (' + filtered.length + ')' : (bestSection ? '02 · Hele leksikonet (' + filtered.length + ' varer)' : 'Hele leksikonet (' + filtered.length + ' varer)') }),
       h('hr', { style: 'height: 1px; border: 0; margin: 0 0 20px; background: var(--color-divider);' }),
       controls, grid,
